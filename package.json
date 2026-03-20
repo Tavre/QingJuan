@@ -1,0 +1,30 @@
+{
+  "name": "qingjuan-desktop",
+  "private": true,
+  "version": "0.1.10",
+  "description": "青卷：基于 Tauri 2、Vue 3 与 Python 的桌面小说集成工具。",
+  "author": "Tavre",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "backend:build": "python python-backend/build_sidecar.py",
+    "tauri": "tauri",
+    "tauri:dev": "npm run backend:build && tauri dev",
+    "tauri:build": "npm run backend:build && tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.3.0",
+    "@tauri-apps/plugin-opener": "^2.2.7",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.3.1",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0",
+    "vue-tsc": "^2.2.8"
+  }
+}

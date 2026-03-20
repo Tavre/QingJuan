@@ -1,0 +1,27 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "青卷主窗口能力配置",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/qingjuan-backend",
+          "cmd": "",
+          "sidecar": true,
+          "args": [
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "19453"
+          ]
+        }
+      ]
+    }
+  ]
+}

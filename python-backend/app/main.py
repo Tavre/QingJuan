@@ -103,7 +103,7 @@ except ImportError:
 LIBRARY_ROOT = DATA_DIR / "library"
 TASK_QUEUE: asyncio.Queue[str] = asyncio.Queue()
 
-app = FastAPI(title="青卷后端", version="0.1.10")
+app = FastAPI(title="青卷后端", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -117,6 +117,7 @@ app.add_middleware(
 async def on_startup() -> None:
     init_db()
     LIBRARY_ROOT.mkdir(parents=True, exist_ok=True)
+    app.state.deleted_book_ids = set()
     for task in list_pending_tasks():
         task.status = "queued"
         task.message = "等待队列处理"
@@ -165,6 +166,9 @@ async def get_book_detail(book_id: str) -> BookDetailResponse:
 async def delete_book_route(book_id: str) -> dict[str, str]:
     book = _get_book_or_404(book_id)
     book_dir = _resolve_book_dir(book)
+    deleted_book_ids: set[str] = getattr(app.state, "deleted_book_ids", set())
+    deleted_book_ids.add(book.id)
+    app.state.deleted_book_ids = deleted_book_ids
     delete_book(book.id)
     if book_dir.exists():
         shutil.rmtree(book_dir, ignore_errors=True)
@@ -895,6 +899,20 @@ def _enqueue_task(book: BookRecord, task_type: str, payload: ChapterActionPayloa
     return task
 
 
+def _is_book_deleted(book_id: str) -> bool:
+    deleted_book_ids: set[str] = getattr(app.state, "deleted_book_ids", set())
+    return book_id in deleted_book_ids or get_book(book_id) is None
+
+
+def _is_task_deleted(task_id: str) -> bool:
+    return get_task(task_id) is None
+
+
+def _ensure_task_resources_exist(task_id: str, book_id: str) -> None:
+    if _is_task_deleted(task_id) or _is_book_deleted(book_id):
+        raise HTTPException(status_code=404, detail="任务或书籍已被删除")
+
+
 async def _task_worker() -> None:
     while True:
         task_id = await TASK_QUEUE.get()
@@ -929,14 +947,19 @@ async def _run_task(task_id: str) -> None:
         else:
             await _process_translate_task(task, book)
 
+        if _is_task_deleted(task.id) or _is_book_deleted(book.id):
+            return
         task.status = "completed"
         task.completedCount = task.totalCount
         task.progress = 100
         task.message = "任务已完成"
         task.updatedAt = _now()
         save_task(task)
-        _refresh_book_state(book)
+        if not _is_book_deleted(book.id):
+            _refresh_book_state(book)
     except Exception as exc:
+        if _is_task_deleted(task.id) or _is_book_deleted(book.id):
+            return
         task.status = "failed"
         task.error = str(exc)
         task.message = "任务执行失败"
@@ -951,6 +974,7 @@ async def _process_download_task(task: TaskRecord, book: BookRecord) -> None:
     concurrency = max(1, min(settings.downloadConcurrency, 8))
 
     async def on_progress(completed_count: int, total_count: int, active_titles: list[str]) -> None:
+        _ensure_task_resources_exist(task.id, book.id)
         task.completedCount = completed_count
         task.progress = round(completed_count / total_count * 100, 2) if total_count else 0
         if active_titles:
@@ -977,6 +1001,7 @@ async def _process_translate_task(task: TaskRecord, book: BookRecord) -> None:
     manifest = _load_or_initialize_manifest(book, book_dir)
     settings = load_settings()
     for index, chapter_index in enumerate(task.chapterIndexes, start=1):
+        _ensure_task_resources_exist(task.id, book.id)
         await translate_selected_chapters(
             book_dir=book_dir,
             manifest=manifest,
@@ -984,6 +1009,7 @@ async def _process_translate_task(task: TaskRecord, book: BookRecord) -> None:
             language=book.language,
             settings=settings,
         )
+        _ensure_task_resources_exist(task.id, book.id)
         task.completedCount = index
         task.progress = round(index / task.totalCount * 100, 2)
         task.message = f"已翻译 {index}/{task.totalCount} 章"

@@ -446,8 +446,7 @@ async function bootstrap() {
   }
 
   try {
-    books.value = await fetchBooks();
-    selectedBookId.value = books.value[0]?.id ?? null;
+    await refreshBooks();
   } catch (error) {
     books.value = [];
     lastMessage.value = `书架加载失败：${toErrorMessage(error)}`;
@@ -467,6 +466,14 @@ async function bootstrap() {
     globalTasks.value = [];
     lastMessage.value = `任务总览加载失败：${toErrorMessage(error)}`;
   }
+}
+
+async function refreshBooks() {
+  books.value = await fetchBooks();
+  if (selectedBookId.value && books.value.some((item) => item.id === selectedBookId.value)) {
+    return;
+  }
+  selectedBookId.value = books.value[0]?.id ?? null;
 }
 
 async function handlePreview() {
@@ -589,7 +596,7 @@ async function handleCoverFileChange(event: Event) {
 }
 
 async function handleDeleteSelectedBook() {
-  const book = selectedBook.value;
+  const book = bookDetail.value?.book ?? selectedBook.value;
   if (!book) {
     return;
   }
@@ -604,7 +611,9 @@ async function handleDeleteSelectedBook() {
 
   try {
     await deleteBook(book.id);
-    books.value = books.value.filter((item) => item.id !== book.id);
+    await refreshBooks().catch(() => {
+      books.value = books.value.filter((item) => item.id !== book.id);
+    });
     globalTasks.value = globalTasks.value.filter((task) => task.bookId !== book.id);
     bookTasks.value = bookTasks.value.filter((task) => task.bookId !== book.id);
     selectedChapterIndexes.value = [];
@@ -1379,7 +1388,7 @@ onBeforeUnmount(() => {
 
       <div class="sidebar-footer">
         <p>{{ desktopState }}</p>
-        <span>v0.1.10</span>
+        <span>v0.2.0</span>
       </div>
     </aside>
 

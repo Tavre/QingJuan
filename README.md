@@ -19,6 +19,7 @@ _青卷 QingJuan_
 - 阅读进度持久化
 - 自定义书籍封面
 - 本地书籍删除与资源清理
+- 多站点小说目录与章节解析
 
 ## 预览
 
@@ -27,7 +28,6 @@ _青卷 QingJuan_
 - 阅读器与主题切换
 - AI 翻译配置与任务日志
 
-如需补充截图，建议发布前在仓库中加入 `docs/` 或 `assets/` 目录后在此处引用。
 
 ## 功能特性
 
@@ -38,6 +38,31 @@ _青卷 QingJuan_
 - 阅读体验：支持应用主题、阅读主题、字体大小、自定义正文颜色与背景色
 - 封面管理：支持抓取封面与手动上传自定义封面
 - 数据持久化：重启应用后书架、设置、阅读进度保留
+
+## 已适配站点
+
+### 已实装并验证通过
+
+- 哔哩轻小说 / Linovelib
+  - `https://www.linovelib.com/`
+  - `https://www.bilinovel.com/`
+- Kakuyomu
+  - `https://kakuyomu.jp/works/16817139555217983105`
+- 成为小说家吧 / 小説家になろう
+  - `https://ncode.syosetu.com/n0833hi`
+- Novel18 / ノクターンノベルズ
+  - `https://novel18.syosetu.com/n3192gh`
+- Pixiv 小说单篇 / 系列
+  - `https://www.pixiv.net/novel/show.php?id=18304868`
+  - `https://www.pixiv.net/novel/series/9406879`
+- Hameln / ハーメルン
+  - 已加入目录与正文解析适配
+  - 示例链接是否可抓取取决于作品当前是否公开可访问
+- Alphapolis / アルファポリス
+  - `https://www.alphapolis.co.jp/novel/638978238/525733370`
+  - Windows 下会调用系统 `Microsoft Edge` 的最小化浏览器会话通过 WAF 后再抓取目录与正文
+
+> 说明：Alphapolis 则通过本机 Edge 浏览器会话完成绕过与抓取，因此在首次请求时会比普通站点更慢。
 
 ## 技术栈
 
@@ -54,9 +79,6 @@ _青卷 QingJuan_
 ├─ src/                    # Vue 前端
 ├─ src-tauri/              # Tauri 壳、Rust 入口与打包配置
 ├─ python-backend/         # FastAPI 后端、抓取器、SQLite、sidecar 构建脚本
-├─ ui示例/                  # UI 参考图
-├─ qj_icon.png             # 图标资源
-├─ qj_icon_1.png           # 图标资源
 └─ README.md
 ```
 
@@ -141,7 +163,8 @@ QINGJUAN_DATA_DIR
 
 - Tauri sidecar 依赖：`src-tauri/binaries/qingjuan-backend-x86_64-pc-windows-msvc.exe`
 - 开发与打包时，脚本会自动重建 sidecar，避免前后端代码不同步
-- 当前抓取器已对部分轻小说站点做适配，其余站点可继续按规则扩展
+- 当前抓取器已支持 Linovelib、Kakuyomu、Syosetu、Novel18、Pixiv、Hameln、Alphapolis 等站点
+- Novelup 当前仍受 CloudFront 限制，后续可继续尝试 Cookie 复用 / 代理 / 浏览器登录态方案
 
 ## Roadmap
 

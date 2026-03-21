@@ -2,25 +2,73 @@
 
 import asyncio
 import json
+import os
 import re
+import shutil
+import socket
+import subprocess
+import tempfile
 import time
+import urllib.request
 from collections.abc import Awaitable, Callable
 from email.utils import parsedate_to_datetime
 from hashlib import md5
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from typing import Any
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
 
 from .models import AddBookPayload, ChapterPreview, PreviewResponse, TranslationSettings
 
+try:
+    from curl_cffi import requests as curl_requests
+except Exception:  # pragma: no cover - 环境可选依赖
+    curl_requests = None
+
+try:
+    import requests
+except Exception:  # pragma: no cover - 环境可选依赖
+    requests = None
+
+try:
+    import websockets
+except Exception:  # pragma: no cover - 环境可选依赖
+    websockets = None
+
 CHAPTER_PATTERN = re.compile(r"(chapter|episode|第.{0,6}[章节话卷篇])", re.IGNORECASE)
+GENERIC_CHAPTER_CONTAINER_SELECTORS = (
+    ".chapter-list a[href]",
+    ".chapters a[href]",
+    ".episode-list a[href]",
+    ".episodes a[href]",
+    ".toc a[href]",
+    ".table-of-contents a[href]",
+    "[id*='chapter'] a[href]",
+    "[class*='chapter'] a[href]",
+    "[id*='episode'] a[href]",
+    "[class*='episode'] a[href]",
+)
+KAKUYOMU_HOST_KEYWORDS = ("kakuyomu.jp",)
+SYOSETU_HOST_KEYWORDS = ("syosetu.com",)
+PIXIV_HOST_KEYWORDS = ("pixiv.net",)
+NOVELUP_HOST_KEYWORDS = ("novelup.plus",)
+ALPHAPOLIS_HOST_KEYWORDS = ("alphapolis.co.jp",)
+HAMELN_HOST_KEYWORDS = ("syosetu.org",)
 LINOVELIB_HOST_KEYWORDS = ("linovelib.com", "bilinovel.com")
 LINOVELIB_PREFERRED_HOSTS = ("tw.linovelib.com", "www.bilinovel.com", "www.linovelib.com")
 LINOVELIB_BOOK_PATH_PATTERN = re.compile(r"/novel/(?P<book_id>\d+)(?:\.html|/catalog|/\d+(?:_\d+)?\.html)?/?$")
 LINOVELIB_CHAPTER_PATH_PATTERN = re.compile(r"/novel/(?P<book_id>\d+)/(?P<chapter_id>\d+)(?:_(?P<page>\d+))?\.html$")
+KAKUYOMU_WORK_PATH_PATTERN = re.compile(r"^/works/(?P<work_id>\d+)(?:/episodes/(?P<episode_id>\d+))?/?$")
+SYOSETU_BOOK_PATH_PATTERN = re.compile(r"^/(?P<book_code>[a-z0-9]+)(?:/(?P<chapter_no>\d+)/?)?$", re.IGNORECASE)
+HAMELN_BOOK_PATH_PATTERN = re.compile(r"^/novel/(?P<book_id>\d+)(?:/(?P<chapter_no>\d+)\.html)?/?$")
+PIXIV_SERIES_PATH_PATTERN = re.compile(r"^/novel/series/(?P<series_id>\d+)/?$")
+NOVELUP_STORY_PATH_PATTERN = re.compile(r"^/story/(?P<story_id>\d+)(?:/.*)?$")
+ALPHAPOLIS_WORK_PATH_PATTERN = re.compile(
+    r"^/novel/(?P<author_id>\d+)/(?P<content_id>\d+)(?:/episode/(?P<episode_id>\d+))?/?$"
+)
 LINOVELIB_BLOCK_MARKERS = (
     "Attention Required! | Cloudflare",
     "Sorry, you have been blocked",
@@ -49,6 +97,23 @@ LINOVELIB_MIN_REQUEST_INTERVAL = 1.2
 LINOVELIB_MAX_RETRIES = 5
 LINOVELIB_RETRYABLE_STATUS_CODES = {403, 429, 500, 502, 503, 504}
 _HOST_LAST_REQUEST_AT: dict[str, float] = {}
+EDGE_BROWSER_PATHS = tuple(
+    path
+    for path in (
+        Path(os.environ.get("PROGRAMFILES(X86)", "")) / "Microsoft/Edge/Application/msedge.exe"
+        if os.environ.get("PROGRAMFILES(X86)")
+        else None,
+        Path(os.environ.get("PROGRAMFILES", "")) / "Microsoft/Edge/Application/msedge.exe"
+        if os.environ.get("PROGRAMFILES")
+        else None,
+        Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"),
+        Path("C:/Program Files/Microsoft/Edge/Application/msedge.exe"),
+    )
+    if path is not None
+)
+EDGE_CDP_BOOT_TIMEOUT_SECONDS = 15.0
+EDGE_CDP_PAGE_TIMEOUT_SECONDS = 45.0
+EDGE_CDP_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -82,22 +147,126 @@ class ChapterFetchResult:
     image_files: list[str] | None = None
 
 
+@dataclass
+class SyncFetchResult:
+    text: str
+    resolved_url: str
+    status_code: int
+
+
+@dataclass
+class EdgeSnapshot:
+    html: str
+    resolved_url: str
+
+
+def _host_matches(url: str, keywords: tuple[str, ...]) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return any(host == keyword or host.endswith(f".{keyword}") for keyword in keywords)
+
+
+def _is_kakuyomu_url(url: str) -> bool:
+    return _host_matches(url, KAKUYOMU_HOST_KEYWORDS)
+
+
+def _is_syosetu_url(url: str) -> bool:
+    return _host_matches(url, SYOSETU_HOST_KEYWORDS) and "novel18" not in (urlparse(url).hostname or "").lower()
+
+
+def _is_novel18_url(url: str) -> bool:
+    return "novel18.syosetu.com" in (urlparse(url).hostname or "").lower()
+
+
+def _is_pixiv_url(url: str) -> bool:
+    return _host_matches(url, PIXIV_HOST_KEYWORDS)
+
+
+def _is_novelup_url(url: str) -> bool:
+    return _host_matches(url, NOVELUP_HOST_KEYWORDS)
+
+
+def _is_alphapolis_url(url: str) -> bool:
+    return _host_matches(url, ALPHAPOLIS_HOST_KEYWORDS)
+
+
+def _is_hameln_url(url: str) -> bool:
+    return _host_matches(url, HAMELN_HOST_KEYWORDS)
+
+
+def _clean_title_suffix(title: str, suffixes: tuple[str, ...]) -> str:
+    value = title.strip()
+    for suffix in suffixes:
+        if value.endswith(suffix):
+            value = value[: -len(suffix)].strip()
+    return value.strip() or title.strip()
+
+
+def _build_origin(url: str) -> str:
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _append_prefixed_text(prefix: str | None, body: str | None) -> str:
+    prefix_value = (prefix or "").strip()
+    body_value = (body or "").strip()
+    if prefix_value and body_value and prefix_value not in body_value:
+        return f"{prefix_value}\n\n{body_value}"
+    return body_value or prefix_value
+
+
 def _is_linovelib_url(url: str) -> bool:
     host = (urlparse(url).hostname or "").lower()
     return any(keyword in host for keyword in LINOVELIB_HOST_KEYWORDS)
 
 
 def _normalize_source_url(url: str) -> str:
-    if not _is_linovelib_url(url):
-        return url
-
     parsed = urlparse(url)
-    match = LINOVELIB_BOOK_PATH_PATTERN.match(parsed.path)
-    if not match:
+    if _is_linovelib_url(url):
+        match = LINOVELIB_BOOK_PATH_PATTERN.match(parsed.path)
+        if not match:
+            return url
+        book_id = match.group("book_id")
+        return f"{parsed.scheme}://{parsed.netloc}/novel/{book_id}/catalog"
+
+    if _is_kakuyomu_url(url):
+        match = KAKUYOMU_WORK_PATH_PATTERN.match(parsed.path)
+        if match:
+            return f"{parsed.scheme}://{parsed.netloc}/works/{match.group('work_id')}"
         return url
 
-    book_id = match.group("book_id")
-    return f"{parsed.scheme}://{parsed.netloc}/novel/{book_id}/catalog"
+    if _is_syosetu_url(url) or _is_novel18_url(url):
+        match = SYOSETU_BOOK_PATH_PATTERN.match(parsed.path)
+        if match:
+            return f"{parsed.scheme}://{parsed.netloc}/{match.group('book_code').lower()}/"
+        return url
+
+    if _is_hameln_url(url):
+        match = HAMELN_BOOK_PATH_PATTERN.match(parsed.path)
+        if match:
+            return f"{parsed.scheme}://{parsed.netloc}/novel/{match.group('book_id')}/"
+        return url
+
+    if _is_pixiv_url(url):
+        series_match = PIXIV_SERIES_PATH_PATTERN.match(parsed.path)
+        if series_match:
+            return f"{parsed.scheme}://{parsed.netloc}/novel/series/{series_match.group('series_id')}"
+        novel_id = parse_qs(parsed.query).get("id", [""])[0].strip()
+        if parsed.path == "/novel/show.php" and novel_id:
+            return f"{parsed.scheme}://{parsed.netloc}/novel/show.php?id={novel_id}"
+
+    if _is_novelup_url(url):
+        match = NOVELUP_STORY_PATH_PATTERN.match(parsed.path)
+        if match:
+            return f"{parsed.scheme}://{parsed.netloc}/story/{match.group('story_id')}"
+        return url
+
+    if _is_alphapolis_url(url):
+        match = ALPHAPOLIS_WORK_PATH_PATTERN.match(parsed.path)
+        if match:
+            return f"{parsed.scheme}://{parsed.netloc}/novel/{match.group('author_id')}/{match.group('content_id')}"
+        return url
+
+    return url
 
 
 def _linovelib_candidate_urls(url: str) -> list[str]:
@@ -225,6 +394,10 @@ def _extract_chapters(soup: BeautifulSoup, base_url: str) -> list[ChapterPreview
         if chapters:
             return chapters
 
+    items = _collect_generic_chapter_links(soup.select(", ".join(GENERIC_CHAPTER_CONTAINER_SELECTORS)), base_url)
+    if len(items) >= 2:
+        return items
+
     items: list[ChapterPreview] = []
     seen: set[str] = set()
 
@@ -242,6 +415,28 @@ def _extract_chapters(soup: BeautifulSoup, base_url: str) -> list[ChapterPreview
         items.append(ChapterPreview(title=text[:120], url=absolute_url))
 
     return items[:500]
+
+
+def _collect_generic_chapter_links(anchors: list[Any], base_url: str) -> list[ChapterPreview]:
+    items: list[ChapterPreview] = []
+    seen: set[str] = set()
+    base_host = (urlparse(base_url).hostname or "").lower()
+
+    for anchor in anchors:
+        href = str(anchor.get("href") or "").strip()
+        text = anchor.get_text(" ", strip=True)
+        if not href or not text or href.startswith(("javascript:", "#")):
+            continue
+        absolute_url = urljoin(base_url, href)
+        parsed = urlparse(absolute_url)
+        if base_host and (parsed.hostname or "").lower() != base_host:
+            continue
+        if absolute_url in seen:
+            continue
+        seen.add(absolute_url)
+        items.append(ChapterPreview(title=text[:180], url=absolute_url))
+
+    return items
 
 
 def _extract_linovelib_chapters(soup: BeautifulSoup, base_url: str) -> list[ChapterPreview]:
@@ -310,6 +505,250 @@ def _extract_linovelib_volume_blocks(soup: BeautifulSoup, base_url: str) -> list
             items.append(ChapterPreview(title=chapter_title[:160], url=absolute_url))
 
     return items
+
+
+def _kakuyomu_state_from_html(html: str) -> dict[str, Any]:
+    soup = BeautifulSoup(html, "html.parser")
+    script = soup.select_one("#__NEXT_DATA__")
+    if script is None or not script.string:
+        raise ValueError("Kakuyomu 页面缺少 __NEXT_DATA__ 数据")
+    payload = json.loads(script.string)
+    page_props = payload.get("props", {}).get("pageProps", {})
+    state = page_props.get("__APOLLO_STATE__")
+    if not isinstance(state, dict) or not state:
+        raise ValueError("Kakuyomu 页面缺少 __APOLLO_STATE__ 数据")
+    return state
+
+
+def _kakuyomu_work_id_from_url(url: str) -> str | None:
+    match = KAKUYOMU_WORK_PATH_PATTERN.match(urlparse(url).path)
+    return match.group("work_id") if match else None
+
+
+def _kakuyomu_work_from_state(state: dict[str, Any], work_id: str) -> dict[str, Any]:
+    work = state.get(f"Work:{work_id}")
+    if not isinstance(work, dict):
+        raise ValueError("未能在 Kakuyomu 页面中定位作品信息")
+    return work
+
+
+def _kakuyomu_author_from_state(state: dict[str, Any], work: dict[str, Any]) -> str | None:
+    author_ref = work.get("author", {})
+    if isinstance(author_ref, dict):
+        author = state.get(str(author_ref.get("__ref") or ""))
+        if isinstance(author, dict):
+            for key in ("activityName", "name", "screenName"):
+                value = str(author.get(key) or "").strip()
+                if value:
+                    return value
+    return None
+
+
+def _kakuyomu_synopsis_from_work(work: dict[str, Any]) -> str:
+    catchphrase = str(work.get("catchphrase") or "").strip()
+    introduction = str(work.get("introduction") or "").strip()
+    return _append_prefixed_text(catchphrase, introduction)
+
+
+def _kakuyomu_chapters_from_state(state: dict[str, Any], work_id: str, work: dict[str, Any]) -> list[ChapterPreview]:
+    items: list[ChapterPreview] = []
+    seen: set[str] = set()
+    origin = "https://kakuyomu.jp"
+
+    for toc_ref in work.get("tableOfContents", []):
+        ref_key = toc_ref.get("__ref") if isinstance(toc_ref, dict) else None
+        toc = state.get(str(ref_key or ""))
+        if not isinstance(toc, dict):
+            continue
+
+        chapter_title = ""
+        chapter_ref = toc.get("chapter")
+        if isinstance(chapter_ref, dict):
+            chapter_meta = state.get(str(chapter_ref.get("__ref") or ""))
+            if isinstance(chapter_meta, dict):
+                chapter_title = str(chapter_meta.get("title") or chapter_meta.get("name") or "").strip()
+
+        for episode_ref in toc.get("episodeUnions", []):
+            episode_key = episode_ref.get("__ref") if isinstance(episode_ref, dict) else None
+            episode = state.get(str(episode_key or ""))
+            if not isinstance(episode, dict):
+                continue
+            episode_id = str(episode.get("id") or "").strip()
+            episode_title = str(episode.get("title") or "").strip()
+            if not episode_id or not episode_title:
+                continue
+            title = f"{chapter_title} - {episode_title}" if chapter_title else episode_title
+            chapter_url = f"{origin}/works/{work_id}/episodes/{episode_id}"
+            if chapter_url in seen:
+                continue
+            seen.add(chapter_url)
+            items.append(ChapterPreview(title=title[:180], url=chapter_url))
+
+    return items
+
+
+def _pixiv_novel_id_from_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.path != "/novel/show.php":
+        return None
+    novel_id = parse_qs(parsed.query).get("id", [""])[0].strip()
+    return novel_id or None
+
+
+def _pixiv_series_id_from_url(url: str) -> str | None:
+    match = PIXIV_SERIES_PATH_PATTERN.match(urlparse(url).path)
+    return match.group("series_id") if match else None
+
+
+def _pixiv_api_headers(referer: str | None = None) -> dict[str, str]:
+    return {
+        "User-Agent": DEFAULT_HEADERS["User-Agent"],
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "ja,en;q=0.9",
+        "Referer": referer or "https://www.pixiv.net/",
+    }
+
+
+async def _fetch_json(client: httpx.AsyncClient, url: str, headers: dict[str, str]) -> dict[str, Any]:
+    response = await client.get(url, headers=headers)
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("error"):
+        raise ValueError(str(payload.get("message") or "目标站点返回错误"))
+    body = payload.get("body")
+    if not isinstance(body, (dict, list)):
+        raise ValueError("目标站点返回了不可识别的数据结构")
+    return {"body": body, "url": str(response.url)}
+
+
+def _pixiv_content_to_text(content: str) -> str:
+    value = content.replace("\r\n", "\n").replace("\r", "\n")
+    value = value.replace("[newpage]", "\n\n")
+    value = re.sub(r"\[\[rb:([^>]+)\s*>\s*([^\]]+)\]\]", r"\1（\2）", value)
+    value = re.sub(r"\[\[jumpuri:([^>]+)\s*>\s*([^\]]+)\]\]", r"\1（\2）", value)
+    value = re.sub(r"\[jump:(\d+)\]", "", value)
+    value = re.sub(r"\[chapter:[^\]]+\]", "", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+def _extract_pixiv_image_urls(body: dict[str, Any]) -> list[str]:
+    image_urls: list[str] = []
+    for bucket_key in ("textEmbeddedImages", "contentImages"):
+        bucket = body.get(bucket_key)
+        if not isinstance(bucket, dict):
+            continue
+        for item in bucket.values():
+            if not isinstance(item, dict):
+                continue
+            urls = item.get("urls")
+            if isinstance(urls, dict):
+                for key in ("original", "1200x1200", "regular", "small"):
+                    candidate = str(urls.get(key) or "").strip()
+                    if candidate and candidate not in image_urls:
+                        image_urls.append(candidate)
+                        break
+            else:
+                candidate = str(item.get("originalUrl") or item.get("url") or "").strip()
+                if candidate and candidate not in image_urls:
+                    image_urls.append(candidate)
+    return image_urls
+
+
+def _syosetu_chapters_from_soup(soup: BeautifulSoup, base_url: str) -> list[ChapterPreview]:
+    items: list[ChapterPreview] = []
+    seen: set[str] = set()
+    current_heading = ""
+
+    for node in soup.select(".p-eplist > *"):
+        classes = node.get("class") or []
+        if "p-eplist__chapter-title" in classes:
+            current_heading = node.get_text(" ", strip=True)
+            continue
+        if "p-eplist__sublist" not in classes:
+            continue
+        anchor = node.select_one("a[href]")
+        if anchor is None:
+            continue
+        href = str(anchor.get("href") or "").strip()
+        title = anchor.get_text(" ", strip=True)
+        if not href or not title:
+            continue
+        absolute_url = urljoin(base_url, href)
+        if absolute_url in seen:
+            continue
+        seen.add(absolute_url)
+        if current_heading:
+            title = f"{current_heading} - {title}"
+        items.append(ChapterPreview(title=title[:180], url=absolute_url))
+
+    if items:
+        return items
+
+    current_heading = ""
+    for node in soup.select(".index_box > *, .novel_sublist2, .novel_sublist, .chapter_title"):
+        classes = node.get("class") or []
+        class_text = " ".join(classes)
+        if "chapter_title" in class_text:
+            current_heading = node.get_text(" ", strip=True)
+            continue
+
+        anchor = node.select_one("a[href]")
+        if anchor is None:
+            continue
+        href = str(anchor.get("href") or "").strip()
+        title = anchor.get_text(" ", strip=True)
+        if not href or not title:
+            continue
+        absolute_url = urljoin(base_url, href)
+        if absolute_url in seen:
+            continue
+        seen.add(absolute_url)
+        if current_heading and current_heading not in title:
+            title = f"{current_heading} - {title}"
+        items.append(ChapterPreview(title=title[:180], url=absolute_url))
+
+    return items
+
+
+def _hameln_chapters_from_soup(soup: BeautifulSoup, base_url: str) -> list[ChapterPreview]:
+    items: list[ChapterPreview] = []
+    seen: set[str] = set()
+
+    for anchor in soup.select("table tr a[href$='.html']"):
+        href = str(anchor.get("href") or "").strip()
+        title = anchor.get_text(" ", strip=True)
+        if not href or not title:
+            continue
+        absolute_url = urljoin(base_url, href)
+        if absolute_url in seen:
+            continue
+        seen.add(absolute_url)
+        items.append(ChapterPreview(title=title[:180], url=absolute_url))
+
+    return items
+
+
+def _hameln_author_from_soup(soup: BeautifulSoup) -> str | None:
+    first_info = soup.select_one("#maind .ss p")
+    if first_info is None:
+        return None
+    text = first_info.get_text(" ", strip=True)
+    match = re.search(r"作：\s*([^\s×]+)", text)
+    return match.group(1).strip() if match else None
+
+
+def _hameln_chapter_text(soup: BeautifulSoup) -> str:
+    body = soup.select_one("#honbun")
+    if body is None:
+        return ""
+    parts = [body.get_text("\n", strip=True)]
+    afterword = soup.select_one("#atogaki")
+    if afterword is not None:
+        afterword_text = afterword.get_text("\n", strip=True)
+        if afterword_text:
+            parts.append(f"【后记】\n{afterword_text}")
+    return "\n\n".join(part.strip() for part in parts if part.strip()).strip()
 
 
 def load_manifest(book_dir: Path) -> dict:
@@ -498,8 +937,561 @@ async def translate_selected_chapters(
     return manifest
 
 
+def _sync_fetch_with_httpx(url: str, referer: str | None = None) -> SyncFetchResult:
+    headers = dict(DEFAULT_HEADERS)
+    headers["Accept-Encoding"] = "identity"
+    headers["Accept-Language"] = "ja,en;q=0.9"
+    if referer:
+        headers["Referer"] = referer
+    with httpx.Client(follow_redirects=True, timeout=30.0, headers=headers) as client:
+        client.cookies.set("over18", "yes", domain=".syosetu.com")
+        client.cookies.set("over18", "yes", domain=".novel18.syosetu.com")
+        response = client.get(url)
+        response.raise_for_status()
+        return SyncFetchResult(text=response.text, resolved_url=str(response.url), status_code=response.status_code)
+
+
+def _sync_fetch_with_requests(url: str, referer: str | None = None) -> SyncFetchResult:
+    if requests is None:
+        raise RuntimeError("requests 不可用")
+    session = requests.Session()
+    session.cookies.set("over18", "yes", domain=".syosetu.com")
+    session.cookies.set("over18", "yes", domain=".novel18.syosetu.com")
+    headers = {
+        "User-Agent": DEFAULT_HEADERS["User-Agent"],
+        "Accept": DEFAULT_HEADERS["Accept"],
+        "Accept-Language": "ja,en;q=0.9",
+        "Accept-Encoding": "identity",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    if referer:
+        headers["Referer"] = referer
+    response = session.get(url, headers=headers, timeout=40)
+    response.raise_for_status()
+    return SyncFetchResult(text=response.text, resolved_url=str(response.url), status_code=response.status_code)
+
+
+def _sync_fetch_with_curl_cffi(url: str, referer: str | None = None) -> SyncFetchResult:
+    if curl_requests is None:
+        raise RuntimeError("curl_cffi 不可用")
+    headers = {
+        "Accept-Language": "ja,en;q=0.9",
+        "Accept-Encoding": "identity",
+    }
+    if referer:
+        headers["Referer"] = referer
+    cookies = {"over18": "yes"} if _is_novel18_url(url) else None
+    response = curl_requests.get(url, impersonate="chrome124", timeout=40, headers=headers, cookies=cookies)
+    response.raise_for_status()
+    return SyncFetchResult(text=response.text, resolved_url=str(response.url), status_code=response.status_code)
+
+
+def _raise_special_site_error(url: str, exc: Exception | None = None) -> None:
+    error_text = str(exc or "")
+    if _is_novelup_url(url):
+        raise ValueError("Novelup 当前访问被 CloudFront 拦截（403），当前环境下即使使用浏览器会话也无法直接抓取该站点。") from exc
+    if _is_alphapolis_url(url):
+        raise ValueError("Alphapolis 当前直连会触发 AWS WAF challenge，需要走浏览器会话兜底抓取。") from exc
+    if _is_hameln_url(url):
+        if "404" in error_text:
+            raise ValueError("Hameln 返回 404，请确认该作品仍然公开可访问。") from exc
+        raise ValueError("Hameln 当前触发 Cloudflare 挑战，无法直接抓取该章节内容。") from exc
+    raise exc or ValueError(f"读取页面失败：{url}")
+
+
+def _looks_like_block_page(url: str, result: SyncFetchResult) -> bool:
+    text = result.text
+    if _is_novelup_url(url):
+        return "The request could not be satisfied" in text or "Request blocked" in text
+    if _is_alphapolis_url(url):
+        return (
+            result.status_code == 202
+            or "window.gokuProps" in text
+            or "window.awsWafCookieDomainList" in text
+            or "JavaScript is disabled" in text
+        )
+    if _is_hameln_url(url):
+        return "Just a moment..." in text or "cf-challenge" in text
+    return False
+
+
+async def _fetch_site_html(url: str, referer: str | None = None) -> tuple[str, str]:
+    fetchers = []
+    if _is_hameln_url(url) or _is_novel18_url(url):
+        fetchers.append(_sync_fetch_with_curl_cffi)
+    fetchers.append(_sync_fetch_with_httpx)
+    if _is_syosetu_url(url) or _is_novel18_url(url):
+        fetchers.append(_sync_fetch_with_requests)
+    if curl_requests is not None and (_is_alphapolis_url(url) or _is_novelup_url(url)):
+        fetchers.append(_sync_fetch_with_curl_cffi)
+
+    last_error: Exception | None = None
+    for fetcher in fetchers:
+        try:
+            result = await asyncio.to_thread(fetcher, url, referer)
+            if _looks_like_block_page(url, result):
+                raise ValueError("目标站点返回了拦截页面")
+            return result.text, result.resolved_url
+        except Exception as exc:
+            last_error = exc
+
+    _raise_special_site_error(url, last_error)
+
+
+def _find_edge_executable() -> Path | None:
+    for candidate in EDGE_BROWSER_PATHS:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _reserve_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _list_edge_targets(port: int) -> list[dict[str, Any]]:
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=1) as response:
+        payload = response.read().decode("utf-8", errors="replace")
+    result = json.loads(payload)
+    return result if isinstance(result, list) else []
+
+
+async def _wait_for_edge_page_target(port: int, timeout_seconds: float) -> str:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            targets = await asyncio.to_thread(_list_edge_targets, port)
+        except Exception:
+            await asyncio.sleep(0.25)
+            continue
+        for target in targets:
+            if target.get("type") == "page" and target.get("webSocketDebuggerUrl"):
+                return str(target["webSocketDebuggerUrl"])
+        await asyncio.sleep(0.25)
+    raise ValueError("未能连接到 Edge DevTools 页面目标")
+
+
+async def _cdp_send_command(
+    websocket: Any,
+    method: str,
+    params: dict[str, Any] | None = None,
+    *,
+    timeout_seconds: float = 20.0,
+    _state: dict[str, int] = {"id": 0},
+) -> dict[str, Any]:
+    _state["id"] += 1
+    command_id = _state["id"]
+    await websocket.send(json.dumps({"id": command_id, "method": method, "params": params or {}}))
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        raw = await asyncio.wait_for(websocket.recv(), timeout=max(0.1, deadline - time.monotonic()))
+        payload = json.loads(raw)
+        if payload.get("id") == command_id:
+            if "error" in payload:
+                message = payload["error"].get("message") if isinstance(payload.get("error"), dict) else payload["error"]
+                raise ValueError(f"Edge DevTools 调用失败：{method} -> {message}")
+            return payload
+    raise TimeoutError(f"等待 Edge DevTools 返回超时：{method}")
+
+
+async def _cdp_evaluate(
+    websocket: Any,
+    expression: str,
+    *,
+    await_promise: bool = False,
+) -> Any:
+    response = await _cdp_send_command(
+        websocket,
+        "Runtime.evaluate",
+        {
+            "expression": expression,
+            "returnByValue": True,
+            "awaitPromise": await_promise,
+        },
+    )
+    result = response.get("result", {}).get("result", {})
+    if "value" in result:
+        return result["value"]
+    if result.get("type") == "undefined":
+        return None
+    return result.get("description")
+
+
+async def _fetch_with_edge_cdp(
+    url: str,
+    *,
+    ready_expression: str,
+    headless: bool,
+    timeout_seconds: float = EDGE_CDP_PAGE_TIMEOUT_SECONDS,
+    blocked_message: str | None = None,
+) -> EdgeSnapshot:
+    edge_path = _find_edge_executable()
+    if edge_path is None:
+        raise ValueError("未找到 Microsoft Edge，无法启用浏览器会话兜底抓取。")
+    if websockets is None:
+        raise ValueError("当前环境缺少 websockets 依赖，无法启用浏览器会话兜底抓取。")
+
+    port = _reserve_local_port()
+    user_data_dir = Path(tempfile.mkdtemp(prefix="qingjuan-edge-cdp-"))
+    launch_args = [
+        str(edge_path),
+        f"--remote-debugging-port={port}",
+        "--disable-gpu",
+        "--disable-extensions",
+        "--no-first-run",
+        "--no-default-browser-check",
+        f"--user-data-dir={user_data_dir}",
+        "about:blank",
+    ]
+    if headless:
+        launch_args.insert(2, "--headless=new")
+    else:
+        launch_args.insert(2, "--start-minimized")
+
+    process = subprocess.Popen(launch_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        ws_url = await _wait_for_edge_page_target(port, EDGE_CDP_BOOT_TIMEOUT_SECONDS)
+        async with websockets.connect(ws_url, max_size=100_000_000) as websocket:
+            await _cdp_send_command(websocket, "Page.enable")
+            await _cdp_send_command(websocket, "Runtime.enable")
+            await _cdp_send_command(websocket, "Network.enable")
+            await _cdp_send_command(websocket, "Page.navigate", {"url": url})
+
+            deadline = time.monotonic() + timeout_seconds
+            last_title = ""
+            last_url = url
+            while time.monotonic() < deadline:
+                ready = bool(await _cdp_evaluate(websocket, ready_expression))
+                last_title = str(await _cdp_evaluate(websocket, "document.title || ''") or "")
+                last_url = str(await _cdp_evaluate(websocket, "location.href || ''") or url)
+                if ready:
+                    html = str(await _cdp_evaluate(websocket, "document.documentElement.outerHTML || ''") or "")
+                    return EdgeSnapshot(html=html, resolved_url=last_url or url)
+                await asyncio.sleep(EDGE_CDP_POLL_INTERVAL_SECONDS)
+
+            html = str(await _cdp_evaluate(websocket, "document.documentElement.outerHTML || ''") or "")
+            if "ERROR: The request could not be satisfied" in last_title or "403 ERROR" in html:
+                raise ValueError(blocked_message or "浏览器会话仍然被目标站点拦截。")
+            raise ValueError(f"浏览器会话抓取超时：{url}")
+    finally:
+        try:
+            process.kill()
+        except Exception:
+            pass
+        try:
+            process.wait(timeout=10)
+        except Exception:
+            pass
+        shutil.rmtree(user_data_dir, ignore_errors=True)
+
+
+def _alphapolis_cover_data_from_html(html: str) -> dict[str, Any]:
+    soup = BeautifulSoup(html, "html.parser")
+    node = soup.select_one("#app-cover-data")
+    if node is None:
+        raise ValueError("未在 Alphapolis 页面中找到目录数据")
+    try:
+        payload = json.loads(node.get_text(strip=True))
+    except Exception as exc:
+        raise ValueError("Alphapolis 目录数据解析失败") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Alphapolis 目录数据格式异常")
+    return payload
+
+
+def _alphapolis_chapters_from_cover_data(data: dict[str, Any], base_url: str) -> list[ChapterPreview]:
+    items: list[ChapterPreview] = []
+    seen: set[str] = set()
+    for group in data.get("chapterEpisodes") or []:
+        if not isinstance(group, dict):
+            continue
+        group_title = str(group.get("title") or "").strip()
+        episodes = group.get("episodes") or []
+        if not isinstance(episodes, list):
+            continue
+        for episode in episodes:
+            if not isinstance(episode, dict):
+                continue
+            if episode.get("isPublic") is False:
+                continue
+            episode_title = str(episode.get("mainTitle") or episode.get("title") or "").strip()
+            href = str(episode.get("url") or "").strip()
+            if not episode_title or not href:
+                continue
+            title = episode_title
+            if group_title and group_title not in episode_title:
+                title = f"{group_title} / {episode_title}"
+            absolute_url = urljoin(base_url, href)
+            if absolute_url in seen:
+                continue
+            seen.add(absolute_url)
+            items.append(ChapterPreview(title=title[:120], url=absolute_url))
+    return items
+
+
+async def _preview_kakuyomu(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    html, resolved_url = await _fetch_preview_html(source_url)
+    state = _kakuyomu_state_from_html(html)
+    work_id = _kakuyomu_work_id_from_url(source_url)
+    if not work_id:
+        raise ValueError("无法识别 Kakuyomu 作品编号")
+    work = _kakuyomu_work_from_state(state, work_id)
+    title = str(work.get("title") or payload.title or "未命名小说").strip()
+    author = _kakuyomu_author_from_state(state, work)
+    synopsis = _kakuyomu_synopsis_from_work(work)
+    cover = str(work.get("adminCoverImageUrl") or work.get("ogImageUrl") or "").strip() or None
+    chapters = _kakuyomu_chapters_from_state(state, work_id, work)
+    if not chapters and work.get("firstPublicEpisodeUnion"):
+        first_ref = work["firstPublicEpisodeUnion"].get("__ref")
+        first_episode = state.get(str(first_ref or ""))
+        if isinstance(first_episode, dict):
+            episode_id = str(first_episode.get("id") or "").strip()
+            episode_title = str(first_episode.get("title") or title).strip()
+            if episode_id:
+                chapters = [ChapterPreview(title=episode_title, url=f"{_build_origin(resolved_url)}/works/{work_id}/episodes/{episode_id}")]
+
+    return PreviewResponse(
+        title=title,
+        author=author,
+        synopsis=synopsis,
+        cover=cover,
+        chapterCount=len(chapters),
+        chapters=chapters,
+    )
+
+
+async def _preview_syosetu(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    html, resolved_url = await _fetch_site_html(source_url)
+    soup = BeautifulSoup(html, "html.parser")
+    fallback_title = payload.title or Path(urlparse(source_url).path).stem or "未命名小说"
+    title = _clean_title_suffix(_extract_title(soup, fallback_title), (" - 小説家になろう",))
+    synopsis_node = soup.select_one(".p-novel__summary")
+    synopsis = synopsis_node.get_text(" ", strip=True) if synopsis_node else _extract_synopsis(soup)
+    author = None
+    for selector in ("meta[name='twitter:creator']", ".p-novel__author", ".novel_writername"):
+        node = soup.select_one(selector)
+        if node is None:
+            continue
+        author = (str(node.get("content") or "").strip() if node.name == "meta" else node.get_text(" ", strip=True))
+        if author:
+            break
+    cover = _extract_cover(soup, resolved_url)
+    chapters = _syosetu_chapters_from_soup(soup, resolved_url)
+    if not chapters:
+        chapters = [ChapterPreview(title=title, url=resolved_url)]
+
+    return PreviewResponse(
+        title=title,
+        author=author,
+        synopsis=synopsis,
+        cover=cover,
+        chapterCount=len(chapters),
+        chapters=chapters,
+    )
+
+
+async def _preview_pixiv(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    normalized = _normalize_source_url(source_url)
+    async with _build_http_client() as client:
+        series_id = _pixiv_series_id_from_url(normalized)
+        if series_id:
+            series_result = await _fetch_json(
+                client,
+                f"https://www.pixiv.net/ajax/novel/series/{series_id}",
+                _pixiv_api_headers(normalized),
+            )
+            titles_result = await _fetch_json(
+                client,
+                f"https://www.pixiv.net/ajax/novel/series/{series_id}/content_titles",
+                _pixiv_api_headers(normalized),
+            )
+            body = series_result["body"]
+            title_items = titles_result["body"]
+            if not isinstance(body, dict) or not isinstance(title_items, list):
+                raise ValueError("Pixiv 系列接口返回异常")
+            chapters = [
+                ChapterPreview(
+                    title=str(item.get("title") or f"章节 {index}"),
+                    url=f"https://www.pixiv.net/novel/show.php?id={item.get('id')}",
+                )
+                for index, item in enumerate(title_items, start=1)
+                if isinstance(item, dict) and item.get("available") and str(item.get("id") or "").strip()
+            ]
+            return PreviewResponse(
+                title=str(body.get("title") or payload.title or "未命名小说").strip(),
+                author=str(body.get("userName") or "").strip() or None,
+                synopsis=str(body.get("caption") or "").strip(),
+                cover=(
+                    str(body.get("cover", {}).get("urls", {}).get("original") or "")
+                    or str(body.get("cover", {}).get("urls", {}).get("1200x1200") or "")
+                    or str(body.get("firstEpisode", {}).get("url") or "")
+                    or None
+                ),
+                chapterCount=len(chapters),
+                chapters=chapters or [ChapterPreview(title=str(body.get("title") or "未命名小说"), url=normalized)],
+            )
+
+        novel_id = _pixiv_novel_id_from_url(normalized)
+        if not novel_id:
+            raise ValueError("无法识别 Pixiv 小说编号")
+        novel_result = await _fetch_json(
+            client,
+            f"https://www.pixiv.net/ajax/novel/{novel_id}",
+            _pixiv_api_headers(normalized),
+        )
+        body = novel_result["body"]
+        if not isinstance(body, dict):
+            raise ValueError("Pixiv 小说接口返回异常")
+        title = str(body.get("title") or payload.title or "未命名小说").strip()
+        return PreviewResponse(
+            title=title,
+            author=str(body.get("userName") or "").strip() or None,
+            synopsis=str(body.get("description") or "").strip(),
+            cover=str(body.get("coverUrl") or "").strip() or None,
+            chapterCount=1,
+            chapters=[ChapterPreview(title=title, url=normalized)],
+        )
+
+
+async def _preview_hameln(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    html, resolved_url = await _fetch_site_html(source_url)
+    soup = BeautifulSoup(html, "html.parser")
+    fallback_title = payload.title or Path(urlparse(source_url).path).stem or "未命名小说"
+    title = _clean_title_suffix(_extract_title(soup, fallback_title), (" - ハーメルン",))
+    synopsis = _extract_synopsis(soup)
+    author = _hameln_author_from_soup(soup) or _extract_author(soup)
+    cover = _extract_cover(soup, resolved_url)
+    chapters = _hameln_chapters_from_soup(soup, resolved_url)
+    if not chapters:
+        chapters = [ChapterPreview(title=title, url=resolved_url)]
+    return PreviewResponse(
+        title=title,
+        author=author,
+        synopsis=synopsis,
+        cover=cover,
+        chapterCount=len(chapters),
+        chapters=chapters,
+    )
+
+
+async def _preview_novelup(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    try:
+        html, resolved_url = await _fetch_site_html(source_url)
+    except Exception as exc:
+        try:
+            snapshot = await _fetch_with_edge_cdp(
+                source_url,
+                headless=True,
+                ready_expression="""
+                    (() => {
+                        const title = document.title || '';
+                        const bodyText = document.body?.innerText || '';
+                        return Boolean(title) && !title.includes('ERROR: The request could not be satisfied') && !bodyText.includes('403 ERROR');
+                    })()
+                """,
+                blocked_message="Novelup 当前访问被 CloudFront 拦截（403），当前环境下即使使用浏览器会话也无法直接访问该站点。",
+            )
+            html, resolved_url = snapshot.html, snapshot.resolved_url
+        except Exception as browser_exc:
+            raise ValueError("Novelup 当前访问被 CloudFront 拦截（403），当前环境下即使使用浏览器会话也无法直接访问该站点。") from browser_exc
+    soup = BeautifulSoup(html, "html.parser")
+    fallback_title = payload.title or Path(urlparse(source_url).path).stem or "未命名小说"
+    title = _extract_title(soup, fallback_title)
+    chapters = _extract_chapters(soup, resolved_url) or [ChapterPreview(title=title, url=resolved_url)]
+    return PreviewResponse(
+        title=title,
+        author=_extract_author(soup),
+        synopsis=_extract_synopsis(soup),
+        cover=_extract_cover(soup, resolved_url),
+        chapterCount=len(chapters),
+        chapters=chapters,
+    )
+
+
+async def _fetch_alphapolis_preview_html(source_url: str) -> tuple[str, str]:
+    snapshot = await _fetch_with_edge_cdp(
+        source_url,
+        headless=True,
+        ready_expression="""
+            (() => {
+                const html = document.documentElement.outerHTML || '';
+                return Boolean(document.querySelector('#app-cover-data')) && !html.includes('window.gokuProps');
+            })()
+        """,
+        blocked_message="Alphapolis 当前浏览器会话仍被 AWS WAF 拦截，暂时无法抓取该作品目录。",
+    )
+    return snapshot.html, snapshot.resolved_url
+
+
+async def _fetch_alphapolis_chapter_html(chapter_url: str) -> tuple[str, str]:
+    snapshot = await _fetch_with_edge_cdp(
+        chapter_url,
+        headless=False,
+        ready_expression="""
+            (() => {
+                const html = document.documentElement.outerHTML || '';
+                if (html.includes('window.gokuProps')) return false;
+                const body = document.querySelector('#novelBody');
+                if (!body) return false;
+                const inner = body.innerHTML || '';
+                const text = body.innerText || '';
+                const imageCount = body.querySelectorAll('img').length;
+                const blocked = inner.includes('g-recaptcha') || inner.includes('LoadingEpisode');
+                return !blocked && (text.trim().length >= 20 || imageCount > 0);
+            })()
+        """,
+        blocked_message="Alphapolis 章节正文当前仍然触发验证码或防护，暂时无法自动抓取。",
+    )
+    return snapshot.html, snapshot.resolved_url
+
+
+async def _preview_alphapolis(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    html, resolved_url = await _fetch_alphapolis_preview_html(source_url)
+    soup = BeautifulSoup(html, "html.parser")
+    cover_data = _alphapolis_cover_data_from_html(html)
+    content = cover_data.get("content") if isinstance(cover_data.get("content"), dict) else {}
+    fallback_title = payload.title or Path(urlparse(source_url).path).stem or "未命名小说"
+    title = str(content.get("title") or "").strip() or _clean_title_suffix(
+        _extract_title(soup, fallback_title),
+        (" | 小説投稿サイトのアルファポリス",),
+    )
+    author = None
+    user = content.get("user") if isinstance(content, dict) else None
+    if isinstance(user, dict):
+        author = str(user.get("name") or "").strip() or None
+    if not author:
+        author = _extract_author(soup)
+    cover = str(content.get("coverImageUrl") or "").strip() if isinstance(content, dict) else ""
+    cover = urljoin(resolved_url, cover) if cover else _extract_cover(soup, resolved_url)
+    chapters = _alphapolis_chapters_from_cover_data(cover_data, resolved_url) or [ChapterPreview(title=title, url=resolved_url)]
+    return PreviewResponse(
+        title=title,
+        author=author,
+        synopsis=_extract_synopsis(soup),
+        cover=cover,
+        chapterCount=len(chapters),
+        chapters=chapters,
+    )
+
+
 async def preview_from_url(payload: AddBookPayload) -> PreviewResponse:
     source_url = _normalize_source_url(str(payload.sourceUrl))
+    if _is_kakuyomu_url(source_url):
+        return await _preview_kakuyomu(source_url, payload)
+    if _is_syosetu_url(source_url) or _is_novel18_url(source_url):
+        return await _preview_syosetu(source_url, payload)
+    if _is_pixiv_url(source_url):
+        return await _preview_pixiv(source_url, payload)
+    if _is_hameln_url(source_url):
+        return await _preview_hameln(source_url, payload)
+    if _is_novelup_url(source_url):
+        return await _preview_novelup(source_url, payload)
+    if _is_alphapolis_url(source_url):
+        return await _preview_alphapolis(source_url, payload)
+
     html, resolved_url = await _fetch_preview_html(source_url)
     soup = BeautifulSoup(html, "html.parser")
     fallback_title = payload.title or Path(urlparse(source_url).path).stem or "未命名小说"
@@ -601,10 +1593,159 @@ def _chapter_lookup(manifest: dict) -> dict[int, dict]:
     return lookup
 
 
+def _extract_text_from_blocks(nodes: list[BeautifulSoup]) -> str:
+    blocks: list[str] = []
+    for node in nodes:
+        text = node.get_text("\n", strip=True)
+        if not text:
+            continue
+        blocks.append(text)
+    return "\n\n".join(block.strip() for block in blocks if block.strip()).strip()
+
+
+async def _fetch_kakuyomu_chapter_data(
+    client: httpx.AsyncClient,
+    chapter_url: str,
+    chapter_title: str = "",
+) -> ChapterFetchResult:
+    response = await _get_html_response(client, chapter_url, referer=chapter_url)
+    soup = BeautifulSoup(response.text, "html.parser")
+    body = soup.select_one(".widget-episodeBody, .js-episode-body")
+    if body is None:
+        raise ValueError("未能从 Kakuyomu 页面提取出正文内容")
+    for selector in ("script", "style", ".widget-toc", ".widget-episodeTitle"):
+        for node in body.select(selector):
+            node.decompose()
+    text = body.get_text("\n", strip=True)
+    image_urls: list[str] = []
+    for image in body.select("img"):
+        for key in ("data-src", "src"):
+            value = str(image.get(key) or "").strip()
+            if value:
+                absolute = urljoin(str(response.url), value)
+                if absolute not in image_urls:
+                    image_urls.append(absolute)
+                break
+    if not text and not image_urls:
+        raise ValueError("未能从 Kakuyomu 页面提取出正文内容")
+    illustration = _is_illustration_chapter(chapter_title)
+    if not text and image_urls:
+        text = _format_illustration_text(chapter_title or "插图", image_urls)
+        illustration = True
+    elif image_urls and illustration:
+        text = _append_image_links(text, image_urls)
+    return ChapterFetchResult(text=text, image_urls=image_urls, illustration=illustration)
+
+
+async def _fetch_syosetu_chapter_data(
+    client: httpx.AsyncClient,
+    chapter_url: str,
+    chapter_title: str = "",
+) -> ChapterFetchResult:
+    html, resolved_url = await _fetch_site_html(chapter_url, referer=_normalize_source_url(chapter_url))
+    soup = BeautifulSoup(html, "html.parser")
+    blocks = soup.select(".p-novel__text")
+    if not blocks:
+        body = soup.select_one("#novel_honbun")
+        if body is not None:
+            blocks = [body]
+    text = _extract_text_from_blocks(blocks)
+    if not text:
+        raise ValueError("未能从成为小说家吧页面提取出正文内容")
+    return ChapterFetchResult(text=text, image_urls=[], illustration=False)
+
+
+async def _fetch_hameln_chapter_data(
+    client: httpx.AsyncClient,
+    chapter_url: str,
+    chapter_title: str = "",
+) -> ChapterFetchResult:
+    html, _ = await _fetch_site_html(chapter_url, referer=_normalize_source_url(chapter_url))
+    soup = BeautifulSoup(html, "html.parser")
+    text = _hameln_chapter_text(soup)
+    if not text:
+        raise ValueError("未能从 Hameln 页面提取出正文内容")
+    return ChapterFetchResult(text=text, image_urls=[], illustration=False)
+
+
+async def _fetch_pixiv_chapter_data(
+    client: httpx.AsyncClient,
+    chapter_url: str,
+    chapter_title: str = "",
+) -> ChapterFetchResult:
+    novel_id = _pixiv_novel_id_from_url(chapter_url)
+    if not novel_id:
+        raise ValueError("无法识别 Pixiv 小说编号")
+    payload = await _fetch_json(client, f"https://www.pixiv.net/ajax/novel/{novel_id}", _pixiv_api_headers(chapter_url))
+    body = payload["body"]
+    if not isinstance(body, dict):
+        raise ValueError("Pixiv 小说接口返回异常")
+    text = _pixiv_content_to_text(str(body.get("content") or ""))
+    image_urls = _extract_pixiv_image_urls(body)
+    illustration = _is_illustration_chapter(chapter_title)
+    if not text and image_urls:
+        text = _format_illustration_text(chapter_title or str(body.get("title") or "插图"), image_urls)
+        illustration = True
+    elif image_urls and illustration:
+        text = _append_image_links(text, image_urls)
+    if not text:
+        raise ValueError("未能从 Pixiv 页面提取出正文内容")
+    return ChapterFetchResult(text=text, image_urls=image_urls, illustration=illustration)
+
+
+async def _fetch_alphapolis_chapter_data(
+    client: httpx.AsyncClient,
+    chapter_url: str,
+    chapter_title: str = "",
+) -> ChapterFetchResult:
+    html, resolved_url = await _fetch_alphapolis_chapter_html(chapter_url)
+    soup = BeautifulSoup(html, "html.parser")
+    body = soup.select_one("#novelBody")
+    if body is None:
+        raise ValueError("未能在 Alphapolis 页面中找到正文容器")
+
+    for selector in ("script", "style", ".dots-indicator", ".g-recaptcha", "#LoadingEpisode"):
+        for node in body.select(selector):
+            node.decompose()
+
+    image_urls: list[str] = []
+    for image in body.select("img"):
+        for key in ("data-src", "data-original", "src"):
+            value = str(image.get(key) or "").strip()
+            if value:
+                absolute_url = urljoin(resolved_url, value)
+                if absolute_url not in image_urls:
+                    image_urls.append(absolute_url)
+                break
+
+    text = body.get_text("\n", strip=True)
+    illustration = _is_illustration_chapter(chapter_title)
+    if not text and image_urls:
+        text = _format_illustration_text(chapter_title or "插图", image_urls)
+        illustration = True
+    elif image_urls and illustration:
+        text = _append_image_links(text, image_urls)
+    if not text and not image_urls:
+        raise ValueError("未能从 Alphapolis 页面提取出正文内容")
+    return ChapterFetchResult(text=text, image_urls=image_urls, illustration=illustration)
+
+
 async def _fetch_chapter_data(client: httpx.AsyncClient, chapter_url: str, chapter_title: str = "") -> ChapterFetchResult:
     try:
         if _is_linovelib_url(chapter_url):
             return await _fetch_linovelib_chapter_data(client, chapter_url, chapter_title)
+        if _is_kakuyomu_url(chapter_url):
+            return await _fetch_kakuyomu_chapter_data(client, chapter_url, chapter_title)
+        if _is_syosetu_url(chapter_url) or _is_novel18_url(chapter_url):
+            return await _fetch_syosetu_chapter_data(client, chapter_url, chapter_title)
+        if _is_pixiv_url(chapter_url):
+            return await _fetch_pixiv_chapter_data(client, chapter_url, chapter_title)
+        if _is_hameln_url(chapter_url):
+            return await _fetch_hameln_chapter_data(client, chapter_url, chapter_title)
+        if _is_novelup_url(chapter_url):
+            raise ValueError("Novelup 当前访问被 CloudFront 拦截（403），当前环境下即使使用浏览器会话也无法直接抓取章节。")
+        if _is_alphapolis_url(chapter_url):
+            return await _fetch_alphapolis_chapter_data(client, chapter_url, chapter_title)
 
         response = await client.get(chapter_url, headers=_request_headers(chapter_url))
         response.raise_for_status()
@@ -642,14 +1783,22 @@ def _request_headers(url: str, referer: str | None = None) -> dict[str, str]:
     parsed = urlparse(url)
     headers["Referer"] = referer or f"{parsed.scheme}://{parsed.netloc}/"
     headers["Sec-Fetch-Site"] = "same-origin" if referer else "none"
+    if _is_syosetu_url(url) or _is_novel18_url(url) or _is_hameln_url(url):
+        headers["Accept-Encoding"] = "identity"
+        headers["Accept-Language"] = "ja,en;q=0.9"
+    if _is_pixiv_url(url):
+        headers["Accept-Language"] = "ja,en;q=0.9"
     return headers
 
 
 def _build_http_client() -> httpx.AsyncClient:
     try:
-        return httpx.AsyncClient(follow_redirects=True, timeout=20.0, headers=DEFAULT_HEADERS, http2=True)
+        client = httpx.AsyncClient(follow_redirects=True, timeout=20.0, headers=DEFAULT_HEADERS, http2=True)
     except ImportError:
-        return httpx.AsyncClient(follow_redirects=True, timeout=20.0, headers=DEFAULT_HEADERS)
+        client = httpx.AsyncClient(follow_redirects=True, timeout=20.0, headers=DEFAULT_HEADERS)
+    client.cookies.set("over18", "yes", domain=".syosetu.com")
+    client.cookies.set("over18", "yes", domain=".novel18.syosetu.com")
+    return client
 
 
 async def _throttle_linovelib_request(url: str) -> None:

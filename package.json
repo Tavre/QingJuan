@@ -1,7 +1,7 @@
 {
   "name": "qingjuan-desktop",
   "private": true,
-  "version": "0.1.10",
+  "version": "0.2.0",
   "description": "青卷：基于 Tauri 2、Vue 3 与 Python 的桌面小说集成工具。",
   "author": "Tavre",
   "license": "GPL-3.0-only",

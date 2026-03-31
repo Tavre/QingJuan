@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
-from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, UnidentifiedImageError
 
 from .models import AddBookPayload, ChapterPreview, PreviewResponse, TranslationSettings
 
@@ -174,7 +174,7 @@ BIKA_SIGNATURE_SUFFIX = "C69BAF41DA5ABD1FFEDC6D2FEA56B"
 BIKA_SIGNATURE_KEY = "~d}$Q7$eIni=V)9\\RK/P.RM4;9[7|@/CA}b~OW!3?EV`:<>M7pddUBL5n|0/*Cn"
 _BIKA_TOKEN_CACHE: dict[str, str] = {}
 _COMIC_18_SCRAMBLE_ID_CACHE: dict[str, int] = {}
-MANGA_RENDERER_VERSION = 3
+MANGA_RENDERER_VERSION = 5
 
 @dataclass
 class DownloadResult:
@@ -1278,7 +1278,7 @@ async def translate_selected_chapters(
             repair_18comic_chapter_images(book_dir, manifest, chapter_index)
             page_translations, translated_image_files = await _translate_manga_pages_with_command(
                 settings=settings,
-                source_language=language,
+                target_language=language,
                 chapter_index=chapter_index,
                 title=source_title,
                 image_files=[item for item in chapter.get("image_files", []) if isinstance(item, str)],
@@ -1322,7 +1322,7 @@ async def translate_selected_chapters(
                 translated_text = await _translate_text(
                     client=client,
                     settings=settings,
-                    source_language=language,
+                    target_language=language,
                     title=source_title,
                     content=source_text,
                 )
@@ -1350,9 +1350,11 @@ async def _notify_task_log(
         await result
 
 
-def _manga_translation_target_language(source_language: str) -> str:
-    normalized = str(source_language or "").strip()
-    return "英文" if normalized == "中文" else "中文"
+def _resolve_translation_target_language(language: str) -> str:
+    normalized = str(language or "").strip()
+    if normalized in {"中文", "英文", "日文"}:
+        return normalized
+    return "中文"
 
 
 def _resolve_manga_image_provider_config(
@@ -1385,7 +1387,6 @@ def _resolve_manga_image_provider_config(
 
 def _build_manga_image_edit_prompt(
     *,
-    source_language: str,
     target_language: str,
     chapter_title: str,
     chapter_index: int,
@@ -1394,7 +1395,7 @@ def _build_manga_image_edit_prompt(
 ) -> str:
     return (
         "Edit this manga page in place.\n"
-        f"- Translate all visible text from {source_language} to {target_language}.\n"
+        f"- Auto-detect the original language and translate all visible text into {target_language}.\n"
         "- Remove the original text completely and replace it with the translated text directly inside the image.\n"
         "- Keep panel layout, character art, bubble shapes, reading order, line art, screentone, and background unchanged.\n"
         "- Keep translated text inside the original bubble or caption region whenever possible.\n"
@@ -1625,11 +1626,165 @@ def _load_local_render_font(font_size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
+VERTICAL_PUNCTUATION_MAP: dict[str, str] = {
+    ",": "︐",
+    "，": "︐",
+    "、": "︑",
+    ".": "︒",
+    "。": "︒",
+    ":": "︓",
+    "：": "︓",
+    ";": "︔",
+    "；": "︔",
+    "!": "︕",
+    "！": "︕",
+    "?": "︖",
+    "？": "︖",
+    "(": "︵",
+    "（": "︵",
+    ")": "︶",
+    "）": "︶",
+    "[": "﹇",
+    "【": "︻",
+    "]": "﹈",
+    "】": "︼",
+    "{": "︷",
+    "}": "︸",
+    "<": "︿",
+    "《": "︽",
+    ">": "﹀",
+    "》": "︾",
+    "「": "﹁",
+    "」": "﹂",
+    "『": "﹃",
+    "』": "﹄",
+    "“": "﹁",
+    "”": "﹂",
+    "‘": "﹃",
+    "’": "﹄",
+    "—": "︱",
+    "－": "︱",
+    "-": "︱",
+    "_": "︳",
+    "…": "︙",
+}
+
+VERTICAL_PUNCTUATION_OFFSET_RATIOS: dict[str, tuple[float, float]] = {
+    "︐": (0.0, -0.10),
+    "︑": (0.0, -0.10),
+    "︒": (0.0, -0.14),
+    "︓": (0.0, -0.08),
+    "︔": (0.0, -0.08),
+    "︕": (0.0, -0.06),
+    "︖": (0.0, -0.06),
+    "︙": (0.0, -0.05),
+    "︱": (0.0, -0.02),
+    "︳": (0.0, -0.02),
+}
+
+
 def _split_text_paragraphs(text: str) -> list[str]:
     content = str(text or "").replace("\r", "").strip()
     if not content:
         return []
     return [item.strip() for item in content.split("\n") if item.strip()]
+
+
+def _normalize_vertical_text(text: str) -> str:
+    content = str(text or "")
+    if not content:
+        return ""
+    content = re.sub(r"(?:\.|．|。){3,}", "︙", content)
+    content = content.replace("……", "︙")
+    content = content.replace("...", "︙")
+    normalized_chars: list[str] = []
+    for raw_char in content:
+        if raw_char == "\n":
+            normalized_chars.append(raw_char)
+            continue
+        if raw_char.isspace():
+            normalized_chars.append("　")
+            continue
+        normalized_chars.append(VERTICAL_PUNCTUATION_MAP.get(raw_char, raw_char))
+    return "".join(normalized_chars)
+
+
+def _measure_text_token(
+    draw: ImageDraw.ImageDraw,
+    token: str,
+    font: ImageFont.ImageFont,
+) -> dict[str, Any]:
+    bbox = draw.textbbox((0, 0), token, font=font)
+    return {
+        "text": token,
+        "bbox": bbox,
+        "width": max(1, bbox[2] - bbox[0]),
+        "height": max(1, bbox[3] - bbox[1]),
+        "offset_ratio": VERTICAL_PUNCTUATION_OFFSET_RATIOS.get(token, (0.0, 0.0)),
+    }
+
+
+def _finalize_vertical_column(
+    chars: list[dict[str, Any]],
+    char_gap: int,
+) -> dict[str, Any]:
+    column_width = max((int(item.get("width") or 0) for item in chars), default=0)
+    column_height = 0
+    for index, item in enumerate(chars):
+        if index:
+            column_height += char_gap
+        column_height += int(item.get("height") or 0)
+    return {
+        "chars": chars,
+        "width": column_width,
+        "height": column_height,
+    }
+
+
+def _balance_vertical_characters(
+    chars: list[dict[str, Any]],
+    char_gap: int,
+    column_count: int,
+) -> list[dict[str, Any]]:
+    if not chars:
+        return []
+    if column_count <= 1:
+        return [_finalize_vertical_column(chars, char_gap)]
+
+    total_height = 0
+    for index, item in enumerate(chars):
+        if index:
+            total_height += char_gap
+        total_height += int(item.get("height") or 0)
+    target_height = total_height / max(column_count, 1)
+
+    columns: list[dict[str, Any]] = []
+    start = 0
+    total_chars = len(chars)
+    while start < total_chars:
+        remaining_columns = column_count - len(columns)
+        remaining_chars = total_chars - start
+        if remaining_columns <= 1:
+            end = total_chars
+        else:
+            max_take = remaining_chars - (remaining_columns - 1)
+            current_height = 0
+            end = start
+            while end < start + max_take:
+                char_height = int(chars[end].get("height") or 0)
+                candidate_height = current_height + (char_gap if end > start else 0) + char_height
+                remaining_after = total_chars - (end + 1)
+                if end > start and candidate_height > target_height and remaining_after >= remaining_columns - 1:
+                    break
+                current_height = candidate_height
+                end += 1
+                if current_height >= target_height and remaining_after >= remaining_columns - 1:
+                    break
+            if end <= start:
+                end = start + 1
+        columns.append(_finalize_vertical_column(chars[start:end], char_gap))
+        start = end
+    return columns
 
 
 def _wrap_text_for_box(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: int) -> list[str]:
@@ -1723,32 +1878,26 @@ def _build_vertical_columns(
     max_height: int,
     char_gap: int,
 ) -> list[dict[str, Any]]:
-    paragraphs = _split_text_paragraphs(text)
+    paragraphs = _split_text_paragraphs(_normalize_vertical_text(text))
     if not paragraphs:
         return []
 
     columns: list[dict[str, Any]] = []
     for paragraph in paragraphs:
-        current_chars: list[dict[str, Any]] = []
-        current_width = 0
-        current_height = 0
-        for raw_char in paragraph:
-            char = "　" if raw_char.isspace() else raw_char
-            bbox = draw.textbbox((0, 0), char, font=font)
-            char_width = max(1, bbox[2] - bbox[0])
-            char_height = max(1, bbox[3] - bbox[1])
-            candidate_height = current_height + (char_gap if current_chars else 0) + char_height
-            if current_chars and candidate_height > max_height:
-                columns.append({"chars": current_chars, "width": current_width, "height": current_height})
-                current_chars = [{"text": char, "width": char_width, "height": char_height}]
-                current_width = char_width
-                current_height = char_height
-            else:
-                current_chars.append({"text": char, "width": char_width, "height": char_height})
-                current_width = max(current_width, char_width)
-                current_height = candidate_height if len(current_chars) > 1 else char_height
-        if current_chars:
-            columns.append({"chars": current_chars, "width": current_width, "height": current_height})
+        paragraph_chars = [_measure_text_token(draw, raw_char, font) for raw_char in paragraph if raw_char]
+        if not paragraph_chars:
+            continue
+
+        column_count = 1
+        balanced_columns = [_finalize_vertical_column(paragraph_chars, char_gap)]
+        while column_count < len(paragraph_chars):
+            balanced_columns = _balance_vertical_characters(paragraph_chars, char_gap, column_count)
+            if balanced_columns and max(int(column.get("height") or 0) for column in balanced_columns) <= max_height:
+                break
+            column_count += 1
+        else:
+            balanced_columns = _balance_vertical_characters(paragraph_chars, char_gap, len(paragraph_chars))
+        columns.extend(balanced_columns)
     return columns
 
 
@@ -1880,6 +2029,342 @@ def _resolve_region_insets(
     return inset_x, inset_y
 
 
+def _resolve_region_fill_shape(
+    region: dict[str, Any],
+    bbox: tuple[int, int, int, int],
+    direction: str,
+) -> str:
+    normalized = str(region.get("shape") or "").strip().lower()
+    alias_map = {
+        "oval": "ellipse",
+        "ellipse": "ellipse",
+        "circle": "ellipse",
+        "round": "roundrect",
+        "rounded": "roundrect",
+        "roundrect": "roundrect",
+        "rounded_rectangle": "roundrect",
+        "box": "rect",
+        "rect": "rect",
+        "rectangle": "rect",
+    }
+    if normalized in alias_map:
+        return alias_map[normalized]
+
+    x1, y1, x2, y2 = bbox
+    width = max(1, x2 - x1)
+    height = max(1, y2 - y1)
+    aspect_ratio = max(width, height) / max(1, min(width, height))
+    if direction == "vertical":
+        return "ellipse"
+    if aspect_ratio <= 1.45:
+        return "ellipse"
+    if aspect_ratio <= 2.8:
+        return "roundrect"
+    return "rect"
+
+
+def _fill_region_background(
+    draw: ImageDraw.ImageDraw,
+    bbox: tuple[int, int, int, int],
+    fill_color: tuple[int, int, int],
+    fill_shape: str,
+) -> None:
+    x1, y1, x2, y2 = bbox
+    if fill_shape == "ellipse":
+        draw.ellipse((x1, y1, x2, y2), fill=fill_color)
+        return
+    if fill_shape == "roundrect":
+        radius = max(6, min((x2 - x1) // 2, (y2 - y1) // 2, 24))
+        try:
+            draw.rounded_rectangle((x1, y1, x2, y2), radius=radius, fill=fill_color)
+            return
+        except AttributeError:
+            pass
+    draw.rectangle((x1, y1, x2, y2), fill=fill_color)
+
+
+def _color_distance_manhattan(left: tuple[int, int, int], right: tuple[int, int, int]) -> int:
+    return sum(abs(int(left[index]) - int(right[index])) for index in range(3))
+
+
+def _color_luminance(color: tuple[int, int, int]) -> float:
+    return 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]
+
+
+def _color_saturation(color: tuple[int, int, int]) -> int:
+    return max(color) - min(color)
+
+
+def _build_region_shape_mask(size: tuple[int, int], fill_shape: str) -> Image.Image:
+    width, height = size
+    mask = Image.new("L", (max(1, width), max(1, height)), 0)
+    draw = ImageDraw.Draw(mask)
+    left, top, right, bottom = 0, 0, max(0, width - 1), max(0, height - 1)
+    if fill_shape == "ellipse":
+        draw.ellipse((left, top, right, bottom), fill=255)
+        return mask
+    if fill_shape == "roundrect":
+        radius = max(6, min((right - left) // 2, (bottom - top) // 2, 24))
+        try:
+            draw.rounded_rectangle((left, top, right, bottom), radius=radius, fill=255)
+            return mask
+        except AttributeError:
+            pass
+    draw.rectangle((left, top, right, bottom), fill=255)
+    return mask
+
+
+def _seed_positions_for_region(size: tuple[int, int]) -> list[tuple[int, int]]:
+    width, height = size
+    seed_offsets = (
+        (0.50, 0.50),
+        (0.50, 0.34),
+        (0.50, 0.66),
+        (0.34, 0.50),
+        (0.66, 0.50),
+        (0.38, 0.38),
+        (0.62, 0.38),
+        (0.38, 0.62),
+        (0.62, 0.62),
+        (0.50, 0.22),
+        (0.50, 0.78),
+    )
+    points: list[tuple[int, int]] = []
+    for ratio_x, ratio_y in seed_offsets:
+        x = min(width - 1, max(0, int(round((width - 1) * ratio_x))))
+        y = min(height - 1, max(0, int(round((height - 1) * ratio_y))))
+        point = (x, y)
+        if point not in points:
+            points.append(point)
+    return points
+
+
+def _score_bubble_seed(
+    pixel: tuple[int, int, int],
+    fill_color: tuple[int, int, int],
+) -> float:
+    luminance = _color_luminance(pixel)
+    fill_luminance = _color_luminance(fill_color)
+    distance = _color_distance_manhattan(pixel, fill_color)
+    if fill_luminance >= 170:
+        return luminance * 1.4 - distance * 1.15 - _color_saturation(pixel) * 0.12
+    return -distance * 1.1 - abs(luminance - fill_luminance) * 0.45 - _color_saturation(pixel) * 0.08
+
+
+def _pixel_matches_bubble_fill(
+    pixel: tuple[int, int, int],
+    seed_color: tuple[int, int, int],
+    fill_color: tuple[int, int, int],
+) -> bool:
+    fill_luminance = _color_luminance(fill_color)
+    seed_luminance = _color_luminance(seed_color)
+    pixel_luminance = _color_luminance(pixel)
+    distance_from_fill = _color_distance_manhattan(pixel, fill_color)
+    distance_from_seed = _color_distance_manhattan(pixel, seed_color)
+    luminance_delta = abs(pixel_luminance - seed_luminance)
+    saturation = _color_saturation(pixel)
+
+    if fill_luminance >= 185:
+        return (
+            distance_from_seed <= 72
+            or (
+                distance_from_fill <= 112
+                and pixel_luminance >= max(148.0, seed_luminance - 44.0)
+                and saturation <= 100
+            )
+        )
+    if fill_luminance >= 135:
+        return distance_from_seed <= 62 or (distance_from_fill <= 90 and luminance_delta <= 48.0 and saturation <= 112)
+    return distance_from_seed <= 56 or (distance_from_fill <= 78 and luminance_delta <= 36.0)
+
+
+def _extract_precise_bubble_mask(
+    image: Image.Image,
+    bbox: tuple[int, int, int, int],
+    fill_color: tuple[int, int, int],
+    fill_shape: str,
+) -> Image.Image:
+    x1, y1, x2, y2 = bbox
+    crop = image.crop((x1, y1, x2, y2)).convert("RGB")
+    width, height = crop.size
+    if width < 4 or height < 4:
+        return _build_region_shape_mask((width, height), fill_shape)
+
+    blur_radius = max(1.2, min(4.0, min(width, height) / 34.0))
+    blurred = crop.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    blurred_pixels = blurred.load()
+    shape_mask = _build_region_shape_mask((width, height), fill_shape)
+    shape_pixels = shape_mask.load()
+
+    seeds: list[tuple[float, int, int, tuple[int, int, int]]] = []
+    for seed_x, seed_y in _seed_positions_for_region((width, height)):
+        if shape_pixels[seed_x, seed_y] <= 0:
+            continue
+        seed_color = tuple(int(channel) for channel in blurred_pixels[seed_x, seed_y])
+        seeds.append((_score_bubble_seed(seed_color, fill_color), seed_x, seed_y, seed_color))
+    if not seeds:
+        return shape_mask
+    seeds.sort(key=lambda item: item[0], reverse=True)
+
+    best_mask: Image.Image | None = None
+    best_area = 0
+    neighbor_offsets = ((1, 0), (-1, 0), (0, 1), (0, -1))
+    for _, seed_x, seed_y, seed_color in seeds[:6]:
+        if shape_pixels[seed_x, seed_y] <= 0:
+            continue
+
+        visited: set[tuple[int, int]] = set()
+        queue: deque[tuple[int, int]] = deque([(seed_x, seed_y)])
+        component_mask = Image.new("L", (width, height), 0)
+        component_pixels = component_mask.load()
+        area = 0
+
+        while queue:
+            current_x, current_y = queue.popleft()
+            if (current_x, current_y) in visited:
+                continue
+            visited.add((current_x, current_y))
+
+            if current_x < 0 or current_x >= width or current_y < 0 or current_y >= height:
+                continue
+            if shape_pixels[current_x, current_y] <= 0:
+                continue
+
+            current_color = tuple(int(channel) for channel in blurred_pixels[current_x, current_y])
+            if not _pixel_matches_bubble_fill(current_color, seed_color, fill_color):
+                continue
+
+            if component_pixels[current_x, current_y] == 0:
+                component_pixels[current_x, current_y] = 255
+                area += 1
+            for offset_x, offset_y in neighbor_offsets:
+                queue.append((current_x + offset_x, current_y + offset_y))
+
+        if area > best_area:
+            best_mask = component_mask
+            best_area = area
+
+    min_area_ratio = 0.14 if fill_shape == "ellipse" else 0.10 if fill_shape == "roundrect" else 0.08
+    min_area = max(24, int(width * height * min_area_ratio))
+    if best_mask is None or best_area < min_area:
+        return shape_mask
+
+    expanded_mask = best_mask.filter(ImageFilter.MaxFilter(7)).filter(ImageFilter.MinFilter(3))
+    inner_shape_kernel = 7 if fill_shape == "ellipse" else 5
+    inner_shape_mask = shape_mask.filter(ImageFilter.MinFilter(inner_shape_kernel))
+    refined_mask = ImageChops.multiply(ImageChops.lighter(expanded_mask, inner_shape_mask), shape_mask)
+    if refined_mask.getbbox() is None:
+        return shape_mask
+    return refined_mask
+
+
+def _resolve_mask_content_box(
+    mask: Image.Image,
+    fill_shape: str,
+    direction: str,
+) -> tuple[int, int, int, int] | None:
+    mask_bbox = mask.getbbox()
+    if mask_bbox is None:
+        return None
+
+    left, top, right, bottom = mask_bbox
+    width = right - left
+    height = bottom - top
+    if width < 16 or height < 16:
+        return None
+
+    pixels = mask.load()
+    row_ratio = 0.60 if fill_shape == "ellipse" else 0.42 if fill_shape == "roundrect" else 0.20
+    col_ratio = 0.54 if fill_shape == "ellipse" else 0.42 if fill_shape == "roundrect" else 0.20
+    if direction == "vertical" and fill_shape == "ellipse":
+        row_ratio = 0.56
+        col_ratio = 0.48
+
+    row_widths: list[tuple[int, int]] = []
+    max_row_width = 0
+    for current_y in range(top, bottom):
+        row_left: int | None = None
+        row_right: int | None = None
+        for current_x in range(left, right):
+            if pixels[current_x, current_y] <= 0:
+                continue
+            if row_left is None:
+                row_left = current_x
+            row_right = current_x
+        if row_left is None or row_right is None:
+            continue
+        row_width = row_right - row_left + 1
+        row_widths.append((current_y, row_width))
+        max_row_width = max(max_row_width, row_width)
+
+    col_heights: list[tuple[int, int]] = []
+    max_col_height = 0
+    for current_x in range(left, right):
+        column_top: int | None = None
+        column_bottom: int | None = None
+        for current_y in range(top, bottom):
+            if pixels[current_x, current_y] <= 0:
+                continue
+            if column_top is None:
+                column_top = current_y
+            column_bottom = current_y
+        if column_top is None or column_bottom is None:
+            continue
+        column_height = column_bottom - column_top + 1
+        col_heights.append((current_x, column_height))
+        max_col_height = max(max_col_height, column_height)
+
+    if max_row_width <= 0 or max_col_height <= 0:
+        return None
+
+    qualified_rows = [
+        current_y
+        for current_y, row_width in row_widths
+        if row_width >= max(8, int(round(max_row_width * row_ratio)))
+    ]
+    qualified_cols = [
+        current_x
+        for current_x, column_height in col_heights
+        if column_height >= max(8, int(round(max_col_height * col_ratio)))
+    ]
+
+    if not qualified_rows or not qualified_cols:
+        return mask_bbox
+
+    content_left = qualified_cols[0]
+    content_top = qualified_rows[0]
+    content_right = qualified_cols[-1] + 1
+    content_bottom = qualified_rows[-1] + 1
+
+    content_width = content_right - content_left
+    content_height = content_bottom - content_top
+    pad_x = max(2, min(10, content_width // (9 if direction == "vertical" else 12)))
+    pad_y = max(2, min(10, content_height // (12 if direction == "vertical" else 10)))
+
+    content_left = min(content_right - 8, content_left + pad_x)
+    content_top = min(content_bottom - 8, content_top + pad_y)
+    content_right = max(content_left + 8, content_right - pad_x)
+    content_bottom = max(content_top + 8, content_bottom - pad_y)
+
+    if content_right - content_left < 16 or content_bottom - content_top < 16:
+        return mask_bbox
+    return content_left, content_top, content_right, content_bottom
+
+
+def _apply_region_mask_fill(
+    canvas: Image.Image,
+    bbox: tuple[int, int, int, int],
+    fill_color: tuple[int, int, int],
+    mask: Image.Image,
+) -> None:
+    if mask.getbbox() is None:
+        return
+    x1, y1, x2, y2 = bbox
+    fill_layer = Image.new("RGBA", (max(1, x2 - x1), max(1, y2 - y1)), fill_color + (255,))
+    softened_mask = mask.filter(ImageFilter.GaussianBlur(radius=0.6))
+    canvas.paste(fill_layer, (x1, y1), softened_mask)
+
+
 def _render_text_layout(
     draw: ImageDraw.ImageDraw,
     region_left: int,
@@ -1909,9 +2394,11 @@ def _render_text_layout(
                 char = str(char_info.get("text") or "")
                 char_width = int(char_info.get("width") or 0)
                 char_height = int(char_info.get("height") or 0)
-                glyph_bbox = draw.textbbox((0, 0), char, font=font)
-                char_x = column_left + max(0, (column_width - char_width) / 2) - glyph_bbox[0]
-                char_y = cursor_y - glyph_bbox[1]
+                glyph_bbox = char_info.get("bbox") or draw.textbbox((0, 0), char, font=font)
+                offset_x_ratio, offset_y_ratio = char_info.get("offset_ratio") or (0.0, 0.0)
+                font_size = int(layout.get("font_size") or 0)
+                char_x = column_left + max(0, (column_width - char_width) / 2) - glyph_bbox[0] + font_size * offset_x_ratio
+                char_y = cursor_y - glyph_bbox[1] + font_size * offset_y_ratio
                 draw.text((char_x, char_y), char, font=font, fill=text_color)
                 cursor_y += char_height + char_gap
             current_right = column_left - column_gap
@@ -1945,20 +2432,21 @@ def _render_text_layout(
 
 def _build_manga_chat_layout_prompt(
     *,
-    source_language: str,
     target_language: str,
     image_size: tuple[int, int],
 ) -> str:
     width, height = image_size
     return (
         "You are a manga page translation layout analyzer. "
-        f"Detect every readable text region and translate from {source_language} to {target_language}. "
+        f"Detect every readable text region and translate it into {target_language}. "
         "Return JSON only. Do not output markdown or explanations. "
-        'JSON schema: {"regions":[{"bbox":[x1,y1,x2,y2],"source_text":"...","translation":"...","background":"#RRGGBB","text_color":"#RRGGBB","direction":"vertical|horizontal","align":"center","padding_ratio":0.72}]}. '
+        'JSON schema: {"regions":[{"bbox":[x1,y1,x2,y2],"source_text":"...","translation":"...","background":"#RRGGBB","text_color":"#RRGGBB","direction":"vertical|horizontal","align":"center","padding_ratio":0.72,"shape":"ellipse|roundrect|rect"}]}. '
         f"Coordinates must use the original image pixels. Original image size: {width}x{height}. "
+        "Auto-detect the original language from the image. "
         "Prefer one region per speech bubble, caption box, or sound effect block. "
         "For tall speech bubbles, prefer direction=vertical. For wide speech bubbles or narration boxes, prefer direction=horizontal. "
         "padding_ratio must be a number between 0.55 and 0.90 describing the safe inner area for redrawing text. "
+        "shape should describe the original bubble body when possible. "
         "translation must be ready to render directly inside the original bubble."
     )
 
@@ -1971,7 +2459,6 @@ async def _request_manga_chat_layout_payload(
     api_key: str,
     model: str,
     image_path: Path,
-    source_language: str,
     target_language: str,
     timeout_seconds: int,
 ) -> dict[str, Any]:
@@ -1980,7 +2467,6 @@ async def _request_manga_chat_layout_payload(
     image_bytes = image_path.read_bytes()
     image_b64 = base64.b64encode(image_bytes).decode("ascii")
     prompt = _build_manga_chat_layout_prompt(
-        source_language=source_language,
         target_language=target_language,
         image_size=image_size,
     )
@@ -2054,23 +2540,31 @@ def _render_manga_chat_layout_to_image(
         text_color = _resolve_text_color(fill_color, region.get("text_color"))
         x1, y1, x2, y2 = bbox
         preferred_direction = region.get("direction")
-        layout = _fit_text_layout_to_box(translation, (max(8, x2 - x1), max(8, y2 - y1)), preferred_direction)
-        inset_x, inset_y = _resolve_region_insets(region, bbox, str(layout.get("direction") or "horizontal"))
-        erase_inset_x = max(1, inset_x // 3)
-        erase_inset_y = max(1, inset_y // 4)
-        erase_left = min(x1 + erase_inset_x, x2 - 1)
-        erase_top = min(y1 + erase_inset_y, y2 - 1)
-        erase_right = max(erase_left + 1, x2 - erase_inset_x)
-        erase_bottom = max(erase_top + 1, y2 - erase_inset_y)
-        draw.rectangle((erase_left, erase_top, erase_right, erase_bottom), fill=fill_color)
+        initial_layout = _fit_text_layout_to_box(translation, (max(8, x2 - x1), max(8, y2 - y1)), preferred_direction)
+        resolved_direction = str(initial_layout.get("direction") or "horizontal")
+        fill_shape = _resolve_region_fill_shape(region, bbox, resolved_direction)
+        bubble_mask = _extract_precise_bubble_mask(canvas, bbox, fill_color, fill_shape)
+        _apply_region_mask_fill(canvas, bbox, fill_color, bubble_mask)
+        draw = ImageDraw.Draw(canvas)
 
-        box_width = max(8, x2 - x1 - inset_x * 2)
-        box_height = max(8, y2 - y1 - inset_y * 2)
-        layout = _fit_text_layout_to_box(translation, (box_width, box_height), preferred_direction)
+        content_box = _resolve_mask_content_box(bubble_mask, fill_shape, resolved_direction)
+        if content_box is None:
+            inset_x, inset_y = _resolve_region_insets(region, bbox, resolved_direction)
+            text_left = x1 + inset_x
+            text_top = y1 + inset_y
+            box_width = max(8, x2 - x1 - inset_x * 2)
+            box_height = max(8, y2 - y1 - inset_y * 2)
+        else:
+            text_left = x1 + content_box[0]
+            text_top = y1 + content_box[1]
+            box_width = max(8, content_box[2] - content_box[0])
+            box_height = max(8, content_box[3] - content_box[1])
+
+        layout = _fit_text_layout_to_box(translation, (box_width, box_height), preferred_direction or resolved_direction)
         _render_text_layout(
             draw,
-            x1 + inset_x,
-            y1 + inset_y,
+            text_left,
+            text_top,
             (box_width, box_height),
             layout,
             text_color,
@@ -2091,7 +2585,6 @@ async def _translate_manga_page_with_chat_completions(
     api_key: str,
     model: str,
     image_path: Path,
-    source_language: str,
     target_language: str,
     timeout_seconds: int,
 ) -> tuple[bytes, str]:
@@ -2102,7 +2595,6 @@ async def _translate_manga_page_with_chat_completions(
         api_key=api_key,
         model=model,
         image_path=image_path,
-        source_language=source_language,
         target_language=target_language,
         timeout_seconds=timeout_seconds,
     )
@@ -2247,7 +2739,7 @@ async def _request_manga_image_edit_bytes(
 async def _translate_manga_pages_with_command(
     *,
     settings: TranslationSettings,
-    source_language: str,
+    target_language: str,
     chapter_index: int,
     title: str,
     image_files: list[str],
@@ -2258,7 +2750,7 @@ async def _translate_manga_pages_with_command(
         raise ValueError("漫画章节没有可翻译的页面图片")
 
     provider, base_url, api_key, image_model = _resolve_manga_image_provider_config(settings)
-    target_language = _manga_translation_target_language(source_language)
+    resolved_target_language = _resolve_translation_target_language(target_language)
     page_translations: list[str] = []
     translated_image_files: list[str] = []
     total_pages = len(image_files)
@@ -2281,8 +2773,7 @@ async def _translate_manga_pages_with_command(
         )
 
         prompt = _build_manga_image_edit_prompt(
-            source_language=source_language,
-            target_language=target_language,
+            target_language=resolved_target_language,
             chapter_title=title,
             chapter_index=chapter_index,
             page_number=page_number,
@@ -2302,8 +2793,7 @@ async def _translate_manga_pages_with_command(
                 api_key=api_key,
                 model=image_model,
                 image_path=image_path,
-                source_language=source_language,
-                target_language=target_language,
+                target_language=resolved_target_language,
                 timeout_seconds=BUILTIN_MANGA_IMAGE_TIMEOUT_SECONDS,
             )
         else:
@@ -2331,8 +2821,7 @@ async def _translate_manga_pages_with_command(
                     api_key=api_key,
                     model=image_model,
                     image_path=image_path,
-                    source_language=source_language,
-                    target_language=target_language,
+                    target_language=resolved_target_language,
                     timeout_seconds=BUILTIN_MANGA_IMAGE_TIMEOUT_SECONDS,
                 )
         normalized_bytes = _ensure_png_image_bytes(translated_bytes)
@@ -4196,16 +4685,17 @@ def _image_request_headers(url: str, referer: str) -> dict[str, str]:
 async def _translate_text(
     client: httpx.AsyncClient,
     settings: TranslationSettings,
-    source_language: str,
+    target_language: str,
     title: str,
     content: str,
 ) -> str:
     provider = settings.defaultProvider
     provider_config = settings.providers[provider]
+    resolved_target_language = _resolve_translation_target_language(target_language)
     prompt = (
         f"章节标题：{title}\n"
-        f"原始语言：{source_language}\n"
-        "姝ｆ枃濡備笅锛歕n\n"
+        f"目标语言：{resolved_target_language}\n"
+        f"请将以下章节内容翻译为{resolved_target_language}；如果原文已经是{resolved_target_language}，请保持原意并输出自然流畅的{resolved_target_language}版本。\n\n"
         f"{content}"
     )
 

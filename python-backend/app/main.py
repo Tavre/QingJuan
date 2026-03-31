@@ -123,7 +123,7 @@ LIBRARY_ROOT = DATA_DIR / "library"
 EXPORT_ROOT = DATA_DIR / "exports"
 TASK_QUEUE: asyncio.Queue[str] = asyncio.Queue()
 
-app = FastAPI(title="青卷后端", version="0.2.0")
+app = FastAPI(title="青卷后端", version="0.2.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

@@ -2189,7 +2189,7 @@ onBeforeUnmount(() => {
 
       <div class="sidebar-footer">
         <p>{{ desktopState }}</p>
-        <span>v0.2.0</span>
+        <span>v0.2.1</span>
       </div>
     </aside>
 
@@ -2783,11 +2783,6 @@ onBeforeUnmount(() => {
               />
               <small>用于控制章节与漫画图片下载并发数。建议设置 2-5；18comic / Bika 会自动放大图片并发，过高可能触发目标站点限流。</small>
             </label>
-
-            <div class="status-note flush">
-              <strong>漫画译图</strong>
-              <p>漫画译图已改为内置流程，不再开放命令模板设置。当前会严格复用默认翻译提供商里配置的接口地址、密钥和模型执行图片翻译；仅支持 openai / newapi / grok2api / custom 这类 OpenAI 兼容图片接口。</p>
-            </div>
 
             <div class="status-note flush">
               <strong>Bika 漫画凭证</strong>

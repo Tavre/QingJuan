@@ -1,6 +1,6 @@
 [package]
 name = "qingjuan"
-version = "0.2.0"
+version = "0.2.1"
 description = "青卷桌面端"
 authors = ["qingjuan"]
 edition = "2021"

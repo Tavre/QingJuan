@@ -26,3 +26,4 @@ debug_bubble_cleanup/
 debug_masks/
 debug_masks2/
 .gitignore
+.codex-tmp/

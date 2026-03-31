@@ -1,25 +1,36 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
+import base64
+import hmac
 import json
+import math
+import mimetypes
 import os
 import re
+import secrets
 import shutil
 import socket
+import string
 import subprocess
+import ssl
 import tempfile
+import threading
 import time
 import urllib.request
+from collections import deque
 from collections.abc import Awaitable, Callable
-from email.utils import parsedate_to_datetime
-from hashlib import md5
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
+from hashlib import md5, sha256
+from io import BytesIO
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
+from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
 from .models import AddBookPayload, ChapterPreview, PreviewResponse, TranslationSettings
 
@@ -58,6 +69,21 @@ NOVELUP_HOST_KEYWORDS = ("novelup.plus",)
 ALPHAPOLIS_HOST_KEYWORDS = ("alphapolis.co.jp",)
 HAMELN_HOST_KEYWORDS = ("syosetu.org",)
 LINOVELIB_HOST_KEYWORDS = ("linovelib.com", "bilinovel.com")
+COMIC_18_HOST_KEYWORDS = ("18comic.vip",)
+BIKAWEBAPP_HOST_KEYWORDS = ("bikawebapp.com",)
+BUILTIN_MANGA_IMAGE_TIMEOUT_SECONDS = 1800
+BUILTIN_MANGA_IMAGE_SUPPORTED_PROVIDERS = {"openai", "newapi", "grok2api", "custom"}
+CHAT_COMPLETION_IMAGE_MODEL_HINTS = (
+    "gpt-",
+    "grok-",
+    "claude-",
+    "gemini",
+    "qwen",
+    "glm",
+    "internvl",
+    "llava",
+    "minicpm",
+)
 LINOVELIB_PREFERRED_HOSTS = ("tw.linovelib.com", "www.bilinovel.com", "www.linovelib.com")
 LINOVELIB_BOOK_PATH_PATTERN = re.compile(r"/novel/(?P<book_id>\d+)(?:\.html|/catalog|/\d+(?:_\d+)?\.html)?/?$")
 LINOVELIB_CHAPTER_PATH_PATTERN = re.compile(r"/novel/(?P<book_id>\d+)/(?P<chapter_id>\d+)(?:_(?P<page>\d+))?\.html$")
@@ -69,29 +95,35 @@ NOVELUP_STORY_PATH_PATTERN = re.compile(r"^/story/(?P<story_id>\d+)(?:/.*)?$")
 ALPHAPOLIS_WORK_PATH_PATTERN = re.compile(
     r"^/novel/(?P<author_id>\d+)/(?P<content_id>\d+)(?:/episode/(?P<episode_id>\d+))?/?$"
 )
+COMIC_18_PATH_PATTERN = re.compile(r"^/(?P<kind>album|photo)/(?P<album_id>\d+)(?:/[^/?#]*)?/?$")
+BIKA_COMIC_PATH_PATTERN = re.compile(r"^/comic/(?P<comic_id>[0-9a-fA-F]+)(?:/.*)?$", re.IGNORECASE)
+BIKA_READER_PATH_PATTERN = re.compile(
+    r"^/comic/reader/(?P<comic_id>[0-9a-fA-F]+)/(?P<order>\d+)(?:/[^/?#]*)?/?$",
+    re.IGNORECASE,
+)
 LINOVELIB_BLOCK_MARKERS = (
     "Attention Required! | Cloudflare",
     "Sorry, you have been blocked",
 )
 NOISE_LINE_MARKERS = (
-    "内容加载失败",
-    "內容加載失敗",
+    "鍐呭鍔犺浇澶辫触",
+    "鍏у鍔犺級澶辨晽",
     "請重載或更換瀏覽器",
     "请重载或更换浏览器",
-    "翻页模式",
+    "缈婚〉妯″紡",
     "翻上页",
     "翻下页",
     "上一页",
     "下一页",
     "上一頁",
     "下一頁",
-    "目录",
-    "目錄",
-    "书页",
-    "書頁",
-    "建议使用上下翻页",
-    "建議使用上下翻頁",
-    "章评",
+    "鐩綍",
+    "鐩寗",
+    "涔﹂〉",
+    "鏇搁爜",
+    "寤鸿浣跨敤涓婁笅缈婚〉",
+    "寤鸿浣跨敤涓婁笅缈婚爜",
+    "绔犺瘎",
 )
 LINOVELIB_MIN_REQUEST_INTERVAL = 1.2
 LINOVELIB_MAX_RETRIES = 5
@@ -128,7 +160,21 @@ DEFAULT_HEADERS = {
     "Sec-Fetch-Dest": "document",
     "Sec-Fetch-Mode": "navigate",
 }
-
+BIKA_API_BASE_URL = "https://picaapi.go2778.com"
+BIKA_API_ACCEPT = "application/vnd.picacomic.com.v1+json"
+BIKA_APP_CHANNEL = "1"
+BIKA_APP_UUID = "webUUIDv2"
+BIKA_APP_VERSION = "20251017"
+BIKA_APP_PLATFORM = "android"
+BIKA_IMAGE_QUALITY = "medium"
+BIKA_WEB_ORIGIN = "https://bikawebapp.com"
+BIKA_WEB_REFERER = f"{BIKA_WEB_ORIGIN}/"
+BIKA_RANDOM_ALPHABET = string.ascii_lowercase + string.digits
+BIKA_SIGNATURE_SUFFIX = "C69BAF41DA5ABD1FFEDC6D2FEA56B"
+BIKA_SIGNATURE_KEY = "~d}$Q7$eIni=V)9\\RK/P.RM4;9[7|@/CA}b~OW!3?EV`:<>M7pddUBL5n|0/*Cn"
+_BIKA_TOKEN_CACHE: dict[str, str] = {}
+_COMIC_18_SCRAMBLE_ID_CACHE: dict[str, int] = {}
+MANGA_RENDERER_VERSION = 3
 
 @dataclass
 class DownloadResult:
@@ -191,6 +237,18 @@ def _is_alphapolis_url(url: str) -> bool:
 
 def _is_hameln_url(url: str) -> bool:
     return _host_matches(url, HAMELN_HOST_KEYWORDS)
+
+
+def _is_18comic_url(url: str) -> bool:
+    return _host_matches(url, COMIC_18_HOST_KEYWORDS)
+
+
+def _is_bikawebapp_url(url: str) -> bool:
+    return _host_matches(url, BIKAWEBAPP_HOST_KEYWORDS)
+
+
+def _is_manga_source_url(url: str) -> bool:
+    return _is_18comic_url(url) or _is_bikawebapp_url(url)
 
 
 def _clean_title_suffix(title: str, suffixes: tuple[str, ...]) -> str:
@@ -266,7 +324,219 @@ def _normalize_source_url(url: str) -> str:
             return f"{parsed.scheme}://{parsed.netloc}/novel/{match.group('author_id')}/{match.group('content_id')}"
         return url
 
+    if _is_18comic_url(url):
+        match = COMIC_18_PATH_PATTERN.match(parsed.path)
+        if match:
+            return f"{parsed.scheme}://{parsed.netloc}/album/{match.group('album_id')}"
+        return url
+
+    if _is_bikawebapp_url(url):
+        reader_match = BIKA_READER_PATH_PATTERN.match(parsed.path)
+        if reader_match:
+            return f"{parsed.scheme}://{parsed.netloc}/comic/{reader_match.group('comic_id')}"
+        comic_match = BIKA_COMIC_PATH_PATTERN.match(parsed.path)
+        if comic_match:
+            return f"{parsed.scheme}://{parsed.netloc}/comic/{comic_match.group('comic_id')}"
+        return url
+
     return url
+
+
+def _resolved_preview_book_kind(url: str, payload: AddBookPayload) -> str:
+    return "漫画" if _is_manga_source_url(url) else payload.bookKind
+
+
+def _18comic_album_id_from_url(url: str) -> str | None:
+    match = COMIC_18_PATH_PATTERN.match(urlparse(url).path)
+    return match.group("album_id") if match else None
+
+
+def _18comic_album_url(url: str) -> str:
+    parsed = urlparse(_normalize_source_url(url))
+    album_id = _18comic_album_id_from_url(url)
+    if not album_id:
+        raise ValueError("鏃犳硶璇嗗埆 18Comic 婕敾缂栧彿")
+    return f"{parsed.scheme}://{parsed.netloc}/album/{album_id}"
+
+
+def _18comic_photo_url(url: str) -> str:
+    parsed = urlparse(url)
+    album_id = _18comic_album_id_from_url(url)
+    if not album_id:
+        raise ValueError("鏃犳硶璇嗗埆 18Comic 婕敾缂栧彿")
+    return f"{parsed.scheme}://{parsed.netloc}/photo/{album_id}"
+
+def _18comic_scramble_id_from_html(html: str) -> int | None:
+    match = re.search(r"var\s+scramble_id\s*=\s*(\d+)", html)
+    return int(match.group(1)) if match else None
+
+
+def _18comic_cache_scramble_id(url: str, html: str) -> int | None:
+    album_id = _18comic_album_id_from_url(url)
+    scramble_id = _18comic_scramble_id_from_html(html)
+    if album_id and scramble_id is not None:
+        _COMIC_18_SCRAMBLE_ID_CACHE[album_id] = scramble_id
+    return scramble_id
+
+
+def _18comic_cached_scramble_id(url: str) -> int | None:
+    album_id = _18comic_album_id_from_url(url)
+    if not album_id:
+        return None
+    return _COMIC_18_SCRAMBLE_ID_CACHE.get(album_id)
+
+
+def _18comic_ensure_scramble_id(url: str) -> int | None:
+    cached = _18comic_cached_scramble_id(url)
+    if cached is not None:
+        return cached
+    photo_url = url if '/photo/' in urlparse(url).path else _18comic_photo_url(url)
+    album_url = _18comic_album_url(url)
+    result = _sync_fetch_18comic_html(photo_url, album_url)
+    return _18comic_cache_scramble_id(url, result.text)
+
+
+def _18comic_image_token_from_url(url: str) -> str:
+    return Path(urlparse(url).path).stem.split('.', 1)[0]
+
+
+def _18comic_segment_count(album_id: str, image_token: str) -> int:
+    default_segments = 10
+    try:
+        album_id_int = int(album_id)
+    except ValueError:
+        return default_segments
+    digest_suffix = md5(f"{album_id}{image_token}".encode("utf-8")).hexdigest()[-1]
+    value = ord(digest_suffix)
+    if 268850 <= album_id_int <= 421925:
+        value %= 10
+    elif album_id_int >= 421926:
+        value %= 8
+    return {
+        0: 2,
+        1: 4,
+        2: 6,
+        3: 8,
+        4: 10,
+        5: 12,
+        6: 14,
+        7: 16,
+        8: 18,
+        9: 20,
+    }.get(value, default_segments)
+
+
+def _18comic_descramble_bytes(image_bytes: bytes, image_url: str, referer: str, scramble_id: int | None = None) -> bytes:
+    if image_url.lower().endswith('.gif'):
+        return image_bytes
+    if "/media/photos/" not in urlparse(image_url).path:
+        return image_bytes
+    album_id = _18comic_album_id_from_url(referer)
+    if not album_id:
+        return image_bytes
+    resolved_scramble_id = scramble_id if scramble_id is not None else _18comic_ensure_scramble_id(referer)
+    if resolved_scramble_id is None:
+        return image_bytes
+    if int(album_id) < int(resolved_scramble_id):
+        return image_bytes
+
+    segment_count = _18comic_segment_count(album_id, _18comic_image_token_from_url(image_url))
+    if segment_count <= 1:
+        return image_bytes
+
+    try:
+        with Image.open(BytesIO(image_bytes)) as image:
+            source_format = (image.format or 'PNG').upper()
+            working = image.copy()
+    except UnidentifiedImageError:
+        return image_bytes
+
+    width, height = working.size
+    block_height = height // segment_count
+    remainder = height % segment_count
+    if width <= 0 or height <= 0 or block_height <= 0:
+        return image_bytes
+
+    rebuilt = Image.new(working.mode, working.size)
+    for index in range(segment_count):
+        segment_height = block_height
+        destination_y = block_height * index
+        source_y = height - block_height * (index + 1) - remainder
+        if index == 0:
+            segment_height += remainder
+        else:
+            destination_y += remainder
+        segment = working.crop((0, source_y, width, source_y + segment_height))
+        rebuilt.paste(segment, (0, destination_y))
+
+    output = BytesIO()
+    save_kwargs: dict[str, Any] = {"format": source_format}
+    if source_format == 'WEBP':
+        save_kwargs.update({"lossless": True, "quality": 100, "method": 6})
+    elif source_format in {'JPEG', 'JPG'}:
+        if rebuilt.mode not in {'RGB', 'L'}:
+            rebuilt = rebuilt.convert('RGB')
+        save_kwargs.update({"quality": 95})
+    rebuilt.save(output, **save_kwargs)
+    return output.getvalue()
+
+
+def repair_18comic_chapter_images(book_dir: Path, manifest: dict, chapter_index: int) -> bool:
+    chapter = _chapter_lookup(manifest).get(chapter_index)
+    if not chapter:
+        return False
+
+    chapter_url = str(chapter.get("url") or "").strip()
+    if not _is_18comic_url(chapter_url):
+        return False
+    if chapter.get("images_repaired") is True:
+        return False
+
+    image_files = [item for item in chapter.get("image_files", []) if isinstance(item, str)]
+    image_urls = [item for item in chapter.get("image_urls", []) if isinstance(item, str)]
+    if not image_files or not image_urls:
+        chapter["images_repaired"] = True
+        save_manifest(book_dir, manifest)
+        return True
+
+    scramble_id = _18comic_ensure_scramble_id(chapter_url)
+    if scramble_id is None:
+        return False
+
+    repaired = False
+    for asset_path, image_url in zip(image_files, image_urls):
+        target_path = (book_dir / asset_path).resolve()
+        if not target_path.exists() or not target_path.is_file():
+            continue
+        original_bytes = target_path.read_bytes()
+        descrambled_bytes = _18comic_descramble_bytes(original_bytes, image_url, chapter_url, scramble_id)
+        if descrambled_bytes != original_bytes:
+            target_path.write_bytes(descrambled_bytes)
+            repaired = True
+
+    chapter["images_repaired"] = True
+    save_manifest(book_dir, manifest)
+    return repaired
+
+
+
+def _bika_comic_id_from_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    reader_match = BIKA_READER_PATH_PATTERN.match(parsed.path)
+    if reader_match:
+        return reader_match.group("comic_id")
+    comic_match = BIKA_COMIC_PATH_PATTERN.match(parsed.path)
+    return comic_match.group("comic_id") if comic_match else None
+
+
+def _bika_order_from_url(url: str) -> str | None:
+    match = BIKA_READER_PATH_PATTERN.match(urlparse(url).path)
+    return match.group("order") if match else None
+
+
+def _manga_placeholder_text(chapter_title: str, page_count: int) -> str:
+    readable_count = max(page_count, 0)
+    return f"{chapter_title}\n\n漫画章节，共 {readable_count} 页。"
 
 
 def _linovelib_candidate_urls(url: str) -> list[str]:
@@ -353,7 +623,7 @@ def _extract_author(soup: BeautifulSoup) -> str | None:
             return value
 
     body_text = soup.get_text(" ", strip=True)
-    match = re.search(r"作者[:：]\s*([^\s]+)", body_text)
+    match = re.search(r"浣滆€匸:锛歖\s*([^\s]+)", body_text)
     if match:
         return match.group(1).strip()
     return None
@@ -371,7 +641,7 @@ def _extract_cover(soup: BeautifulSoup, base_url: str) -> str | None:
         ".book-cover img",
         ".cover img",
         ".book-rand-a img",
-        "img[alt*='封面']",
+        "img[alt*='灏侀潰']",
     )
     for selector in selectors:
         node = soup.select_one(selector)
@@ -511,12 +781,12 @@ def _kakuyomu_state_from_html(html: str) -> dict[str, Any]:
     soup = BeautifulSoup(html, "html.parser")
     script = soup.select_one("#__NEXT_DATA__")
     if script is None or not script.string:
-        raise ValueError("Kakuyomu 页面缺少 __NEXT_DATA__ 数据")
+        raise ValueError("Kakuyomu 椤甸潰缂哄皯 __NEXT_DATA__ 鏁版嵁")
     payload = json.loads(script.string)
     page_props = payload.get("props", {}).get("pageProps", {})
     state = page_props.get("__APOLLO_STATE__")
     if not isinstance(state, dict) or not state:
-        raise ValueError("Kakuyomu 页面缺少 __APOLLO_STATE__ 数据")
+        raise ValueError("Kakuyomu 椤甸潰缂哄皯 __APOLLO_STATE__ 鏁版嵁")
     return state
 
 
@@ -614,18 +884,18 @@ async def _fetch_json(client: httpx.AsyncClient, url: str, headers: dict[str, st
     response.raise_for_status()
     payload = response.json()
     if payload.get("error"):
-        raise ValueError(str(payload.get("message") or "目标站点返回错误"))
+        raise ValueError(str(payload.get("message") or "鐩爣绔欑偣杩斿洖閿欒"))
     body = payload.get("body")
     if not isinstance(body, (dict, list)):
-        raise ValueError("目标站点返回了不可识别的数据结构")
+        raise ValueError("鐩爣绔欑偣杩斿洖浜嗕笉鍙瘑鍒殑鏁版嵁缁撴瀯")
     return {"body": body, "url": str(response.url)}
 
 
 def _pixiv_content_to_text(content: str) -> str:
     value = content.replace("\r\n", "\n").replace("\r", "\n")
     value = value.replace("[newpage]", "\n\n")
-    value = re.sub(r"\[\[rb:([^>]+)\s*>\s*([^\]]+)\]\]", r"\1（\2）", value)
-    value = re.sub(r"\[\[jumpuri:([^>]+)\s*>\s*([^\]]+)\]\]", r"\1（\2）", value)
+    value = re.sub(r"\[\[rb:([^>]+)\s*>\s*([^\]]+)\]\]", r"\1(\2)", value)
+    value = re.sub(r"\[\[jumpuri:([^>]+)\s*>\s*([^\]]+)\]\]", r"\1(\2)", value)
     value = re.sub(r"\[jump:(\d+)\]", "", value)
     value = re.sub(r"\[chapter:[^\]]+\]", "", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
@@ -734,7 +1004,7 @@ def _hameln_author_from_soup(soup: BeautifulSoup) -> str | None:
     if first_info is None:
         return None
     text = first_info.get_text(" ", strip=True)
-    match = re.search(r"作：\s*([^\s×]+)", text)
+    match = re.search(r"浣滐細\s*([^\s脳]+)", text)
     return match.group(1).strip() if match else None
 
 
@@ -747,7 +1017,7 @@ def _hameln_chapter_text(soup: BeautifulSoup) -> str:
     if afterword is not None:
         afterword_text = afterword.get_text("\n", strip=True)
         if afterword_text:
-            parts.append(f"【后记】\n{afterword_text}")
+            parts.append(f"銆愬悗璁般€慭n{afterword_text}")
     return "\n\n".join(part.strip() for part in parts if part.strip()).strip()
 
 
@@ -771,12 +1041,75 @@ def build_translated_filename(filename: str) -> str:
     return f"{chapter_path.stem}.translated.txt"
 
 
+def build_translated_meta_filename(filename: str) -> str:
+    chapter_path = Path(filename)
+    return f"{chapter_path.stem}.translated.json"
+
+
+def build_translated_image_asset_path(asset_path: str) -> str:
+    image_path = Path(asset_path)
+    translated_path = image_path.with_name(f"{image_path.stem}.translated.png")
+    return translated_path.as_posix()
+
+
 def chapter_text_path(book_dir: Path, filename: str) -> Path:
     return book_dir / filename
 
 
 def translated_text_path(book_dir: Path, filename: str) -> Path:
     return book_dir / build_translated_filename(filename)
+
+
+def translated_meta_path(book_dir: Path, filename: str) -> Path:
+    return book_dir / build_translated_meta_filename(filename)
+
+
+def _load_translated_page_metadata(book_dir: Path, filename: str) -> dict[str, Any]:
+    payload_path = translated_meta_path(book_dir, filename)
+    if not payload_path.exists():
+        return {}
+    try:
+        payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def load_translated_page_payload(book_dir: Path, filename: str) -> list[str]:
+    payload = _load_translated_page_metadata(book_dir, filename)
+    page_translations = payload.get("page_translations")
+    if not isinstance(page_translations, list):
+        return []
+    return [str(item).strip() for item in page_translations if isinstance(item, str)]
+
+
+def translated_image_payload_is_current(book_dir: Path, filename: str) -> bool:
+    payload = _load_translated_page_metadata(book_dir, filename)
+    try:
+        renderer_version = int(payload.get("renderer_version") or 0)
+    except (TypeError, ValueError):
+        renderer_version = 0
+    return renderer_version >= MANGA_RENDERER_VERSION
+
+
+def save_translated_page_payload(
+    book_dir: Path,
+    filename: str,
+    page_translations: list[str],
+    translated_image_files: list[str] | None = None,
+) -> str:
+    target_path = translated_meta_path(book_dir, filename)
+    payload: dict[str, Any] = {
+        "page_translations": page_translations,
+        "renderer_version": MANGA_RENDERER_VERSION,
+    }
+    if translated_image_files:
+        payload["translated_image_files"] = translated_image_files
+    target_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return target_path.name
 
 
 async def download_selected_chapters(
@@ -792,11 +1125,13 @@ async def download_selected_chapters(
         return manifest
 
     concurrency = max(1, concurrency)
+    image_concurrency = _image_download_concurrency(str(manifest.get("source_url") or ""), concurrency)
     updated = False
     completed_count = 0
     total_count = len(selected_indexes)
     active_titles: dict[int, str] = {}
     semaphore = asyncio.Semaphore(concurrency)
+    image_download_semaphore = asyncio.Semaphore(image_concurrency)
 
     async with _build_http_client() as client:
         async def worker(chapter_index: int) -> dict:
@@ -806,7 +1141,13 @@ async def download_selected_chapters(
                 active_titles[chapter_index] = chapter_title
                 await _notify_download_progress(progress_callback, completed_count, total_count, list(active_titles.values()))
                 try:
-                    return await _download_single_chapter(client, book_dir, chapter_index, chapter)
+                    return await _download_single_chapter(
+                        client,
+                        book_dir,
+                        chapter_index,
+                        chapter,
+                        image_download_semaphore=image_download_semaphore,
+                    )
                 finally:
                     active_titles.pop(chapter_index, None)
 
@@ -820,6 +1161,17 @@ async def download_selected_chapters(
                 chapter["illustration"] = payload["illustration"]
                 chapter["image_urls"] = payload["image_urls"]
                 chapter["image_files"] = payload["image_files"]
+                chapter["translated_image_files"] = [
+                    item for item in payload.get("translated_image_files", []) if isinstance(item, str)
+                ]
+                chapter["page_count"] = payload["page_count"]
+                chapter["images_repaired"] = payload.get("images_repaired", chapter.get("images_repaired"))
+                chapter["translated_file_name"] = chapter.get("translated_file_name") or build_translated_filename(
+                    payload["file_name"]
+                )
+                chapter["translated_meta_file_name"] = chapter.get("translated_meta_file_name") or build_translated_meta_filename(
+                    payload["file_name"]
+                )
                 completed_count += 1
                 updated = True
                 save_manifest(book_dir, manifest)
@@ -855,6 +1207,8 @@ async def _download_single_chapter(
     book_dir: Path,
     chapter_index: int,
     chapter: dict,
+    *,
+    image_download_semaphore: asyncio.Semaphore | None = None,
 ) -> dict:
     filename = str(chapter.get("file_name") or f"{chapter_index:04d}-chapter-{chapter_index}.txt")
     source_url = str(chapter.get("url") or "").strip()
@@ -869,10 +1223,20 @@ async def _download_single_chapter(
             "illustration": bool(chapter.get("illustration")),
             "image_urls": [item for item in chapter.get("image_urls", []) if isinstance(item, str)],
             "image_files": [item for item in chapter.get("image_files", []) if isinstance(item, str)],
+            "translated_image_files": [item for item in chapter.get("translated_image_files", []) if isinstance(item, str)],
+            "page_count": int(chapter.get("page_count") or len(chapter.get("image_files", [])) or len(chapter.get("image_urls", [])) or 0),
+            "images_repaired": bool(chapter.get("images_repaired")),
         }
 
     result = await _fetch_chapter_data(client, source_url, chapter_title)
-    image_files = await _download_chapter_images(client, book_dir, chapter_index, result.image_urls, source_url)
+    image_files = await _download_chapter_images(
+        client,
+        book_dir,
+        chapter_index,
+        result.image_urls,
+        source_url,
+        image_download_semaphore=image_download_semaphore,
+    )
     existing_path.write_text(result.text, encoding="utf-8")
     return {
         "index": chapter_index,
@@ -881,6 +1245,9 @@ async def _download_single_chapter(
         "illustration": result.illustration,
         "image_urls": result.image_urls,
         "image_files": image_files,
+        "translated_image_files": [],
+        "page_count": len(image_files) or len(result.image_urls),
+        "images_repaired": _is_18comic_url(source_url),
     }
 
 
@@ -890,51 +1257,1098 @@ async def translate_selected_chapters(
     chapter_indexes: list[int],
     language: str,
     settings: TranslationSettings,
+    log_callback: Callable[[str, str], Awaitable[None] | None] | None = None,
 ) -> dict:
-    provider = settings.defaultProvider
-    provider_config = settings.providers[provider]
-    if not provider_config.enabled:
-        raise ValueError(f"当前翻译提供商未启用：{provider}")
-    if not provider_config.baseUrl.strip():
-        raise ValueError("翻译 API 地址未配置")
-    if not provider_config.apiKey.strip():
-        raise ValueError("翻译 API 密钥未配置")
-    if not provider_config.model.strip():
-        raise ValueError("翻译模型未配置")
-
     chapter_lookup = _chapter_lookup(manifest)
     updated = False
+    is_manga = str(manifest.get("book_kind") or "").strip() == "漫画"
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    if is_manga:
         for chapter_index in chapter_indexes:
             chapter = chapter_lookup.get(chapter_index)
             if not chapter:
                 continue
-
             filename = str(chapter.get("file_name") or f"{chapter_index:04d}-chapter-{chapter_index}.txt")
             source_path = chapter_text_path(book_dir, filename)
             if not source_path.exists():
                 raise ValueError(f"章节未下载，无法翻译：{chapter_index}")
-
-            source_text = source_path.read_text(encoding="utf-8")
-            translated_text = await _translate_text(
-                client=client,
+            translated_filename = build_translated_filename(filename)
+            translated_meta_filename = build_translated_meta_filename(filename)
+            source_title = str(chapter.get("title") or f"第{chapter_index}章")
+            repair_18comic_chapter_images(book_dir, manifest, chapter_index)
+            page_translations, translated_image_files = await _translate_manga_pages_with_command(
                 settings=settings,
                 source_language=language,
-                title=str(chapter.get("title") or f"第{chapter_index}章"),
-                content=source_text,
+                chapter_index=chapter_index,
+                title=source_title,
+                image_files=[item for item in chapter.get("image_files", []) if isinstance(item, str)],
+                book_dir=book_dir,
+                log_callback=log_callback,
             )
-
-            translated_filename = build_translated_filename(filename)
-            translated_text_path(book_dir, filename).write_text(translated_text, encoding="utf-8")
+            translated_text = _merge_page_translations(source_title, page_translations)
+            save_translated_page_payload(book_dir, filename, page_translations, translated_image_files)
+            chapter["translated_meta_file_name"] = translated_meta_filename
+            chapter["translated_image_files"] = translated_image_files
             chapter["translated"] = True
             chapter["translated_file_name"] = translated_filename
+            translated_text_path(book_dir, filename).write_text(translated_text, encoding="utf-8")
             updated = True
+    else:
+        provider = settings.defaultProvider
+        provider_config = settings.providers[provider]
+        if not provider_config.enabled:
+            provider_config = provider_config.model_copy(update={"enabled": True})
+        if not provider_config.baseUrl.strip():
+            raise ValueError("翻译 API 地址未配置")
+        if not provider_config.apiKey.strip():
+            raise ValueError("翻译 API 密钥未配置")
+        if not provider_config.model.strip():
+            raise ValueError("翻译模型未配置")
+
+        async with _create_async_http_client(timeout=120.0) as client:
+            for chapter_index in chapter_indexes:
+                chapter = chapter_lookup.get(chapter_index)
+                if not chapter:
+                    continue
+
+                filename = str(chapter.get("file_name") or f"{chapter_index:04d}-chapter-{chapter_index}.txt")
+                source_path = chapter_text_path(book_dir, filename)
+                if not source_path.exists():
+                    raise ValueError(f"章节未下载，无法翻译：{chapter_index}")
+
+                translated_filename = build_translated_filename(filename)
+                source_title = str(chapter.get("title") or f"第{chapter_index}章")
+                source_text = source_path.read_text(encoding="utf-8")
+                translated_text = await _translate_text(
+                    client=client,
+                    settings=settings,
+                    source_language=language,
+                    title=source_title,
+                    content=source_text,
+                )
+                chapter["translated_image_files"] = []
+                chapter["translated"] = True
+                chapter["translated_file_name"] = translated_filename
+                translated_text_path(book_dir, filename).write_text(translated_text, encoding="utf-8")
+                updated = True
 
     if updated:
         save_manifest(book_dir, manifest)
 
     return manifest
+
+
+async def _notify_task_log(
+    log_callback: Callable[[str, str], Awaitable[None] | None] | None,
+    level: str,
+    message: str,
+) -> None:
+    if log_callback is None:
+        return
+    result = log_callback(level, message)
+    if result is not None:
+        await result
+
+
+def _manga_translation_target_language(source_language: str) -> str:
+    normalized = str(source_language or "").strip()
+    return "英文" if normalized == "中文" else "中文"
+
+
+def _resolve_manga_image_provider_config(
+    settings: TranslationSettings,
+) -> tuple[str, str, str, str]:
+    provider = str(settings.defaultProvider or "").strip() or "openai"
+    if provider not in BUILTIN_MANGA_IMAGE_SUPPORTED_PROVIDERS:
+        supported = " / ".join(sorted(BUILTIN_MANGA_IMAGE_SUPPORTED_PROVIDERS))
+        raise ValueError(f"当前默认翻译提供商 {provider} 不支持漫画译图，请切换到 {supported}")
+
+    provider_config = settings.providers.get(provider)
+    if provider_config is None:
+        raise ValueError(f"未找到翻译提供商配置：{provider}")
+
+    base_url = str(provider_config.baseUrl or "").strip().rstrip("/")
+    api_key = str(provider_config.apiKey or "").strip()
+    configured_model = str(provider_config.model or "").strip()
+
+    if provider == "openai" and not base_url:
+        base_url = "https://api.openai.com/v1"
+    if not base_url:
+        raise ValueError("漫画译图接口地址未配置")
+    if not api_key:
+        raise ValueError("漫画译图 API 密钥未配置")
+    if not configured_model:
+        raise ValueError("漫画译图模型未配置")
+
+    return provider, base_url, api_key, configured_model
+
+
+def _build_manga_image_edit_prompt(
+    *,
+    source_language: str,
+    target_language: str,
+    chapter_title: str,
+    chapter_index: int,
+    page_number: int,
+    total_pages: int,
+) -> str:
+    return (
+        "Edit this manga page in place.\n"
+        f"- Translate all visible text from {source_language} to {target_language}.\n"
+        "- Remove the original text completely and replace it with the translated text directly inside the image.\n"
+        "- Keep panel layout, character art, bubble shapes, reading order, line art, screentone, and background unchanged.\n"
+        "- Keep translated text inside the original bubble or caption region whenever possible.\n"
+        "- Match the original text emphasis and approximate placement.\n"
+        "- If a region has no readable text, keep that region unchanged.\n"
+        "- Return exactly one fully edited manga page image.\n"
+        f"Context: chapter_index={chapter_index}, chapter_title={chapter_title}, page={page_number}/{total_pages}"
+    )
+
+
+def _summarize_image_api_error(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or "").strip()
+            code = str(error.get("code") or "").strip()
+            if message and code:
+                return f"{message} ({code})"
+            if message:
+                return message
+        detail = str(payload.get("detail") or payload.get("message") or "").strip()
+        if detail:
+            return detail
+
+    text_value = response.text.strip()
+    if text_value:
+        return text_value[:400]
+    return f"HTTP {response.status_code}"
+
+
+def _decode_base64_image(value: str) -> bytes:
+    raw_value = value.strip()
+    if raw_value.startswith("data:") and "," in raw_value:
+        raw_value = raw_value.split(",", 1)[1]
+    return base64.b64decode(raw_value)
+
+
+def _extract_image_bytes_from_payload(payload: dict[str, Any]) -> bytes | str:
+    candidates: list[Any] = []
+    for key in ("data", "images", "result"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            candidates.extend(value)
+        elif value is not None:
+            candidates.append(value)
+
+    for item in candidates:
+        if isinstance(item, dict):
+            b64_value = str(item.get("b64_json") or item.get("base64") or "").strip()
+            if b64_value:
+                return _decode_base64_image(b64_value)
+            url_value = str(item.get("url") or "").strip()
+            if url_value:
+                return url_value
+            result_value = str(item.get("result") or "").strip()
+            if result_value:
+                try:
+                    return _decode_base64_image(result_value)
+                except Exception:
+                    if result_value.startswith("http://") or result_value.startswith("https://"):
+                        return result_value
+        elif isinstance(item, str):
+            raw_item = item.strip()
+            if not raw_item:
+                continue
+            try:
+                return _decode_base64_image(raw_item)
+            except Exception:
+                if raw_item.startswith("http://") or raw_item.startswith("https://"):
+                    return raw_item
+
+    raise ValueError("漫画译图接口返回中未找到可用图片数据")
+
+
+def _extract_image_bytes_from_text_body(body: str) -> bytes | str | None:
+    value = str(body or "").strip()
+    if not value:
+        return None
+    if value.startswith("http://") or value.startswith("https://"):
+        return value
+    try:
+        return _decode_base64_image(value)
+    except Exception:
+        return None
+
+
+def _should_use_chat_completions_image_fallback(model: str) -> bool:
+    lowered = str(model or "").strip().lower()
+    if not lowered:
+        return False
+    if any(token in lowered for token in ("image", "dall-e", "flux", "sd", "stable-diffusion", "wanx")):
+        return False
+    return any(token in lowered for token in CHAT_COMPLETION_IMAGE_MODEL_HINTS)
+
+
+def _should_fallback_from_image_edit_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "http 404" in message
+        or "invalid url" in message
+        or "/images/edits" in message
+        or "bad_response_status_code" in message
+        or "not found" in message
+        or "405" in message
+    )
+
+
+def _strip_markdown_fences(value: str) -> str:
+    text_value = str(value or "").strip()
+    if text_value.startswith("```"):
+        text_value = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text_value)
+        text_value = re.sub(r"\s*```$", "", text_value)
+    return text_value.strip()
+
+
+def _extract_json_object_from_text(value: str) -> dict[str, Any]:
+    cleaned = _strip_markdown_fences(value)
+    if not cleaned:
+        raise ValueError("模型未返回可解析的 JSON 内容")
+
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError(f"模型返回不是有效 JSON：{cleaned[:240]}")
+        payload = json.loads(cleaned[start : end + 1])
+
+    if not isinstance(payload, dict):
+        raise ValueError("模型返回的 JSON 顶层不是对象")
+    return payload
+
+
+def _normalize_region_bbox(raw_bbox: Any, image_size: tuple[int, int]) -> tuple[int, int, int, int] | None:
+    if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+        return None
+    width, height = image_size
+    try:
+        x1, y1, x2, y2 = [int(round(float(item))) for item in raw_bbox]
+    except (TypeError, ValueError):
+        return None
+
+    x1 = max(0, min(x1, width - 1))
+    y1 = max(0, min(y1, height - 1))
+    x2 = max(x1 + 1, min(x2, width))
+    y2 = max(y1 + 1, min(y2, height))
+    if x2 - x1 < 4 or y2 - y1 < 4:
+        return None
+    return x1, y1, x2, y2
+
+
+def _parse_hex_color(value: Any) -> tuple[int, int, int] | None:
+    text_value = str(value or "").strip()
+    if not re.fullmatch(r"#?[0-9a-fA-F]{6}", text_value):
+        return None
+    normalized = text_value[1:] if text_value.startswith("#") else text_value
+    return tuple(int(normalized[index : index + 2], 16) for index in (0, 2, 4))
+
+
+def _sample_region_fill_color(
+    image: Image.Image,
+    bbox: tuple[int, int, int, int],
+    preferred_color: Any = None,
+) -> tuple[int, int, int]:
+    parsed = _parse_hex_color(preferred_color)
+    if parsed is not None:
+        return parsed
+
+    width, height = image.size
+    x1, y1, x2, y2 = bbox
+    padding = max(2, min((x2 - x1) // 8, (y2 - y1) // 8, 12))
+    pixels: list[tuple[int, int, int]] = []
+    rgb_image = image.convert("RGB")
+
+    def append_strip(left: int, top: int, right: int, bottom: int) -> None:
+        crop = rgb_image.crop((max(0, left), max(0, top), min(width, right), min(height, bottom)))
+        pixels.extend(list(crop.getdata()))
+
+    append_strip(x1 - padding, y1 - padding, x2 + padding, y1)
+    append_strip(x1 - padding, y2, x2 + padding, y2 + padding)
+    append_strip(x1 - padding, y1, x1, y2)
+    append_strip(x2, y1, x2 + padding, y2)
+
+    if not pixels:
+        return (255, 255, 255)
+
+    red = sum(color[0] for color in pixels) // len(pixels)
+    green = sum(color[1] for color in pixels) // len(pixels)
+    blue = sum(color[2] for color in pixels) // len(pixels)
+    return red, green, blue
+
+
+def _resolve_text_color(fill_color: tuple[int, int, int], preferred_color: Any = None) -> tuple[int, int, int]:
+    parsed = _parse_hex_color(preferred_color)
+    if parsed is not None:
+        return parsed
+    luminance = 0.299 * fill_color[0] + 0.587 * fill_color[1] + 0.114 * fill_color[2]
+    return (24, 24, 24) if luminance >= 140 else (245, 245, 245)
+
+
+def _local_render_font_paths() -> list[Path]:
+    windows_fonts_dir = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+    return [
+        windows_fonts_dir / "msyh.ttc",
+        windows_fonts_dir / "msyhbd.ttc",
+        windows_fonts_dir / "simhei.ttf",
+        windows_fonts_dir / "simsun.ttc",
+        windows_fonts_dir / "NotoSansCJK-Regular.ttc",
+        windows_fonts_dir / "arial.ttf",
+    ]
+
+
+def _load_local_render_font(font_size: int) -> ImageFont.ImageFont:
+    safe_size = max(10, int(font_size))
+    for font_path in _local_render_font_paths():
+        if not font_path.exists():
+            continue
+        try:
+            return ImageFont.truetype(str(font_path), safe_size, encoding="utf-8")
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def _split_text_paragraphs(text: str) -> list[str]:
+    content = str(text or "").replace("\r", "").strip()
+    if not content:
+        return []
+    return [item.strip() for item in content.split("\n") if item.strip()]
+
+
+def _wrap_text_for_box(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: int) -> list[str]:
+    paragraphs = _split_text_paragraphs(text)
+    if not paragraphs:
+        return []
+
+    lines: list[str] = []
+    for paragraph in paragraphs:
+        current = ""
+        for raw_char in paragraph:
+            char = " " if raw_char.isspace() else raw_char
+            if not current and char == " ":
+                continue
+            candidate = f"{current}{char}"
+            bbox = draw.textbbox((0, 0), candidate.rstrip(), font=font)
+            if current and bbox[2] - bbox[0] > max_width:
+                lines.append(current.rstrip())
+                current = "" if char == " " else char
+            else:
+                current = candidate
+        if current:
+            lines.append(current.rstrip())
+    return lines or [str(text or "").strip()]
+
+
+def _normalize_layout_direction(
+    preferred_direction: Any,
+    box_size: tuple[int, int],
+    text: str,
+) -> str:
+    normalized = str(preferred_direction or "").strip().lower()
+    alias_map = {
+        "v": "vertical",
+        "vert": "vertical",
+        "vertical": "vertical",
+        "竖排": "vertical",
+        "h": "horizontal",
+        "hor": "horizontal",
+        "horizontal": "horizontal",
+        "横排": "horizontal",
+    }
+    resolved = alias_map.get(normalized)
+    if resolved:
+        return resolved
+
+    box_width, box_height = box_size
+    aspect_ratio = box_height / max(box_width, 1)
+    dense_length = len(re.sub(r"\s+", "", str(text or "")))
+    if aspect_ratio >= 2.2:
+        return "vertical"
+    if aspect_ratio >= 1.45 and dense_length <= 24:
+        return "vertical"
+    return "horizontal"
+
+
+def _build_horizontal_layout_candidate(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    box_size: tuple[int, int],
+    font_size: int,
+) -> dict[str, Any]:
+    max_width, max_height = box_size
+    font = _load_local_render_font(font_size)
+    lines = _wrap_text_for_box(draw, text, font, max(8, max_width))
+    rendered_text = "\n".join(lines)
+    spacing = max(1, min(12, font_size // 5))
+    bbox = draw.multiline_textbbox((0, 0), rendered_text, font=font, spacing=spacing, align="center")
+    content_width = max(0, bbox[2] - bbox[0])
+    content_height = max(0, bbox[3] - bbox[1])
+    safe_width = max_width * 0.94
+    safe_height = max_height * 0.92
+    overflow = max(0.0, content_width - safe_width) + max(0.0, content_height - safe_height)
+    return {
+        "direction": "horizontal",
+        "font": font,
+        "font_size": font_size,
+        "lines": lines,
+        "spacing": spacing,
+        "content_width": content_width,
+        "content_height": content_height,
+        "fits": content_width <= safe_width and content_height <= safe_height,
+        "overflow": overflow,
+    }
+
+
+def _build_vertical_columns(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+    max_height: int,
+    char_gap: int,
+) -> list[dict[str, Any]]:
+    paragraphs = _split_text_paragraphs(text)
+    if not paragraphs:
+        return []
+
+    columns: list[dict[str, Any]] = []
+    for paragraph in paragraphs:
+        current_chars: list[dict[str, Any]] = []
+        current_width = 0
+        current_height = 0
+        for raw_char in paragraph:
+            char = "　" if raw_char.isspace() else raw_char
+            bbox = draw.textbbox((0, 0), char, font=font)
+            char_width = max(1, bbox[2] - bbox[0])
+            char_height = max(1, bbox[3] - bbox[1])
+            candidate_height = current_height + (char_gap if current_chars else 0) + char_height
+            if current_chars and candidate_height > max_height:
+                columns.append({"chars": current_chars, "width": current_width, "height": current_height})
+                current_chars = [{"text": char, "width": char_width, "height": char_height}]
+                current_width = char_width
+                current_height = char_height
+            else:
+                current_chars.append({"text": char, "width": char_width, "height": char_height})
+                current_width = max(current_width, char_width)
+                current_height = candidate_height if len(current_chars) > 1 else char_height
+        if current_chars:
+            columns.append({"chars": current_chars, "width": current_width, "height": current_height})
+    return columns
+
+
+def _build_vertical_layout_candidate(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    box_size: tuple[int, int],
+    font_size: int,
+) -> dict[str, Any]:
+    max_width, max_height = box_size
+    font = _load_local_render_font(font_size)
+    char_gap = max(1, min(6, font_size // 8))
+    column_gap = max(2, min(12, font_size // 4))
+    columns = _build_vertical_columns(draw, text, font, max(8, max_height), char_gap)
+    content_width = sum(int(column.get("width") or 0) for column in columns)
+    if len(columns) > 1:
+        content_width += column_gap * (len(columns) - 1)
+    content_height = max((int(column.get("height") or 0) for column in columns), default=0)
+    safe_width = max_width * 0.92
+    safe_height = max_height * 0.92
+    overflow = max(0.0, content_width - safe_width) + max(0.0, content_height - safe_height)
+    return {
+        "direction": "vertical",
+        "font": font,
+        "font_size": font_size,
+        "columns": columns,
+        "char_gap": char_gap,
+        "column_gap": column_gap,
+        "content_width": content_width,
+        "content_height": content_height,
+        "fits": bool(columns) and content_width <= safe_width and content_height <= safe_height,
+        "overflow": overflow,
+    }
+
+
+def _fit_text_layout_for_direction(
+    text: str,
+    box_size: tuple[int, int],
+    direction: str,
+) -> dict[str, Any]:
+    max_width, max_height = box_size
+    scratch_image = Image.new("RGB", (max(max_width, 8), max(max_height, 8)), (255, 255, 255))
+    draw = ImageDraw.Draw(scratch_image)
+    size_limit = max_width * (2 if direction == "vertical" else 1)
+    initial_size = max(12, min(60, max_height, size_limit))
+
+    best_layout: dict[str, Any] | None = None
+    for font_size in range(initial_size, 9, -1):
+        if direction == "vertical":
+            candidate = _build_vertical_layout_candidate(draw, text, box_size, font_size)
+        else:
+            candidate = _build_horizontal_layout_candidate(draw, text, box_size, font_size)
+        if candidate["fits"]:
+            return candidate
+        if best_layout is None:
+            best_layout = candidate
+            continue
+        candidate_key = (int(candidate["overflow"]), -int(candidate["font_size"]))
+        best_key = (int(best_layout["overflow"]), -int(best_layout["font_size"]))
+        if candidate_key < best_key:
+            best_layout = candidate
+
+    if best_layout is not None:
+        return best_layout
+    return _build_horizontal_layout_candidate(draw, text, box_size, 10)
+
+
+def _fit_text_layout_to_box(
+    text: str,
+    box_size: tuple[int, int],
+    preferred_direction: Any = None,
+) -> dict[str, Any]:
+    preferred = _normalize_layout_direction(preferred_direction, box_size, text)
+    aspect_ratio = box_size[1] / max(box_size[0], 1)
+    primary_layout = _fit_text_layout_for_direction(text, box_size, preferred)
+    alternate_direction = "horizontal" if preferred == "vertical" else "vertical"
+    alternate_layout = _fit_text_layout_for_direction(text, box_size, alternate_direction)
+
+    if primary_layout["fits"]:
+        if preferred == "vertical" and aspect_ratio >= 1.7:
+            return primary_layout
+        if alternate_layout["fits"] and int(alternate_layout["font_size"]) >= int(primary_layout["font_size"]) + 6:
+            return alternate_layout
+        return primary_layout
+    if alternate_layout["fits"]:
+        return alternate_layout
+    return min(
+        (primary_layout, alternate_layout),
+        key=lambda item: (int(item["overflow"]), -int(item["font_size"]), item["direction"] != preferred),
+    )
+
+
+def _resolve_region_insets(
+    region: dict[str, Any],
+    bbox: tuple[int, int, int, int],
+    direction: str,
+) -> tuple[int, int]:
+    x1, y1, x2, y2 = bbox
+    width = max(1, x2 - x1)
+    height = max(1, y2 - y1)
+    aspect_ratio = height / max(width, 1)
+
+    padding_ratio: float | None = None
+    try:
+        padding_ratio = float(region.get("padding_ratio"))
+    except (TypeError, ValueError):
+        padding_ratio = None
+    if padding_ratio is not None:
+        padding_ratio = max(0.55, min(0.92, padding_ratio))
+
+    if direction == "vertical":
+        inset_x_ratio = 0.18 if aspect_ratio >= 2.6 else 0.15 if aspect_ratio >= 1.8 else 0.12
+        inset_y_ratio = 0.08 if aspect_ratio >= 2.2 else 0.10
+    else:
+        inset_x_ratio = 0.10 if width >= height else 0.12
+        inset_y_ratio = 0.12 if width >= height else 0.10
+
+    if padding_ratio is not None:
+        requested_margin = max(0.04, min(0.22, (1.0 - padding_ratio) / 2))
+        inset_x_ratio = max(inset_x_ratio, requested_margin)
+        inset_y_ratio = max(inset_y_ratio, requested_margin * (0.85 if direction == "vertical" else 1.0))
+
+    inset_x = max(3, min(width // 3, int(round(width * inset_x_ratio))))
+    inset_y = max(3, min(height // 3, int(round(height * inset_y_ratio))))
+    if width - inset_x * 2 < 16:
+        inset_x = max(1, (width - 16) // 2)
+    if height - inset_y * 2 < 16:
+        inset_y = max(1, (height - 16) // 2)
+    return inset_x, inset_y
+
+
+def _render_text_layout(
+    draw: ImageDraw.ImageDraw,
+    region_left: int,
+    region_top: int,
+    box_size: tuple[int, int],
+    layout: dict[str, Any],
+    text_color: tuple[int, int, int],
+) -> None:
+    box_width, box_height = box_size
+    font = layout["font"]
+    direction = str(layout.get("direction") or "horizontal")
+
+    if direction == "vertical":
+        columns = [column for column in layout.get("columns", []) if column.get("chars")]
+        if not columns:
+            return
+        total_width = int(layout.get("content_width") or 0)
+        current_right = region_left + max(0, (box_width - total_width) / 2) + total_width
+        column_gap = int(layout.get("column_gap") or 0)
+        char_gap = int(layout.get("char_gap") or 0)
+        for column in columns:
+            column_width = int(column.get("width") or 0)
+            column_height = int(column.get("height") or 0)
+            column_left = current_right - column_width
+            cursor_y = region_top + max(0, (box_height - column_height) / 2)
+            for char_info in column.get("chars", []):
+                char = str(char_info.get("text") or "")
+                char_width = int(char_info.get("width") or 0)
+                char_height = int(char_info.get("height") or 0)
+                glyph_bbox = draw.textbbox((0, 0), char, font=font)
+                char_x = column_left + max(0, (column_width - char_width) / 2) - glyph_bbox[0]
+                char_y = cursor_y - glyph_bbox[1]
+                draw.text((char_x, char_y), char, font=font, fill=text_color)
+                cursor_y += char_height + char_gap
+            current_right = column_left - column_gap
+        return
+
+    lines = [str(item) for item in layout.get("lines", []) if str(item).strip()]
+    rendered_text = "\n".join(lines).strip()
+    if not rendered_text:
+        return
+    spacing = int(layout.get("spacing") or 0)
+    text_bbox = draw.multiline_textbbox(
+        (0, 0),
+        rendered_text,
+        font=font,
+        spacing=spacing,
+        align="center",
+    )
+    text_width = max(0, text_bbox[2] - text_bbox[0])
+    text_height = max(0, text_bbox[3] - text_bbox[1])
+    text_x = region_left + max(0, (box_width - text_width) / 2) - text_bbox[0]
+    text_y = region_top + max(0, (box_height - text_height) / 2) - text_bbox[1]
+    draw.multiline_text(
+        (text_x, text_y),
+        rendered_text,
+        font=font,
+        fill=text_color,
+        spacing=spacing,
+        align="center",
+    )
+
+
+def _build_manga_chat_layout_prompt(
+    *,
+    source_language: str,
+    target_language: str,
+    image_size: tuple[int, int],
+) -> str:
+    width, height = image_size
+    return (
+        "You are a manga page translation layout analyzer. "
+        f"Detect every readable text region and translate from {source_language} to {target_language}. "
+        "Return JSON only. Do not output markdown or explanations. "
+        'JSON schema: {"regions":[{"bbox":[x1,y1,x2,y2],"source_text":"...","translation":"...","background":"#RRGGBB","text_color":"#RRGGBB","direction":"vertical|horizontal","align":"center","padding_ratio":0.72}]}. '
+        f"Coordinates must use the original image pixels. Original image size: {width}x{height}. "
+        "Prefer one region per speech bubble, caption box, or sound effect block. "
+        "For tall speech bubbles, prefer direction=vertical. For wide speech bubbles or narration boxes, prefer direction=horizontal. "
+        "padding_ratio must be a number between 0.55 and 0.90 describing the safe inner area for redrawing text. "
+        "translation must be ready to render directly inside the original bubble."
+    )
+
+
+async def _request_manga_chat_layout_payload(
+    *,
+    settings: TranslationSettings,
+    provider: str,
+    base_url: str,
+    api_key: str,
+    model: str,
+    image_path: Path,
+    source_language: str,
+    target_language: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    with Image.open(image_path) as image:
+        image_size = image.size
+    image_bytes = image_path.read_bytes()
+    image_b64 = base64.b64encode(image_bytes).decode("ascii")
+    prompt = _build_manga_chat_layout_prompt(
+        source_language=source_language,
+        target_language=target_language,
+        image_size=image_size,
+    )
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "temperature": 0.2,
+        "max_tokens": 2400,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a precise manga OCR and translation layout assistant. Output valid JSON only.",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mimetypes.guess_type(image_path.name)[0] or 'image/png'};base64,{image_b64}",
+                            "detail": "high",
+                        },
+                    },
+                ],
+            },
+        ],
+    }
+    async with _create_async_http_client(timeout=float(timeout_seconds), follow_redirects=True) as client:
+        response_payload = await _post_translation_json(
+            client,
+            f"{base_url}/chat/completions",
+            headers=headers,
+            payload=payload,
+        )
+
+    choices = response_payload.get("choices", [])
+    if not choices:
+        raise ValueError("视觉翻译模型未返回任何候选结果")
+    message = choices[0].get("message", {})
+    content = _normalize_translation_result(message.get("content", ""))
+    return _extract_json_object_from_text(content)
+
+
+def _render_manga_chat_layout_to_image(
+    image_path: Path,
+    layout_payload: dict[str, Any],
+) -> tuple[bytes, str]:
+    regions = layout_payload.get("regions")
+    if not isinstance(regions, list):
+        raise ValueError("视觉翻译模型返回缺少 regions 数组")
+
+    with Image.open(image_path) as source_image:
+        canvas = source_image.convert("RGBA")
+
+    draw = ImageDraw.Draw(canvas)
+    rendered_translations: list[str] = []
+
+    for region in regions:
+        if not isinstance(region, dict):
+            continue
+        bbox = _normalize_region_bbox(region.get("bbox"), canvas.size)
+        translation = str(region.get("translation") or "").strip()
+        if bbox is None or not translation:
+            continue
+
+        fill_color = _sample_region_fill_color(canvas, bbox, region.get("background"))
+        text_color = _resolve_text_color(fill_color, region.get("text_color"))
+        x1, y1, x2, y2 = bbox
+        preferred_direction = region.get("direction")
+        layout = _fit_text_layout_to_box(translation, (max(8, x2 - x1), max(8, y2 - y1)), preferred_direction)
+        inset_x, inset_y = _resolve_region_insets(region, bbox, str(layout.get("direction") or "horizontal"))
+        erase_inset_x = max(1, inset_x // 3)
+        erase_inset_y = max(1, inset_y // 4)
+        erase_left = min(x1 + erase_inset_x, x2 - 1)
+        erase_top = min(y1 + erase_inset_y, y2 - 1)
+        erase_right = max(erase_left + 1, x2 - erase_inset_x)
+        erase_bottom = max(erase_top + 1, y2 - erase_inset_y)
+        draw.rectangle((erase_left, erase_top, erase_right, erase_bottom), fill=fill_color)
+
+        box_width = max(8, x2 - x1 - inset_x * 2)
+        box_height = max(8, y2 - y1 - inset_y * 2)
+        layout = _fit_text_layout_to_box(translation, (box_width, box_height), preferred_direction)
+        _render_text_layout(
+            draw,
+            x1 + inset_x,
+            y1 + inset_y,
+            (box_width, box_height),
+            layout,
+            text_color,
+        )
+        rendered_translations.append(translation)
+
+    output = BytesIO()
+    canvas.save(output, format="PNG")
+    page_translation = "\n".join(rendered_translations).strip() or "【本页未识别到可翻译文字】"
+    return output.getvalue(), page_translation
+
+
+async def _translate_manga_page_with_chat_completions(
+    *,
+    settings: TranslationSettings,
+    provider: str,
+    base_url: str,
+    api_key: str,
+    model: str,
+    image_path: Path,
+    source_language: str,
+    target_language: str,
+    timeout_seconds: int,
+) -> tuple[bytes, str]:
+    layout_payload = await _request_manga_chat_layout_payload(
+        settings=settings,
+        provider=provider,
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        image_path=image_path,
+        source_language=source_language,
+        target_language=target_language,
+        timeout_seconds=timeout_seconds,
+    )
+    return await asyncio.to_thread(_render_manga_chat_layout_to_image, image_path, layout_payload)
+
+
+def _ensure_png_image_bytes(image_bytes: bytes) -> bytes:
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return image_bytes
+
+    with Image.open(BytesIO(image_bytes)) as image:
+        output = BytesIO()
+        if image.mode in {"RGBA", "LA", "P"}:
+            image = image.convert("RGBA")
+        else:
+            image = image.convert("RGB")
+        image.save(output, format="PNG")
+        return output.getvalue()
+
+
+async def _request_manga_image_edit_bytes(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    image_path: Path,
+    prompt: str,
+    timeout_seconds: int,
+) -> bytes:
+    mime_type = mimetypes.guess_type(image_path.name)[0] or "image/png"
+    image_bytes = image_path.read_bytes()
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json, image/png, image/*;q=0.9, */*;q=0.8",
+    }
+    data = {
+        "model": model,
+        "prompt": prompt,
+        "size": "auto",
+        "quality": "medium",
+        "output_format": "png",
+        "response_format": "b64_json",
+        "n": "1",
+    }
+    retryable_status_codes = {408, 409, 425, 429, 500, 502, 503, 504}
+    retryable_exceptions: tuple[type[Exception], ...] = (
+        httpx.TransportError,
+        ssl.SSLError,
+    )
+    last_error: Exception | None = None
+
+    async with _create_async_http_client(timeout=float(timeout_seconds), follow_redirects=True) as client:
+        for attempt in range(1, 4):
+            try:
+                response = await client.post(
+                    f"{base_url}/images/edits",
+                    headers=headers,
+                    data=data,
+                    files={"image": (image_path.name, image_bytes, mime_type)},
+                )
+                if response.status_code in retryable_status_codes and attempt < 3:
+                    await asyncio.sleep(min(1.5 * attempt, 4.0))
+                    continue
+                if response.is_error:
+                    detail = _summarize_image_api_error(response)
+                    raise RuntimeError(f"漫画译图接口请求失败：HTTP {response.status_code}，{detail}")
+
+                content_type = str(response.headers.get("Content-Type") or "").lower()
+                if content_type.startswith("image/"):
+                    if not response.content:
+                        raise ValueError(f"漫画译图接口返回了空图片响应：{content_type}")
+                    return response.content
+
+                if response.content:
+                    try:
+                        with Image.open(BytesIO(response.content)):
+                            return response.content
+                    except UnidentifiedImageError:
+                        pass
+
+                text_body = response.text.strip()
+                resolved_text_payload = _extract_image_bytes_from_text_body(text_body)
+                if isinstance(resolved_text_payload, bytes):
+                    return resolved_text_payload
+                if isinstance(resolved_text_payload, str):
+                    download_response = await client.get(resolved_text_payload)
+                    download_response.raise_for_status()
+                    return download_response.content
+
+                if not text_body:
+                    raise ValueError(
+                        f"漫画译图接口返回为空响应，Content-Type={content_type or 'unknown'}"
+                    )
+
+                try:
+                    payload = response.json()
+                except ValueError as exc:
+                    preview = text_body[:240]
+                    raise ValueError(
+                        f"漫画译图接口返回了无法解析的响应，Content-Type={content_type or 'unknown'}，响应片段：{preview}"
+                    ) from exc
+                if not isinstance(payload, dict):
+                    raise ValueError("漫画译图接口返回不是有效 JSON")
+
+                resolved_image = _extract_image_bytes_from_payload(payload)
+                if isinstance(resolved_image, bytes):
+                    return resolved_image
+
+                download_response = await client.get(resolved_image)
+                download_response.raise_for_status()
+                return download_response.content
+            except retryable_exceptions as exc:
+                last_error = exc
+                if attempt >= 3:
+                    break
+                await asyncio.sleep(min(1.5 * attempt, 4.0))
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                if attempt >= 3:
+                    break
+                await asyncio.sleep(min(1.5 * attempt, 4.0))
+            except RuntimeError as exc:
+                last_error = exc
+                if attempt >= 3:
+                    break
+                if (
+                    "HTTP 408" not in str(exc)
+                    and "HTTP 409" not in str(exc)
+                    and "HTTP 425" not in str(exc)
+                    and "HTTP 429" not in str(exc)
+                    and "HTTP 500" not in str(exc)
+                    and "HTTP 502" not in str(exc)
+                    and "HTTP 503" not in str(exc)
+                    and "HTTP 504" not in str(exc)
+                ):
+                    raise
+                await asyncio.sleep(min(1.5 * attempt, 4.0))
+
+    raise last_error or ValueError("漫画译图请求失败")
+
+
+async def _translate_manga_pages_with_command(
+    *,
+    settings: TranslationSettings,
+    source_language: str,
+    chapter_index: int,
+    title: str,
+    image_files: list[str],
+    book_dir: Path,
+    log_callback: Callable[[str, str], Awaitable[None] | None] | None = None,
+) -> tuple[list[str], list[str]]:
+    if not image_files:
+        raise ValueError("漫画章节没有可翻译的页面图片")
+
+    provider, base_url, api_key, image_model = _resolve_manga_image_provider_config(settings)
+    target_language = _manga_translation_target_language(source_language)
+    page_translations: list[str] = []
+    translated_image_files: list[str] = []
+    total_pages = len(image_files)
+
+    for page_number, asset_path in enumerate(image_files, start=1):
+        image_path = (book_dir / asset_path).resolve()
+        if not image_path.exists():
+            raise ValueError(f"漫画页面文件不存在：{asset_path}")
+
+        translated_asset_path = build_translated_image_asset_path(asset_path)
+        translated_image_path = (book_dir / translated_asset_path).resolve()
+        translated_image_path.parent.mkdir(parents=True, exist_ok=True)
+        translated_image_path.unlink(missing_ok=True)
+
+        log_prefix = f"[漫画译图][第 {page_number}/{total_pages} 页] "
+        await _notify_task_log(
+            log_callback,
+            "info",
+            f"{log_prefix}开始调用模型 {image_model} 处理图片：{asset_path}",
+        )
+
+        prompt = _build_manga_image_edit_prompt(
+            source_language=source_language,
+            target_language=target_language,
+            chapter_title=title,
+            chapter_index=chapter_index,
+            page_number=page_number,
+            total_pages=total_pages,
+        )
+        page_translation = f"【本页已通过模型 {image_model} 完成图片翻译】"
+        if _should_use_chat_completions_image_fallback(image_model):
+            await _notify_task_log(
+                log_callback,
+                "info",
+                f"{log_prefix}当前模型更适合走 /chat/completions 兼容方案，开始执行视觉识别与本地重绘",
+            )
+            translated_bytes, page_translation = await _translate_manga_page_with_chat_completions(
+                settings=settings,
+                provider=provider,
+                base_url=base_url,
+                api_key=api_key,
+                model=image_model,
+                image_path=image_path,
+                source_language=source_language,
+                target_language=target_language,
+                timeout_seconds=BUILTIN_MANGA_IMAGE_TIMEOUT_SECONDS,
+            )
+        else:
+            try:
+                translated_bytes = await _request_manga_image_edit_bytes(
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=image_model,
+                    image_path=image_path,
+                    prompt=prompt,
+                    timeout_seconds=BUILTIN_MANGA_IMAGE_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                if not _should_fallback_from_image_edit_error(exc):
+                    raise
+                await _notify_task_log(
+                    log_callback,
+                    "warning",
+                    f"{log_prefix}图片编辑接口不可用，切换到 /chat/completions 兼容方案：{exc}",
+                )
+                translated_bytes, page_translation = await _translate_manga_page_with_chat_completions(
+                    settings=settings,
+                    provider=provider,
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=image_model,
+                    image_path=image_path,
+                    source_language=source_language,
+                    target_language=target_language,
+                    timeout_seconds=BUILTIN_MANGA_IMAGE_TIMEOUT_SECONDS,
+                )
+        normalized_bytes = _ensure_png_image_bytes(translated_bytes)
+        translated_image_path.write_bytes(normalized_bytes)
+        if translated_image_path.stat().st_size <= 0:
+            raise RuntimeError(f"{log_prefix}未生成有效输出图片：{translated_image_path}")
+
+        page_translations.append(page_translation)
+        translated_image_files.append(translated_asset_path)
+        await _notify_task_log(
+            log_callback,
+            "info",
+            f"{log_prefix}处理完成，输出文件：{translated_asset_path}",
+        )
+
+    return page_translations, translated_image_files
 
 
 def _sync_fetch_with_httpx(url: str, referer: str | None = None) -> SyncFetchResult:
@@ -986,6 +2400,58 @@ def _sync_fetch_with_curl_cffi(url: str, referer: str | None = None) -> SyncFetc
     response.raise_for_status()
     return SyncFetchResult(text=response.text, resolved_url=str(response.url), status_code=response.status_code)
 
+
+def _18comic_session_headers(referer: str | None = None) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if referer:
+        headers["Referer"] = referer
+    return headers
+
+
+def _sync_fetch_18comic_html(url: str, referer: str | None = None) -> SyncFetchResult:
+    if curl_requests is None:
+        raise RuntimeError("curl_cffi 不可用，无法抓取 18Comic")
+    parsed = urlparse(url)
+    is_photo_page = "/photo/" in parsed.path
+    warmup_url = _18comic_album_url(url if is_photo_page else referer) if (is_photo_page or referer) else None
+    request_referer = url if is_photo_page else referer
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        session = curl_requests.Session(impersonate="chrome124")
+        try:
+            if warmup_url:
+                session.get(warmup_url, timeout=40)
+            response = session.get(url, headers=_18comic_session_headers(request_referer), timeout=40)
+            response.raise_for_status()
+            return SyncFetchResult(text=response.text, resolved_url=str(response.url), status_code=response.status_code)
+        except Exception as exc:
+            last_error = exc
+            if attempt >= 3:
+                break
+            time.sleep(1.0 * attempt)
+    raise last_error or RuntimeError(f"18Comic HTML fetch failed: {url}")
+
+
+def _sync_fetch_18comic_binary(url: str, referer: str) -> bytes:
+    if curl_requests is None:
+        raise RuntimeError("curl_cffi unavailable, cannot fetch 18Comic images")
+    last_error: Exception | None = None
+    scramble_id = _18comic_cached_scramble_id(referer)
+    for attempt in range(1, 5):
+        session = curl_requests.Session(impersonate="chrome124")
+        try:
+            album_url = _18comic_album_url(referer)
+            session.get(album_url, timeout=40)
+            response = session.get(url, headers=_18comic_session_headers(referer), timeout=40)
+            response.raise_for_status()
+            image_bytes = bytes(response.content)
+            return _18comic_descramble_bytes(image_bytes, url, referer, scramble_id)
+        except Exception as exc:
+            last_error = exc
+            if attempt >= 4:
+                break
+            time.sleep(0.8 * attempt)
+    raise last_error or RuntimeError(f"18Comic image download failed: {url}")
 
 def _raise_special_site_error(url: str, exc: Exception | None = None) -> None:
     error_text = str(exc or "")
@@ -1175,7 +2641,7 @@ async def _fetch_with_edge_cdp(
             html = str(await _cdp_evaluate(websocket, "document.documentElement.outerHTML || ''") or "")
             if "ERROR: The request could not be satisfied" in last_title or "403 ERROR" in html:
                 raise ValueError(blocked_message or "浏览器会话仍然被目标站点拦截。")
-            raise ValueError(f"浏览器会话抓取超时：{url}")
+            raise ValueError(f"娴忚鍣ㄤ細璇濇姄鍙栬秴鏃讹細{url}")
     finally:
         try:
             process.kill()
@@ -1196,9 +2662,9 @@ def _alphapolis_cover_data_from_html(html: str) -> dict[str, Any]:
     try:
         payload = json.loads(node.get_text(strip=True))
     except Exception as exc:
-        raise ValueError("Alphapolis 目录数据解析失败") from exc
+        raise ValueError("Alphapolis 鐩綍鏁版嵁瑙ｆ瀽澶辫触") from exc
     if not isinstance(payload, dict):
-        raise ValueError("Alphapolis 目录数据格式异常")
+        raise ValueError("Alphapolis 鐩綍鏁版嵁鏍煎紡寮傚父")
     return payload
 
 
@@ -1232,12 +2698,473 @@ def _alphapolis_chapters_from_cover_data(data: dict[str, Any], base_url: str) ->
     return items
 
 
+def _extract_18comic_cover(soup: BeautifulSoup, resolved_url: str) -> str | None:
+    for selector in (".thumb-overlay img", ".img-responsive", "img[data-original]"):
+        for image in soup.select(selector):
+            for key in ("data-original", "data-src", "src"):
+                value = str(image.get(key) or "").strip()
+                if value and "blank.jpg" not in value and "new_logo" not in value:
+                    return urljoin(resolved_url, value)
+    return None
+
+
+def _extract_18comic_synopsis(soup: BeautifulSoup) -> str:
+    meta = soup.select_one("meta[name='description'], meta[property='og:description']")
+    meta_text = meta.get("content") if meta is not None else ""
+    if isinstance(meta_text, str) and meta_text.strip() and meta_text.strip() not in {"免費成人H漫線上看", "免费成人H漫在线看"}:
+        return meta_text.strip()
+
+    for panel in soup.select(".panel-body"):
+        text = re.sub(r"\s+", " ", panel.get_text(" ", strip=True)).strip()
+        if any(keyword in text for keyword in ("简介", "簡介", "描述", "敘述")):
+            return text[:800]
+    return ""
+
+
+def _parse_18comic_page_images(html: str, current_url: str) -> list[str]:
+    soup = BeautifulSoup(html, "html.parser")
+    image_urls: list[str] = []
+    images = []
+    for selector in (
+        ".row.thumb-overlay-albums .scramble-page img",
+        ".panel-body .scramble-page img",
+        ".scramble-page img",
+    ):
+        images = soup.select(selector)
+        if images:
+            break
+    if not images:
+        images = soup.select("img[data-original]")
+
+    for image in images:
+        for key in ("data-original", "data-src", "src"):
+            value = str(image.get(key) or "").strip()
+            if not value or value.endswith("blank.jpg"):
+                continue
+            absolute = urljoin(current_url, value)
+            if "/media/photos/" not in urlparse(absolute).path:
+                continue
+            if absolute not in image_urls:
+                image_urls.append(absolute)
+            break
+    return image_urls
+
+
+def _bika_image_url(media: Any) -> str:
+    if not isinstance(media, dict):
+        return ""
+    file_server = str(media.get("fileServer") or "").strip()
+    path = str(media.get("path") or "").strip().lstrip("/")
+    if not file_server or not path:
+        return ""
+    return f"{file_server.rstrip('/')}/static/{quote(path, safe='/')}"
+
+
+def _load_runtime_settings() -> TranslationSettings:
+    try:
+        from .db import load_settings
+    except ImportError:
+        from app.db import load_settings
+    return load_settings()
+
+
+def _save_runtime_settings(settings: TranslationSettings) -> TranslationSettings:
+    try:
+        from .db import save_settings
+    except ImportError:
+        from app.db import save_settings
+    return save_settings(settings)
+
+
+def _require_bika_credentials(settings: TranslationSettings | None = None) -> tuple[str, str]:
+    runtime_settings = settings or _load_runtime_settings()
+    credential = runtime_settings.bika.email.strip()
+    password = runtime_settings.bika.password.strip()
+    if not credential and not password:
+        return "", ""
+    if not credential or not password:
+        raise ValueError("Bika 账号和密码需同时填写，或留空后由系统自动创建。")
+    return credential, password
+
+
+def _bika_auth_payloads(credential: str, password: str) -> list[dict[str, str]]:
+    preferred_fields = ["email", "username", "account"]
+    return [{field: credential, "password": password} for field in preferred_fields]
+
+
+def _bika_random_token(length: int = 10) -> str:
+    return "".join(secrets.choice(BIKA_RANDOM_ALPHABET) for _ in range(max(1, length)))
+
+
+def _bika_register_payload() -> tuple[str, str, dict[str, str]]:
+    stamp = time.strftime("%y%m%d")
+    suffix = _bika_random_token(8)
+    credential = f"bw{stamp}{suffix}"[:20]
+    password = f"pw{stamp}{suffix}"[:20]
+    payload = {
+        "name": f"web{suffix}"[:20],
+        "email": credential,
+        "password": password,
+        "question1": f"q1{_bika_random_token(6)}",
+        "answer1": f"a1{_bika_random_token(8)}",
+        "question2": f"q2{_bika_random_token(6)}",
+        "answer2": f"a2{_bika_random_token(8)}",
+        "question3": f"q3{_bika_random_token(6)}",
+        "answer3": f"a3{_bika_random_token(8)}",
+        "birthday": "2000-01-01",
+        "gender": "m",
+    }
+    return credential, password, payload
+
+
+def _persist_bika_credentials(settings: TranslationSettings, credential: str, password: str) -> None:
+    previous_credential = settings.bika.email.strip()
+    settings.bika.email = credential
+    settings.bika.password = password
+    if previous_credential and previous_credential != credential:
+        _BIKA_TOKEN_CACHE.pop(previous_credential, None)
+    _save_runtime_settings(settings)
+
+
+async def _register_bika_account(client: httpx.AsyncClient, settings: TranslationSettings) -> tuple[str, str]:
+    error_messages: list[str] = []
+    for _ in range(5):
+        credential, password, payload = _bika_register_payload()
+        try:
+            await _bika_request_with_retry(
+                client,
+                "auth/register",
+                "POST",
+                json_payload=payload,
+            )
+        except httpx.HTTPStatusError as exc:
+            error_messages.append(_bika_response_error_message(exc.response, "Bika 自动注册失败"))
+            if exc.response.status_code not in {400, 409, 422}:
+                raise ValueError(f"Bika 自动注册失败：{error_messages[-1]}") from exc
+            continue
+        except ValueError as exc:
+            error_messages.append(str(exc).strip() or "Bika 自动注册失败")
+            continue
+        _persist_bika_credentials(settings, credential, password)
+        return credential, password
+    unique_messages = [message for message in dict.fromkeys(error_messages) if message]
+    detail = f" 接口返回：{'；'.join(unique_messages)}" if unique_messages else ""
+    raise ValueError(f"Bika 自动注册失败，已重试 5 次。{detail}".strip())
+
+
+async def _ensure_bika_credentials(
+    client: httpx.AsyncClient,
+    settings: TranslationSettings | None = None,
+) -> tuple[str, str]:
+    runtime_settings = settings or _load_runtime_settings()
+    credential, password = _require_bika_credentials(runtime_settings)
+    if credential and password:
+        return credential, password
+    return await _register_bika_account(client, runtime_settings)
+
+
+def _bika_response_error_message(response: httpx.Response, fallback: str) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        for key in ("message", "detail", "error"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, list):
+                messages = [str(item).strip() for item in value if str(item).strip()]
+                if messages:
+                    return "；".join(messages)
+            if isinstance(value, dict):
+                messages = [str(item).strip() for item in value.values() if str(item).strip()]
+                if messages:
+                    return "；".join(messages)
+    response_text = response.text.strip()
+    return response_text or fallback
+
+
+def _bika_signature(path: str, time_value: str, nonce: str, method: str) -> str:
+    normalized_path = path.lstrip("/")
+    message = f"{normalized_path}{time_value}{nonce}{method.upper()}{BIKA_SIGNATURE_SUFFIX}".lower()
+    return hmac.new(BIKA_SIGNATURE_KEY.encode("utf-8"), message.encode("utf-8"), sha256).hexdigest()
+
+
+def _bika_headers(path: str, method: str, token: str | None = None) -> dict[str, str]:
+    time_value = str(int(time.time()))
+    nonce = _bika_random_token(32)
+    signature = _bika_signature(path, time_value, nonce, method)
+    headers = {
+        "app-channel": BIKA_APP_CHANNEL,
+        "app-uuid": BIKA_APP_UUID,
+        "app-version": BIKA_APP_VERSION,
+        "accept": BIKA_API_ACCEPT,
+        "app-platform": BIKA_APP_PLATFORM,
+        "Content-Type": "application/json; charset=UTF-8",
+        "time": time_value,
+        "nonce": nonce,
+        "image-quality": BIKA_IMAGE_QUALITY,
+        "signature": signature,
+        "User-Agent": DEFAULT_HEADERS["User-Agent"],
+        "Accept-Language": DEFAULT_HEADERS["Accept-Language"],
+        "Origin": BIKA_WEB_ORIGIN,
+        "Referer": BIKA_WEB_REFERER,
+    }
+    if token:
+        headers["authorization"] = token
+    return headers
+
+
+async def _bika_request(
+    client: httpx.AsyncClient,
+    path: str,
+    method: str = "GET",
+    *,
+    token: str | None = None,
+    json_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_path = path.lstrip("/")
+    response = await client.request(
+        method.upper(),
+        f"{BIKA_API_BASE_URL}/{normalized_path}",
+        headers=_bika_headers(normalized_path, method, token),
+        json=json_payload,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if isinstance(payload, dict) and payload.get("code") == 200:
+        return payload
+    if isinstance(payload, dict):
+        message = str(payload.get("message") or payload.get("detail") or "Bika 鎺ュ彛杩斿洖寮傚父").strip()
+        raise ValueError(message or "Bika 鎺ュ彛杩斿洖寮傚父")
+    raise ValueError("Bika 鎺ュ彛杩斿洖浜嗕笉鍙瘑鍒殑鏁版嵁缁撴瀯")
+
+
+async def _bika_request_with_retry(
+    client: httpx.AsyncClient,
+    path: str,
+    method: str = "GET",
+    *,
+    token: str | None = None,
+    json_payload: dict[str, Any] | None = None,
+    max_retries: int = 3,
+) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            return await _bika_request(
+                client,
+                path,
+                method,
+                token=token,
+                json_payload=json_payload,
+            )
+        except (httpx.TransportError, ssl.SSLError) as exc:
+            last_error = exc
+            if attempt >= max_retries:
+                break
+            await asyncio.sleep(min(0.8 * attempt, 2.0))
+    raise ValueError(f"Bika 请求失败：{last_error}") from last_error
+
+
+async def _bika_auth_token(client: httpx.AsyncClient, settings: TranslationSettings | None = None, *, force: bool = False) -> str:
+    credential, password = await _ensure_bika_credentials(client, settings)
+    cache_key = credential
+    if not force and cache_key in _BIKA_TOKEN_CACHE:
+        return _BIKA_TOKEN_CACHE[cache_key]
+    error_messages: list[str] = []
+    for auth_payload in _bika_auth_payloads(credential, password):
+        try:
+            payload = await _bika_request_with_retry(
+                client,
+                "auth/sign-in",
+                "POST",
+                json_payload=auth_payload,
+            )
+        except httpx.HTTPStatusError as exc:
+            error_messages.append(_bika_response_error_message(exc.response, "Bika 鐧诲綍澶辫触"))
+            if exc.response.status_code not in {400, 401, 422}:
+                raise ValueError(error_messages[-1]) from exc
+            continue
+        except ValueError as exc:
+            error_messages.append(str(exc).strip() or "Bika 鐧诲綍澶辫触")
+            continue
+
+        data = payload.get("data") if isinstance(payload, dict) else None
+        token = ""
+        if isinstance(data, dict):
+            token = str(data.get("token") or data.get("authorization") or "").strip()
+        if not token:
+            token = str(payload.get("token") or "").strip() if isinstance(payload, dict) else ""
+        if not token:
+            raise ValueError("Bika 登录成功但没有返回 token")
+        _BIKA_TOKEN_CACHE[cache_key] = token
+        return token
+
+    unique_messages = [message for message in dict.fromkeys(error_messages) if message]
+    if unique_messages:
+        raise ValueError(f"Bika 登录失败：已按邮箱和用户名两种方式尝试。接口返回：{"；".join(unique_messages)}")
+    raise ValueError("Bika 登录失败：已按邮箱和用户名两种方式尝试，但接口没有返回可用结果")
+
+
+async def _bika_authed_request(
+    client: httpx.AsyncClient,
+    path: str,
+    method: str = "GET",
+    *,
+    settings: TranslationSettings | None = None,
+    json_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    token = await _bika_auth_token(client, settings)
+    try:
+        return await _bika_request_with_retry(client, path, method, token=token, json_payload=json_payload)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 401:
+            raise
+        token = await _bika_auth_token(client, settings, force=True)
+        return await _bika_request_with_retry(client, path, method, token=token, json_payload=json_payload)
+
+
+async def _bika_fetch_comic(client: httpx.AsyncClient, comic_id: str, settings: TranslationSettings | None = None) -> dict[str, Any]:
+    payload = await _bika_authed_request(client, f"comics/{comic_id}", settings=settings)
+    data = payload.get("data") if isinstance(payload, dict) else None
+    comic = data.get("comic") if isinstance(data, dict) else None
+    if not isinstance(comic, dict):
+        raise ValueError("Bika 婕敾璇︽儏鏁版嵁鏍煎紡寮傚父")
+    return comic
+
+
+async def _bika_fetch_episodes(
+    client: httpx.AsyncClient,
+    comic_id: str,
+    settings: TranslationSettings | None = None,
+) -> list[dict[str, Any]]:
+    episodes: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        payload = await _bika_authed_request(client, f"comics/{comic_id}/eps?page={page}", settings=settings)
+        data = payload.get("data") if isinstance(payload, dict) else None
+        eps = data.get("eps") if isinstance(data, dict) else None
+        if not isinstance(eps, dict):
+            break
+        docs = eps.get("docs")
+        if isinstance(docs, list):
+            episodes.extend(item for item in docs if isinstance(item, dict))
+        current_page = int(eps.get("page") or page)
+        total_pages = int(eps.get("pages") or current_page or 1)
+        if current_page >= total_pages:
+            break
+        page = current_page + 1
+    return episodes
+
+
+async def _bika_fetch_pages(
+    client: httpx.AsyncClient,
+    comic_id: str,
+    order: str,
+    settings: TranslationSettings | None = None,
+) -> tuple[list[str], str]:
+    image_urls: list[str] = []
+    chapter_title = ""
+    page = 1
+    while True:
+        payload = await _bika_authed_request(
+            client,
+            f"comics/{comic_id}/order/{order}/pages?page={page}",
+            settings=settings,
+        )
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            raise ValueError("Bika 漫画页数据格式异常")
+        pages = data.get("pages")
+        if not isinstance(pages, dict):
+            raise ValueError("Bika 漫画页列表缺失")
+        docs = pages.get("docs")
+        if isinstance(docs, list):
+            for item in docs:
+                media = item.get("media") if isinstance(item, dict) else None
+                image_url = _bika_image_url(media)
+                if image_url and image_url not in image_urls:
+                    image_urls.append(image_url)
+        episode = data.get("ep")
+        if isinstance(episode, dict) and not chapter_title:
+            chapter_title = str(episode.get("title") or "").strip()
+        current_page = int(pages.get("page") or page)
+        total_pages = int(pages.get("pages") or current_page or 1)
+        if current_page >= total_pages:
+            break
+        page = current_page + 1
+    return image_urls, chapter_title
+
+
+async def _preview_18comic(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    album_url = _18comic_album_url(source_url)
+    result = await asyncio.to_thread(_sync_fetch_18comic_html, album_url)
+    soup = BeautifulSoup(result.text, "html.parser")
+    fallback_title = payload.title or Path(urlparse(source_url).path).stem or "未命名漫画"
+    title = str((soup.select_one("h1") or soup.select_one("title")).get_text(" ", strip=True) if (soup.select_one("h1") or soup.select_one("title")) else fallback_title).strip()
+    title = _clean_title_suffix(title, (" Comics - ????", " - ????", " Comics", "|H?????? Comics - ????"))
+    read_anchor = soup.select_one("a[href*='/photo/']")
+    photo_url = urljoin(result.resolved_url, str(read_anchor.get("href") or "").strip()) if read_anchor is not None else _18comic_photo_url(album_url)
+    photo_result = await asyncio.to_thread(_sync_fetch_18comic_html, photo_url, album_url)
+    _18comic_cache_scramble_id(source_url, photo_result.text)
+    page_count = len(_parse_18comic_page_images(photo_result.text, photo_result.resolved_url))
+    chapter_title = title if page_count <= 1 else f"{title} / 第1话"
+    return PreviewResponse(
+        title=title,
+        author=None,
+        synopsis=_extract_18comic_synopsis(soup),
+        cover=_extract_18comic_cover(soup, result.resolved_url),
+        chapterCount=1,
+        chapters=[ChapterPreview(title=chapter_title, url=photo_url, pageCount=page_count)],
+    )
+
+
+async def _preview_bika(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    comic_id = _bika_comic_id_from_url(source_url)
+    if not comic_id:
+        raise ValueError("鏃犳硶璇嗗埆 Bika 婕敾缂栧彿")
+    runtime_settings = _load_runtime_settings()
+    async with _create_async_http_client(timeout=40.0) as client:
+        comic = await _bika_fetch_comic(client, comic_id, runtime_settings)
+        episodes = await _bika_fetch_episodes(client, comic_id, runtime_settings)
+    title = str(comic.get("title") or payload.title or "未命名漫画").strip()
+    author = str(comic.get("author") or comic.get("chineseTeam") or "").strip() or None
+    synopsis = str(comic.get("description") or "").strip()
+    cover = _bika_image_url(comic.get("thumb"))
+    base_origin = f"{urlparse(source_url).scheme}://{urlparse(source_url).netloc}"
+    chapters: list[ChapterPreview] = []
+    for item in sorted(episodes, key=lambda episode: int(episode.get("order") or 0)):
+        order = str(item.get("order") or "").strip()
+        if not order:
+            continue
+        chapter_title = str(item.get("title") or "").strip() or f"第{order}话"
+        chapters.append(
+            ChapterPreview(
+                title=chapter_title,
+                url=f"{base_origin}/comic/reader/{comic_id}/{order}",
+                pageCount=0,
+            )
+        )
+    if not chapters:
+        chapters = [ChapterPreview(title=title, url=f"{base_origin}/comic/reader/{comic_id}/1", pageCount=0)]
+    return PreviewResponse(
+        title=title,
+        author=author,
+        synopsis=synopsis,
+        cover=cover,
+        chapterCount=len(chapters),
+        chapters=chapters,
+    )
+
+
 async def _preview_kakuyomu(source_url: str, payload: AddBookPayload) -> PreviewResponse:
     html, resolved_url = await _fetch_preview_html(source_url)
     state = _kakuyomu_state_from_html(html)
     work_id = _kakuyomu_work_id_from_url(source_url)
     if not work_id:
-        raise ValueError("无法识别 Kakuyomu 作品编号")
+        raise ValueError("鏃犳硶璇嗗埆 Kakuyomu 浣滃搧缂栧彿")
     work = _kakuyomu_work_from_state(state, work_id)
     title = str(work.get("title") or payload.title or "未命名小说").strip()
     author = _kakuyomu_author_from_state(state, work)
@@ -1311,10 +3238,10 @@ async def _preview_pixiv(source_url: str, payload: AddBookPayload) -> PreviewRes
             body = series_result["body"]
             title_items = titles_result["body"]
             if not isinstance(body, dict) or not isinstance(title_items, list):
-                raise ValueError("Pixiv 系列接口返回异常")
+                raise ValueError("Pixiv 绯诲垪鎺ュ彛杩斿洖寮傚父")
             chapters = [
                 ChapterPreview(
-                    title=str(item.get("title") or f"章节 {index}"),
+                    title=str(item.get("title") or f"绔犺妭 {index}"),
                     url=f"https://www.pixiv.net/novel/show.php?id={item.get('id')}",
                 )
                 for index, item in enumerate(title_items, start=1)
@@ -1336,7 +3263,7 @@ async def _preview_pixiv(source_url: str, payload: AddBookPayload) -> PreviewRes
 
         novel_id = _pixiv_novel_id_from_url(normalized)
         if not novel_id:
-            raise ValueError("无法识别 Pixiv 小说编号")
+            raise ValueError("鏃犳硶璇嗗埆 Pixiv 灏忚缂栧彿")
         novel_result = await _fetch_json(
             client,
             f"https://www.pixiv.net/ajax/novel/{novel_id}",
@@ -1344,7 +3271,7 @@ async def _preview_pixiv(source_url: str, payload: AddBookPayload) -> PreviewRes
         )
         body = novel_result["body"]
         if not isinstance(body, dict):
-            raise ValueError("Pixiv 小说接口返回异常")
+            raise ValueError("Pixiv 灏忚鎺ュ彛杩斿洖寮傚父")
         title = str(body.get("title") or payload.title or "未命名小说").strip()
         return PreviewResponse(
             title=title,
@@ -1479,18 +3406,31 @@ async def _preview_alphapolis(source_url: str, payload: AddBookPayload) -> Previ
 
 async def preview_from_url(payload: AddBookPayload) -> PreviewResponse:
     source_url = _normalize_source_url(str(payload.sourceUrl))
+    result: PreviewResponse
+    if _is_18comic_url(source_url):
+        result = await _preview_18comic(source_url, payload)
+        return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
+    if _is_bikawebapp_url(source_url):
+        result = await _preview_bika(source_url, payload)
+        return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
     if _is_kakuyomu_url(source_url):
-        return await _preview_kakuyomu(source_url, payload)
+        result = await _preview_kakuyomu(source_url, payload)
+        return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
     if _is_syosetu_url(source_url) or _is_novel18_url(source_url):
-        return await _preview_syosetu(source_url, payload)
+        result = await _preview_syosetu(source_url, payload)
+        return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
     if _is_pixiv_url(source_url):
-        return await _preview_pixiv(source_url, payload)
+        result = await _preview_pixiv(source_url, payload)
+        return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
     if _is_hameln_url(source_url):
-        return await _preview_hameln(source_url, payload)
+        result = await _preview_hameln(source_url, payload)
+        return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
     if _is_novelup_url(source_url):
-        return await _preview_novelup(source_url, payload)
+        result = await _preview_novelup(source_url, payload)
+        return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
     if _is_alphapolis_url(source_url):
-        return await _preview_alphapolis(source_url, payload)
+        result = await _preview_alphapolis(source_url, payload)
+        return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
 
     html, resolved_url = await _fetch_preview_html(source_url)
     soup = BeautifulSoup(html, "html.parser")
@@ -1504,7 +3444,7 @@ async def preview_from_url(payload: AddBookPayload) -> PreviewResponse:
     if not chapters:
         chapters = [ChapterPreview(title=title, url=resolved_url)]
 
-    return PreviewResponse(
+    result = PreviewResponse(
         title=title,
         author=author,
         synopsis=synopsis,
@@ -1512,13 +3452,18 @@ async def preview_from_url(payload: AddBookPayload) -> PreviewResponse:
         chapterCount=len(chapters),
         chapters=chapters,
     )
+    return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
 
 
 async def download_book(payload: AddBookPayload, preview: PreviewResponse, root_dir: Path) -> DownloadResult:
-    safe_title = re.sub(r'[\\/:*?"<>|]', '_', preview.title).strip() or "未命名小说"
+    safe_title = re.sub(r'[\/:*?"<>|]', "_", preview.title).strip() or "未命名小说"
     book_dir = root_dir / payload.language / safe_title
     book_dir.mkdir(parents=True, exist_ok=True)
     chapter_manifest: list[dict[str, str | int]] = []
+    runtime_settings = _load_runtime_settings()
+    image_download_semaphore = asyncio.Semaphore(
+        _image_download_concurrency(str(payload.sourceUrl), runtime_settings.downloadConcurrency)
+    )
 
     async with _build_http_client() as client:
         cover_file = await _download_cover_image(client, book_dir, preview.cover, str(payload.sourceUrl))
@@ -1527,7 +3472,14 @@ async def download_book(payload: AddBookPayload, preview: PreviewResponse, root_
         for index, chapter in enumerate(preview.chapters, start=1):
             try:
                 result = await _fetch_chapter_data(client, chapter.url, chapter.title)
-                image_files = await _download_chapter_images(client, book_dir, index, result.image_urls, chapter.url)
+                image_files = await _download_chapter_images(
+                    client,
+                    book_dir,
+                    index,
+                    result.image_urls,
+                    chapter.url,
+                    image_download_semaphore=image_download_semaphore,
+                )
             except Exception as exc:
                 result = ChapterFetchResult(
                     text=f"章节抓取失败：{exc}\n原始链接：{chapter.url}",
@@ -1548,9 +3500,13 @@ async def download_book(payload: AddBookPayload, preview: PreviewResponse, root_
                     "downloaded": True,
                     "translated": False,
                     "translated_file_name": None,
+                    "translated_meta_file_name": None,
                     "illustration": result.illustration,
                     "image_urls": result.image_urls,
                     "image_files": image_files,
+                    "translated_image_files": [],
+                    "page_count": chapter.pageCount or len(image_files) or len(result.image_urls),
+                    "images_repaired": _is_18comic_url(chapter.url),
                 }
             )
 
@@ -1558,7 +3514,7 @@ async def download_book(payload: AddBookPayload, preview: PreviewResponse, root_
         "title": preview.title,
         "author": preview.author,
         "source_url": str(payload.sourceUrl),
-        "book_kind": payload.bookKind,
+        "book_kind": preview.bookKind,
         "language": payload.language,
         "need_translation": payload.needTranslation,
         "synopsis": preview.synopsis,
@@ -1630,7 +3586,7 @@ async def _fetch_kakuyomu_chapter_data(
         raise ValueError("未能从 Kakuyomu 页面提取出正文内容")
     illustration = _is_illustration_chapter(chapter_title)
     if not text and image_urls:
-        text = _format_illustration_text(chapter_title or "插图", image_urls)
+        text = _format_illustration_text(chapter_title or "鎻掑浘", image_urls)
         illustration = True
     elif image_urls and illustration:
         text = _append_image_links(text, image_urls)
@@ -1651,7 +3607,7 @@ async def _fetch_syosetu_chapter_data(
             blocks = [body]
     text = _extract_text_from_blocks(blocks)
     if not text:
-        raise ValueError("未能从成为小说家吧页面提取出正文内容")
+        raise ValueError("鏈兘浠庢垚涓哄皬璇村鍚ч〉闈㈡彁鍙栧嚭姝ｆ枃鍐呭")
     return ChapterFetchResult(text=text, image_urls=[], illustration=False)
 
 
@@ -1675,22 +3631,59 @@ async def _fetch_pixiv_chapter_data(
 ) -> ChapterFetchResult:
     novel_id = _pixiv_novel_id_from_url(chapter_url)
     if not novel_id:
-        raise ValueError("无法识别 Pixiv 小说编号")
+        raise ValueError("鏃犳硶璇嗗埆 Pixiv 灏忚缂栧彿")
     payload = await _fetch_json(client, f"https://www.pixiv.net/ajax/novel/{novel_id}", _pixiv_api_headers(chapter_url))
     body = payload["body"]
     if not isinstance(body, dict):
-        raise ValueError("Pixiv 小说接口返回异常")
+        raise ValueError("Pixiv 灏忚鎺ュ彛杩斿洖寮傚父")
     text = _pixiv_content_to_text(str(body.get("content") or ""))
     image_urls = _extract_pixiv_image_urls(body)
     illustration = _is_illustration_chapter(chapter_title)
     if not text and image_urls:
-        text = _format_illustration_text(chapter_title or str(body.get("title") or "插图"), image_urls)
+        text = _format_illustration_text(chapter_title or str(body.get("title") or "鎻掑浘"), image_urls)
         illustration = True
     elif image_urls and illustration:
         text = _append_image_links(text, image_urls)
     if not text:
         raise ValueError("未能从 Pixiv 页面提取出正文内容")
     return ChapterFetchResult(text=text, image_urls=image_urls, illustration=illustration)
+
+
+def _sync_fetch_18comic_chapter_data(chapter_url: str, chapter_title: str = "") -> ChapterFetchResult:
+    photo_url = chapter_url
+    album_url = _18comic_album_url(chapter_url)
+    result = _sync_fetch_18comic_html(photo_url, album_url)
+    _18comic_cache_scramble_id(chapter_url, result.text)
+    image_urls = _parse_18comic_page_images(result.text, result.resolved_url)
+    if not image_urls:
+        raise ValueError("未能从 18Comic 页面提取出漫画图片")
+    title = chapter_title.strip() or "漫画章节"
+    return ChapterFetchResult(text=_manga_placeholder_text(title, len(image_urls)), image_urls=image_urls, illustration=False)
+
+
+async def _fetch_18comic_chapter_data(
+    client: httpx.AsyncClient,
+    chapter_url: str,
+    chapter_title: str = "",
+) -> ChapterFetchResult:
+    return await asyncio.to_thread(_sync_fetch_18comic_chapter_data, chapter_url, chapter_title)
+
+
+async def _fetch_bika_chapter_data(
+    client: httpx.AsyncClient,
+    chapter_url: str,
+    chapter_title: str = "",
+) -> ChapterFetchResult:
+    comic_id = _bika_comic_id_from_url(chapter_url)
+    order = _bika_order_from_url(chapter_url)
+    if not comic_id or not order:
+        raise ValueError("鏃犳硶璇嗗埆 Bika 绔犺妭缂栧彿")
+    runtime_settings = _load_runtime_settings()
+    image_urls, resolved_title = await _bika_fetch_pages(client, comic_id, order, runtime_settings)
+    if not image_urls:
+        raise ValueError("未能从 Bika 接口提取出漫画页面")
+    title = chapter_title.strip() or resolved_title or f"第{order}话"
+    return ChapterFetchResult(text=_manga_placeholder_text(title, len(image_urls)), image_urls=image_urls, illustration=False)
 
 
 async def _fetch_alphapolis_chapter_data(
@@ -1721,7 +3714,7 @@ async def _fetch_alphapolis_chapter_data(
     text = body.get_text("\n", strip=True)
     illustration = _is_illustration_chapter(chapter_title)
     if not text and image_urls:
-        text = _format_illustration_text(chapter_title or "插图", image_urls)
+        text = _format_illustration_text(chapter_title or "鎻掑浘", image_urls)
         illustration = True
     elif image_urls and illustration:
         text = _append_image_links(text, image_urls)
@@ -1732,6 +3725,10 @@ async def _fetch_alphapolis_chapter_data(
 
 async def _fetch_chapter_data(client: httpx.AsyncClient, chapter_url: str, chapter_title: str = "") -> ChapterFetchResult:
     try:
+        if _is_18comic_url(chapter_url):
+            return await _fetch_18comic_chapter_data(client, chapter_url, chapter_title)
+        if _is_bikawebapp_url(chapter_url):
+            return await _fetch_bika_chapter_data(client, chapter_url, chapter_title)
         if _is_linovelib_url(chapter_url):
             return await _fetch_linovelib_chapter_data(client, chapter_url, chapter_title)
         if _is_kakuyomu_url(chapter_url):
@@ -1791,11 +3788,22 @@ def _request_headers(url: str, referer: str | None = None) -> dict[str, str]:
     return headers
 
 
+def _create_async_http_client(
+    *,
+    timeout: float,
+    headers: dict[str, str] | None = None,
+    follow_redirects: bool = True,
+) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        follow_redirects=follow_redirects,
+        timeout=timeout,
+        headers=headers,
+        http2=False,
+    )
+
+
 def _build_http_client() -> httpx.AsyncClient:
-    try:
-        client = httpx.AsyncClient(follow_redirects=True, timeout=20.0, headers=DEFAULT_HEADERS, http2=True)
-    except ImportError:
-        client = httpx.AsyncClient(follow_redirects=True, timeout=20.0, headers=DEFAULT_HEADERS)
+    client = _create_async_http_client(timeout=20.0, headers=DEFAULT_HEADERS)
     client.cookies.set("over18", "yes", domain=".syosetu.com")
     client.cookies.set("over18", "yes", domain=".novel18.syosetu.com")
     return client
@@ -1928,7 +3936,7 @@ async def _fetch_preview_html(source_url: str) -> tuple[str, str]:
 
     if last_error is not None:
         raise last_error
-    raise ValueError(f"无法读取目录页：{source_url}")
+    raise ValueError(f"鏃犳硶璇诲彇鐩綍椤碉細{source_url}")
 
 
 async def _fetch_linovelib_chapter_data(
@@ -1960,7 +3968,7 @@ async def _fetch_linovelib_chapter_data(
     merged = "\n\n".join(part for part in parts if part.strip()).strip()
     illustration = _is_illustration_chapter(chapter_title)
     if not merged and image_urls:
-        merged = _format_illustration_text(chapter_title or "插图", image_urls)
+        merged = _format_illustration_text(chapter_title or "鎻掑浘", image_urls)
         illustration = True
     elif image_urls and illustration:
         merged = _append_image_links(merged, image_urls)
@@ -2021,7 +4029,7 @@ def _extract_linovelib_next_page(html: str, current_url: str) -> str | None:
         href = str(anchor.get("href", "")).strip()
         if not href:
             continue
-        if label in {"下一页", "下一頁"}:
+        if label in {"下一页", "下一頁", "下一话", "下一話"}:
             return urljoin(current_url, href)
 
     match = re.search(r"url_next\s*[:=]\s*'([^']+)'", html)
@@ -2050,11 +4058,11 @@ def _same_linovelib_chapter(source_url: str, candidate_url: str) -> bool:
 
 def _is_illustration_chapter(chapter_title: str) -> bool:
     normalized = chapter_title.strip().lower()
-    return any(keyword in normalized for keyword in ("插图", "插畫", "illustration"))
+    return any(keyword in normalized for keyword in ("鎻掑浘", "鎻掔暙", "illustration"))
 
 
 def _format_illustration_text(chapter_title: str, image_urls: list[str]) -> str:
-    lines = [f"{chapter_title}（插图章节）", "", f"共收集到 {len(image_urls)} 张图片链接：", ""]
+    lines = [f"{chapter_title}锛堟彃鍥剧珷鑺傦級", "", f"鍏辨敹闆嗗埌 {len(image_urls)} 寮犲浘鐗囬摼鎺ワ細", ""]
     lines.extend(image_urls)
     return "\n".join(lines).strip()
 
@@ -2063,8 +4071,26 @@ def _append_image_links(text: str, image_urls: list[str]) -> str:
     if not image_urls:
         return text
     if not text.strip():
-        return "插图链接：\n" + "\n".join(image_urls)
-    return f"{text.rstrip()}\n\n插图链接：\n" + "\n".join(image_urls)
+        return "鎻掑浘閾炬帴锛歕n" + "\n".join(image_urls)
+    return f"{text.rstrip()}\n\n鎻掑浘閾炬帴锛歕n" + "\n".join(image_urls)
+
+
+async def _download_binary_bytes(
+    client: httpx.AsyncClient,
+    url: str,
+    referer: str,
+) -> bytes:
+    if _is_18comic_url(url) or _is_18comic_url(referer):
+        return await asyncio.to_thread(_sync_fetch_18comic_binary, url, referer)
+    response = await _get_binary_response(client, url, referer=referer)
+    return response.content
+
+
+def _image_download_concurrency(source_url: str, concurrency: int) -> int:
+    normalized = max(1, min(concurrency, 8))
+    if _is_18comic_url(source_url) or _is_bikawebapp_url(source_url):
+        return min(8, max(2, normalized * 2))
+    return normalized
 
 
 async def _download_chapter_images(
@@ -2073,25 +4099,38 @@ async def _download_chapter_images(
     chapter_index: int,
     image_urls: list[str],
     referer: str,
+    *,
+    image_download_semaphore: asyncio.Semaphore | None = None,
 ) -> list[str]:
     if not image_urls:
         return []
 
     images_dir = book_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
-    files: list[str] = []
 
-    for image_number, image_url in enumerate(image_urls, start=1):
+    async def download_single_image(image_number: int, image_url: str) -> str:
         extension = _image_extension_from_url(image_url)
         file_hash = md5(image_url.encode("utf-8")).hexdigest()[:10]
         filename = f"{chapter_index:04d}-{image_number:02d}-{file_hash}{extension}"
         target_path = images_dir / filename
-        if not target_path.exists():
-            response = await _get_binary_response(client, image_url, referer=referer)
-            target_path.write_bytes(response.content)
-        files.append(f"images/{filename}")
+        if target_path.exists():
+            return f"images/{filename}"
 
-    return files
+        async def fetch_and_write() -> None:
+            content = await _download_binary_bytes(client, image_url, referer)
+            await asyncio.to_thread(target_path.write_bytes, content)
+
+        if image_download_semaphore is None:
+            await fetch_and_write()
+        else:
+            async with image_download_semaphore:
+                if not target_path.exists():
+                    await fetch_and_write()
+        return f"images/{filename}"
+
+    return await asyncio.gather(
+        *(download_single_image(image_number, image_url) for image_number, image_url in enumerate(image_urls, start=1))
+    )
 
 
 async def _download_cover_image(
@@ -2105,12 +4144,12 @@ async def _download_cover_image(
 
     covers_dir = book_dir / "covers"
     covers_dir.mkdir(parents=True, exist_ok=True)
-    extension = _image_extension_from_url(cover_url)
+    image_bytes = await _download_binary_bytes(client, cover_url, referer)
+    extension = _image_extension_from_bytes(image_bytes, _image_extension_from_url(cover_url))
     filename = f"cover{extension}"
     target_path = covers_dir / filename
     if not target_path.exists():
-        response = await _get_binary_response(client, cover_url, referer=referer)
-        target_path.write_bytes(response.content)
+        target_path.write_bytes(image_bytes)
     return f"covers/{filename}"
 
 
@@ -2119,6 +4158,33 @@ def _image_extension_from_url(url: str) -> str:
     if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}:
         return suffix
     return ".jpg"
+
+
+def _image_extension_from_bytes(image_bytes: bytes, fallback: str = ".jpg") -> str:
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if image_bytes[:6] in {b"GIF87a", b"GIF89a"}:
+        return ".gif"
+    if image_bytes.startswith(b"BM"):
+        return ".bmp"
+    if image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+        return ".webp"
+
+    try:
+        with Image.open(BytesIO(image_bytes)) as image:
+            format_name = (image.format or "").upper()
+    except UnidentifiedImageError:
+        return fallback
+
+    return {
+        "JPEG": ".jpg",
+        "PNG": ".png",
+        "WEBP": ".webp",
+        "GIF": ".gif",
+        "BMP": ".bmp",
+    }.get(format_name, fallback)
 
 
 def _image_request_headers(url: str, referer: str) -> dict[str, str]:
@@ -2139,43 +4205,43 @@ async def _translate_text(
     prompt = (
         f"章节标题：{title}\n"
         f"原始语言：{source_language}\n"
-        "正文如下：\n\n"
+        "姝ｆ枃濡備笅锛歕n\n"
         f"{content}"
     )
 
     if provider == "anthropic":
         base_url = provider_config.baseUrl.rstrip("/")
-        response = await client.post(
+        payload = await _post_translation_json(
+            client,
             f"{base_url}/messages",
             headers={
                 "x-api-key": provider_config.apiKey,
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             },
-            json={
+            payload={
                 "model": provider_config.model,
                 "max_tokens": 8192,
                 "system": settings.systemPrompt,
                 "messages": [{"role": "user", "content": prompt}],
             },
         )
-        response.raise_for_status()
-        payload = response.json()
         blocks = payload.get("content", [])
         parts = [block.get("text", "") for block in blocks if isinstance(block, dict) and block.get("type") == "text"]
         text = "\n".join(part for part in parts if part).strip()
         if not text:
-            raise ValueError("Anthropic 返回了空翻译结果")
+            raise ValueError("Anthropic 杩斿洖浜嗙┖缈昏瘧缁撴灉")
         return text
 
     base_url = provider_config.baseUrl.rstrip("/")
-    response = await client.post(
+    payload = await _post_translation_json(
+        client,
         f"{base_url}/chat/completions",
         headers={
             "Authorization": f"Bearer {provider_config.apiKey}",
             "Content-Type": "application/json",
         },
-        json={
+        payload={
             "model": provider_config.model,
             "temperature": 0.2,
             "messages": [
@@ -2184,20 +4250,79 @@ async def _translate_text(
             ],
         },
     )
-    response.raise_for_status()
-    payload = response.json()
     choices = payload.get("choices", [])
     if not choices:
-        raise ValueError("翻译服务返回了空响应")
+        raise ValueError("缈昏瘧鏈嶅姟杩斿洖浜嗙┖鍝嶅簲")
 
     message = choices[0].get("message", {})
-    content_value = message.get("content", "")
+    return _normalize_translation_result(message.get("content", ""))
+
+
+def _media_type_for_path(path: Path) -> str:
+    return {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }.get(path.suffix.lower(), "image/jpeg")
+
+
+def _normalize_translation_result(content_value: Any) -> str:
     if isinstance(content_value, list):
         parts = [item.get("text", "") for item in content_value if isinstance(item, dict)]
         content_value = "\n".join(part for part in parts if part)
     text = str(content_value).strip()
     if not text:
-        raise ValueError("翻译服务返回了空翻译结果")
+        raise ValueError("缈昏瘧鏈嶅姟杩斿洖浜嗙┖缈昏瘧缁撴灉")
     return text
 
+
+async def _post_translation_json(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    max_retries: int = 3,
+) -> dict[str, Any]:
+    last_error: Exception | None = None
+    retryable_status_codes = {408, 409, 425, 429, 500, 502, 503, 504}
+    retryable_exceptions: tuple[type[Exception], ...] = (
+        httpx.TransportError,
+        ssl.SSLError,
+    )
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = await client.post(url, headers=headers, json=payload)
+            if response.status_code in retryable_status_codes and attempt < max_retries:
+                await asyncio.sleep(min(1.2 * attempt, 4.0))
+                continue
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, dict):
+                raise ValueError("缈昏瘧鏈嶅姟杩斿洖浜嗕笉鍙瘑鍒殑鏁版嵁缁撴瀯")
+            return data
+        except httpx.HTTPStatusError as exc:
+            last_error = exc
+            if exc.response.status_code not in retryable_status_codes or attempt >= max_retries:
+                raise
+            await asyncio.sleep(min(1.2 * attempt, 4.0))
+        except retryable_exceptions as exc:
+            last_error = exc
+            if attempt >= max_retries:
+                break
+            await asyncio.sleep(min(1.2 * attempt, 4.0))
+
+    raise last_error or ValueError(f"翻译请求失败：{url}")
+
+
+def _merge_page_translations(title: str, page_translations: list[str]) -> str:
+    lines = [title, ""]
+    for index, page_text in enumerate(page_translations, start=1):
+        lines.append(f"【第 {index} 页】")
+        lines.append(page_text.strip() or "【本页无对白】")
+        lines.append("")
+    return "\n".join(lines).strip()
 

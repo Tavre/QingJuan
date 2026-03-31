@@ -1,15 +1,16 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, HttpUrl
 
-BookKind = Literal["长小说", "轻小说"]
+BookKind = Literal["长小说", "轻小说", "漫画"]
 Language = Literal["中文", "英文", "日文"]
-TranslationProvider = Literal["openai", "newapi", "anthropic", "custom"]
+TranslationProvider = Literal["openai", "newapi", "anthropic", "grok2api", "custom"]
 TaskType = Literal["download", "translate"]
 TaskStatus = Literal["queued", "running", "completed", "failed"]
+TaskLogLevel = Literal["info", "warning", "error"]
 
 
 class AddBookPayload(BaseModel):
@@ -23,6 +24,7 @@ class AddBookPayload(BaseModel):
 class ChapterPreview(BaseModel):
     title: str
     url: str
+    pageCount: int = 0
 
 
 class PreviewResponse(BaseModel):
@@ -32,6 +34,7 @@ class PreviewResponse(BaseModel):
     cover: str | None = None
     chapterCount: int
     chapters: list[ChapterPreview]
+    bookKind: BookKind = "轻小说"
 
 
 class BookRecord(BaseModel):
@@ -64,20 +67,44 @@ class ChapterRecord(BaseModel):
     imageCount: int = 0
     imageUrls: list[str] = []
     imageFiles: list[str] = []
+    translatedImageFiles: list[str] = []
+    pageCount: int = 0
 
 
 class ReadingProgressRecord(BaseModel):
     bookId: str
     lastChapterIndex: int = 0
+    lastScrollRatio: float = 0
+    lastAnchorType: Literal["top", "paragraph", "image"] = "top"
+    lastAnchorIndex: int = 0
+    lastAnchorOffsetRatio: float = 0
     lastReadAt: str | None = None
 
 
 class ReadingProgressPayload(BaseModel):
     chapterIndex: int
+    scrollRatio: float = 0
+    anchorType: Literal["top", "paragraph", "image"] = "top"
+    anchorIndex: int = 0
+    anchorOffsetRatio: float = 0
 
 
 class ChapterActionPayload(BaseModel):
     chapterIndexes: list[int] = Field(min_length=1)
+
+
+class BookExportPayload(BaseModel):
+    format: Literal["txt", "epub"]
+    targetPath: str | None = None
+
+
+class BookExportResponse(BaseModel):
+    bookId: str
+    format: Literal["txt", "epub"]
+    fileName: str
+    filePath: str
+    downloadUrl: str
+    chapterCount: int
 
 
 class TaskRecord(BaseModel):
@@ -94,6 +121,14 @@ class TaskRecord(BaseModel):
     attempts: int = 0
     createdAt: str
     updatedAt: str
+
+
+class TaskLogRecord(BaseModel):
+    sequence: int
+    taskId: str
+    level: TaskLogLevel = "info"
+    message: str
+    createdAt: str
 
 
 class BookDetailResponse(BaseModel):
@@ -117,6 +152,7 @@ class ChapterContentResponse(BaseModel):
     mode: Literal["original", "translated"] = "original"
     translatedAvailable: bool = False
     imageSources: list[str] = []
+    pageTranslations: list[str] = []
 
 
 class ProviderConfig(BaseModel):
@@ -124,6 +160,11 @@ class ProviderConfig(BaseModel):
     baseUrl: str = ""
     apiKey: str = ""
     model: str = ""
+
+
+class ComicSourceConfig(BaseModel):
+    email: str = ""
+    password: str = ""
 
 
 class TranslationSettings(BaseModel):
@@ -143,7 +184,8 @@ class TranslationSettings(BaseModel):
 直接输出译文，无需解释翻译过程。
 如遇歧义或难以处理的表达，在译文后用【译注】标注说明。
 ## 翻译方向
-[中译英 / 英译中]"""
+    [中译英 / 英译中]"""
     autoTranslateNextChapters: int = 0
     downloadConcurrency: int = Field(default=3, ge=1, le=8)
     providers: dict[TranslationProvider, ProviderConfig]
+    bika: ComicSourceConfig = Field(default_factory=ComicSourceConfig)

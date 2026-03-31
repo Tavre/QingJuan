@@ -1,9 +1,12 @@
-﻿export type BookKind = '长小说' | '轻小说';
+export type BookKind = '长小说' | '轻小说' | '漫画';
 export type Language = '中文' | '英文' | '日文';
-export type TranslationProvider = 'openai' | 'newapi' | 'anthropic' | 'custom';
+export type TranslationProvider = 'openai' | 'newapi' | 'anthropic' | 'grok2api' | 'custom';
 export type BookStatus = '待处理' | '解析中' | '已下载' | '已完成';
 export type TaskType = 'download' | 'translate';
 export type TaskStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type TaskLogLevel = 'info' | 'warning' | 'error';
+export type BookExportFormat = 'txt' | 'epub';
+export type ReaderProgressAnchorType = 'top' | 'paragraph' | 'image';
 
 export interface AddBookPayload {
   sourceUrl: string;
@@ -16,6 +19,7 @@ export interface AddBookPayload {
 export interface ChapterPreview {
   title: string;
   url: string;
+  pageCount: number;
 }
 
 export interface BookRecord {
@@ -48,16 +52,44 @@ export interface ChapterRecord {
   imageCount: number;
   imageUrls: string[];
   imageFiles: string[];
+  translatedImageFiles: string[];
+  pageCount: number;
 }
 
 export interface ReadingProgressRecord {
   bookId: string;
   lastChapterIndex: number;
+  lastScrollRatio: number;
+  lastAnchorType: ReaderProgressAnchorType;
+  lastAnchorIndex: number;
+  lastAnchorOffsetRatio: number;
   lastReadAt?: string | null;
+}
+
+export interface ReadingProgressPayload {
+  chapterIndex: number;
+  scrollRatio?: number;
+  anchorType?: ReaderProgressAnchorType;
+  anchorIndex?: number;
+  anchorOffsetRatio?: number;
 }
 
 export interface ChapterActionPayload {
   chapterIndexes: number[];
+}
+
+export interface BookExportPayload {
+  format: BookExportFormat;
+  targetPath?: string;
+}
+
+export interface BookExportResponse {
+  bookId: string;
+  format: BookExportFormat;
+  fileName: string;
+  filePath: string;
+  downloadUrl: string;
+  chapterCount: number;
 }
 
 export interface TaskRecord {
@@ -74,6 +106,14 @@ export interface TaskRecord {
   attempts: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TaskLogRecord {
+  sequence: number;
+  taskId: string;
+  level: TaskLogLevel;
+  message: string;
+  createdAt: string;
 }
 
 export interface BookDetailResponse {
@@ -97,6 +137,7 @@ export interface ChapterContentResponse {
   mode: 'original' | 'translated';
   translatedAvailable: boolean;
   imageSources: string[];
+  pageTranslations: string[];
 }
 
 export interface PreviewResponse {
@@ -106,6 +147,7 @@ export interface PreviewResponse {
   cover?: string;
   chapterCount: number;
   chapters: ChapterPreview[];
+  bookKind: BookKind;
 }
 
 export interface ProviderConfig {
@@ -115,12 +157,18 @@ export interface ProviderConfig {
   model: string;
 }
 
+export interface ComicSourceConfig {
+  email: string;
+  password: string;
+}
+
 export interface TranslationSettings {
   defaultProvider: TranslationProvider;
   systemPrompt: string;
   autoTranslateNextChapters: number;
   downloadConcurrency: number;
   providers: Record<TranslationProvider, ProviderConfig>;
+  bika: ComicSourceConfig;
 }
 
 export interface BackendInfo {

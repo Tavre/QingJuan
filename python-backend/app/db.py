@@ -1,35 +1,55 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import sqlite3
 import shutil
+import sys
 from pathlib import Path
 
-from .models import BookRecord, ProviderConfig, ReadingProgressRecord, TaskRecord, TranslationSettings
+from .models import (
+    BookRecord,
+    ComicSourceConfig,
+    ProviderConfig,
+    ReadingProgressRecord,
+    TaskLogRecord,
+    TaskRecord,
+    TranslationSettings,
+)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LEGACY_DATA_DIR = BASE_DIR / "data"
 APP_DIR_NAME = "QingJuan"
 
 
-def _resolve_platform_data_dir() -> Path:
+def _resolve_platform_data_dirs() -> list[Path]:
+    candidates: list[Path] = []
+    if os.name == "nt":
+        for env_name in ("LOCALAPPDATA", "APPDATA"):
+            base = os.getenv(env_name, "").strip()
+            if base:
+                candidates.append((Path(base) / APP_DIR_NAME / "data").resolve())
+    else:
+        xdg_data_home = os.getenv("XDG_DATA_HOME", "").strip()
+        if xdg_data_home:
+            candidates.append((Path(xdg_data_home) / "qingjuan").resolve())
+        candidates.append((Path.home() / ".local" / "share" / "qingjuan").resolve())
+    return candidates
+
+
+def _resolve_default_data_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return (Path(sys.executable).resolve().parent / "data").resolve()
+    return LEGACY_DATA_DIR.resolve()
+
+
+def _resolve_data_dir() -> Path:
     override = os.getenv("QINGJUAN_DATA_DIR", "").strip()
     if override:
         return Path(override).expanduser().resolve()
-
-    if os.name == "nt":
-        base = os.getenv("LOCALAPPDATA") or os.getenv("APPDATA")
-        if base:
-            return (Path(base) / APP_DIR_NAME / "data").resolve()
-        return (Path.home() / "AppData" / "Local" / APP_DIR_NAME / "data").resolve()
-
-    xdg_data_home = os.getenv("XDG_DATA_HOME", "").strip()
-    if xdg_data_home:
-        return (Path(xdg_data_home) / "qingjuan").resolve()
-    return (Path.home() / ".local" / "share" / "qingjuan").resolve()
+    return _resolve_default_data_dir()
 
 
-DATA_DIR = _resolve_platform_data_dir()
+DATA_DIR = _resolve_data_dir()
 DB_PATH = DATA_DIR / "qingjuan.db"
 _DATA_DIR_READY = False
 
@@ -37,11 +57,13 @@ DEFAULT_SETTINGS = TranslationSettings(
     defaultProvider="openai",
     autoTranslateNextChapters=0,
     providers={
-        "openai": ProviderConfig(enabled=True, baseUrl="https://api.openai.com/v1", model="gpt-4.1-mini"),
-        "newapi": ProviderConfig(enabled=False, baseUrl="https://your-newapi-endpoint/v1", model="gpt-4.1-mini"),
+        "openai": ProviderConfig(enabled=True, baseUrl="https://api.openai.com/v1", model="gpt-5.4"),
+        "newapi": ProviderConfig(enabled=False, baseUrl="https://your-newapi-endpoint/v1", model="gpt-5.4"),
         "anthropic": ProviderConfig(enabled=False, baseUrl="https://api.anthropic.com/v1", model="claude-3-7-sonnet-latest"),
+        "grok2api": ProviderConfig(enabled=False, baseUrl="http://127.0.0.1:8000/v1", model="grok-4"),
         "custom": ProviderConfig(enabled=False, baseUrl="https://localhost:8001/v1", model="custom-model"),
     },
+    bika=ComicSourceConfig(),
 )
 
 
@@ -61,14 +83,23 @@ def ensure_data_dir() -> None:
 
 
 def _migrate_legacy_data() -> None:
-    if DATA_DIR == LEGACY_DATA_DIR.resolve():
-        return
-    if not LEGACY_DATA_DIR.exists():
-        return
     if any(DATA_DIR.iterdir()):
         return
+    migration_sources: list[Path] = []
+    migration_sources.extend(_resolve_platform_data_dirs())
+    migration_sources.append(LEGACY_DATA_DIR.resolve())
 
-    shutil.copytree(LEGACY_DATA_DIR, DATA_DIR, dirs_exist_ok=True)
+    seen_sources: set[Path] = set()
+    for source_dir in migration_sources:
+        if source_dir in seen_sources or source_dir == DATA_DIR:
+            continue
+        seen_sources.add(source_dir)
+        if not source_dir.exists():
+            continue
+        if not any(source_dir.iterdir()):
+            continue
+        shutil.copytree(source_dir, DATA_DIR, dirs_exist_ok=True)
+        break
 
 
 def init_db() -> None:
@@ -103,10 +134,15 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS reading_progress (
                 book_id TEXT PRIMARY KEY,
                 last_chapter_index INTEGER NOT NULL,
+                last_scroll_ratio REAL NOT NULL DEFAULT 0,
+                last_anchor_type TEXT NOT NULL DEFAULT 'top',
+                last_anchor_index INTEGER NOT NULL DEFAULT 0,
+                last_anchor_offset_ratio REAL NOT NULL DEFAULT 0,
                 last_read_at TEXT
             )
             """
         )
+        _ensure_reading_progress_columns(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS tasks (
@@ -126,6 +162,39 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_logs (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                level TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_task_logs_task_sequence
+            ON task_logs (task_id, sequence)
+            """
+        )
+
+
+def _ensure_reading_progress_columns(conn: sqlite3.Connection) -> None:
+    existing_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(reading_progress)").fetchall()
+    }
+    required_columns = {
+        "last_scroll_ratio": "ALTER TABLE reading_progress ADD COLUMN last_scroll_ratio REAL NOT NULL DEFAULT 0",
+        "last_anchor_type": "ALTER TABLE reading_progress ADD COLUMN last_anchor_type TEXT NOT NULL DEFAULT 'top'",
+        "last_anchor_index": "ALTER TABLE reading_progress ADD COLUMN last_anchor_index INTEGER NOT NULL DEFAULT 0",
+        "last_anchor_offset_ratio": "ALTER TABLE reading_progress ADD COLUMN last_anchor_offset_ratio REAL NOT NULL DEFAULT 0",
+    }
+    for column_name, statement in required_columns.items():
+        if column_name not in existing_columns:
+            conn.execute(statement)
 
 
 def list_books() -> list[BookRecord]:
@@ -191,6 +260,13 @@ def save_book(book: BookRecord) -> None:
 
 def delete_book(book_id: str) -> None:
     with get_connection() as conn:
+        conn.execute(
+            """
+            DELETE FROM task_logs
+            WHERE task_id IN (SELECT id FROM tasks WHERE book_id = ?)
+            """,
+            (book_id,),
+        )
         conn.execute("DELETE FROM tasks WHERE book_id = ?", (book_id,))
         conn.execute("DELETE FROM reading_progress WHERE book_id = ?", (book_id,))
         conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
@@ -200,7 +276,14 @@ def load_reading_progress(book_id: str) -> ReadingProgressRecord:
     with get_connection() as conn:
         row = conn.execute(
             """
-            SELECT book_id, last_chapter_index, last_read_at
+            SELECT
+                book_id,
+                last_chapter_index,
+                last_scroll_ratio,
+                last_anchor_type,
+                last_anchor_index,
+                last_anchor_offset_ratio,
+                last_read_at
             FROM reading_progress
             WHERE book_id = ?
             """,
@@ -213,7 +296,11 @@ def load_reading_progress(book_id: str) -> ReadingProgressRecord:
     return ReadingProgressRecord(
         bookId=row[0],
         lastChapterIndex=row[1],
-        lastReadAt=row[2],
+        lastScrollRatio=row[2],
+        lastAnchorType=row[3],
+        lastAnchorIndex=row[4],
+        lastAnchorOffsetRatio=row[5],
+        lastReadAt=row[6],
     )
 
 
@@ -221,13 +308,33 @@ def save_reading_progress(progress: ReadingProgressRecord) -> ReadingProgressRec
     with get_connection() as conn:
         conn.execute(
             """
-            INSERT INTO reading_progress (book_id, last_chapter_index, last_read_at)
-            VALUES (?, ?, ?)
+            INSERT INTO reading_progress (
+                book_id,
+                last_chapter_index,
+                last_scroll_ratio,
+                last_anchor_type,
+                last_anchor_index,
+                last_anchor_offset_ratio,
+                last_read_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(book_id) DO UPDATE SET
                 last_chapter_index = excluded.last_chapter_index,
+                last_scroll_ratio = excluded.last_scroll_ratio,
+                last_anchor_type = excluded.last_anchor_type,
+                last_anchor_index = excluded.last_anchor_index,
+                last_anchor_offset_ratio = excluded.last_anchor_offset_ratio,
                 last_read_at = excluded.last_read_at
             """,
-            (progress.bookId, progress.lastChapterIndex, progress.lastReadAt),
+            (
+                progress.bookId,
+                progress.lastChapterIndex,
+                progress.lastScrollRatio,
+                progress.lastAnchorType,
+                progress.lastAnchorIndex,
+                progress.lastAnchorOffsetRatio,
+                progress.lastReadAt,
+            ),
         )
     return progress
 
@@ -351,18 +458,53 @@ def save_task(task: TaskRecord) -> TaskRecord:
     return task
 
 
+def append_task_log(task_id: str, level: str, message: str, created_at: str) -> TaskLogRecord:
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO task_logs (task_id, level, message, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (task_id, level, message, created_at),
+        )
+        sequence = int(cursor.lastrowid)
+    return TaskLogRecord(
+        sequence=sequence,
+        taskId=task_id,
+        level=level,  # type: ignore[arg-type]
+        message=message,
+        createdAt=created_at,
+    )
+
+
+def list_task_logs(task_id: str, after_sequence: int = 0) -> list[TaskLogRecord]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT sequence, task_id, level, message, created_at
+            FROM task_logs
+            WHERE task_id = ? AND sequence > ?
+            ORDER BY sequence ASC
+            """,
+            (task_id, max(0, int(after_sequence))),
+        ).fetchall()
+    return [_row_to_task_log(row) for row in rows]
+
+
 def load_settings() -> TranslationSettings:
     with get_connection() as conn:
         row = conn.execute("SELECT payload FROM settings WHERE id = 1").fetchone()
 
     if not row:
-        return DEFAULT_SETTINGS
+        return DEFAULT_SETTINGS.model_copy(deep=True)
 
-    return TranslationSettings.model_validate_json(row[0])
+    loaded = TranslationSettings.model_validate_json(row[0])
+    return _normalize_settings(loaded)
 
 
 def save_settings(settings: TranslationSettings) -> TranslationSettings:
-    payload = settings.model_dump_json()
+    normalized = _normalize_settings(settings)
+    payload = normalized.model_dump_json()
     with get_connection() as conn:
         conn.execute(
             """
@@ -372,7 +514,19 @@ def save_settings(settings: TranslationSettings) -> TranslationSettings:
             """,
             (payload,),
         )
-    return settings
+    return normalized
+
+
+def _normalize_settings(settings: TranslationSettings) -> TranslationSettings:
+    normalized = DEFAULT_SETTINGS.model_copy(deep=True)
+    normalized.defaultProvider = settings.defaultProvider
+    normalized.systemPrompt = settings.systemPrompt
+    normalized.autoTranslateNextChapters = settings.autoTranslateNextChapters
+    normalized.downloadConcurrency = settings.downloadConcurrency
+    normalized.providers.update(settings.providers)
+    normalized.providers[normalized.defaultProvider].enabled = True
+    normalized.bika = settings.bika.model_copy(deep=True)
+    return normalized
 
 
 def _row_to_book(row: sqlite3.Row | tuple) -> BookRecord:
@@ -395,7 +549,7 @@ def _row_to_book(row: sqlite3.Row | tuple) -> BookRecord:
 
 def _normalize_book_kind(value: object) -> str:
     normalized = str(value or "").strip()
-    if normalized in {"长小说", "轻小说"}:
+    if normalized in {"长小说", "轻小说", "漫画"}:
         return normalized
     return "轻小说"
 
@@ -429,6 +583,16 @@ def _row_to_task(row: sqlite3.Row | tuple) -> TaskRecord:
         attempts=row[10],
         createdAt=row[11],
         updatedAt=row[12],
+    )
+
+
+def _row_to_task_log(row: sqlite3.Row | tuple) -> TaskLogRecord:
+    return TaskLogRecord(
+        sequence=row[0],
+        taskId=row[1],
+        level=row[2],
+        message=row[3],
+        createdAt=row[4],
     )
 
 

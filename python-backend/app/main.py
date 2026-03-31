@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 # QingJuan
 # Author: Tavre
@@ -6,12 +6,15 @@
 
 import asyncio
 import argparse
+import html
 import json
 import mimetypes
 import re
 import shutil
+import zipfile
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 from uuid import uuid4
 
 import uvicorn
@@ -22,10 +25,12 @@ from fastapi.responses import FileResponse
 try:
     from .db import (
         DATA_DIR,
+        append_task_log,
         get_book,
         init_db,
         list_books,
         list_pending_tasks,
+        list_task_logs,
         list_tasks,
         load_reading_progress,
         load_settings,
@@ -40,6 +45,8 @@ try:
     from .models import (
         AddBookPayload,
         BookDetailResponse,
+        BookExportPayload,
+        BookExportResponse,
         BookRecord,
         ChapterActionPayload,
         ChapterContentResponse,
@@ -47,6 +54,7 @@ try:
         PreviewResponse,
         ReadingProgressPayload,
         ReadingProgressRecord,
+        TaskLogRecord,
         TaskRecord,
         TranslationSettings,
     )
@@ -55,17 +63,22 @@ try:
         download_book,
         download_selected_chapters,
         load_manifest,
+        load_translated_page_payload,
         preview_from_url,
+        repair_18comic_chapter_images,
         save_manifest,
+        translated_image_payload_is_current,
         translate_selected_chapters,
     )
 except ImportError:
     from app.db import (
         DATA_DIR,
+        append_task_log,
         get_book,
         init_db,
         list_books,
         list_pending_tasks,
+        list_task_logs,
         list_tasks,
         load_reading_progress,
         load_settings,
@@ -80,6 +93,8 @@ except ImportError:
     from app.models import (
         AddBookPayload,
         BookDetailResponse,
+        BookExportPayload,
+        BookExportResponse,
         BookRecord,
         ChapterActionPayload,
         ChapterContentResponse,
@@ -87,6 +102,7 @@ except ImportError:
         PreviewResponse,
         ReadingProgressPayload,
         ReadingProgressRecord,
+        TaskLogRecord,
         TaskRecord,
         TranslationSettings,
     )
@@ -95,12 +111,16 @@ except ImportError:
         download_book,
         download_selected_chapters,
         load_manifest,
+        load_translated_page_payload,
         preview_from_url,
+        repair_18comic_chapter_images,
         save_manifest,
+        translated_image_payload_is_current,
         translate_selected_chapters,
     )
 
 LIBRARY_ROOT = DATA_DIR / "library"
+EXPORT_ROOT = DATA_DIR / "exports"
 TASK_QUEUE: asyncio.Queue[str] = asyncio.Queue()
 
 app = FastAPI(title="青卷后端", version="0.2.0")
@@ -117,6 +137,7 @@ app.add_middleware(
 async def on_startup() -> None:
     init_db()
     LIBRARY_ROOT.mkdir(parents=True, exist_ok=True)
+    EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
     app.state.deleted_book_ids = set()
     for task in list_pending_tasks():
         task.status = "queued"
@@ -182,17 +203,37 @@ async def get_chapter_content(
     mode: str = Query(default="translated"),
 ) -> ChapterContentResponse:
     book = _get_book_or_404(book_id)
+    book_dir = _resolve_book_dir(book)
+    manifest = _load_or_initialize_manifest(book, book_dir)
+    try:
+        repair_18comic_chapter_images(book_dir, manifest, chapter_index)
+    except Exception:
+        pass
     chapter, chapter_path = _load_single_chapter(book, chapter_index, mode)
     content = chapter_path.read_text(encoding="utf-8")
+    is_translated_mode = chapter_path.name.endswith(".translated.txt")
+    page_translations = load_translated_page_payload(book_dir, chapter.fileName) if is_translated_mode else []
+    translated_images_current = translated_image_payload_is_current(book_dir, chapter.fileName) if is_translated_mode else False
+    translated_image_assets = [
+        asset_path
+        for asset_path in chapter.translatedImageFiles
+        if (book_dir / asset_path).exists()
+    ]
+    image_assets = (
+        translated_image_assets
+        if is_translated_mode and translated_images_current and translated_image_assets
+        else chapter.imageFiles
+    )
 
     return ChapterContentResponse(
         bookId=book.id,
         chapter=chapter,
         content=content,
         paragraphs=_split_paragraphs(content),
-        mode="translated" if chapter_path.name.endswith(".translated.txt") else "original",
-        translatedAvailable=_translated_path_for_chapter(_resolve_book_dir(book), chapter).exists(),
-        imageSources=[_build_book_asset_url(book.id, asset_path) for asset_path in chapter.imageFiles],
+        mode="translated" if is_translated_mode else "original",
+        translatedAvailable=_translated_path_for_chapter(book_dir, chapter).exists(),
+        imageSources=[_build_book_asset_url(book.id, asset_path) for asset_path in image_assets],
+        pageTranslations=page_translations,
     )
 
 
@@ -206,8 +247,35 @@ async def get_book_asset(book_id: str, asset_path: str) -> FileResponse:
     if not target_path.exists() or not target_path.is_file():
         raise HTTPException(status_code=404, detail=f"资源不存在：{asset_path}")
 
-    media_type, _ = mimetypes.guess_type(target_path.name)
+    media_type = _guess_asset_media_type(target_path)
     return FileResponse(target_path, media_type=media_type or "application/octet-stream")
+
+
+@app.post("/books/{book_id}/export", response_model=BookExportResponse)
+async def post_book_export(book_id: str, payload: BookExportPayload) -> BookExportResponse:
+    book = _get_book_or_404(book_id)
+    export_path = _export_book(book, payload.format, payload.targetPath)
+    return BookExportResponse(
+        bookId=book.id,
+        format=payload.format,
+        fileName=export_path.name,
+        filePath=str(export_path),
+        downloadUrl=_download_url_for_export_path(book, export_path),
+        chapterCount=book.chapterCount,
+    )
+
+
+@app.get("/books/{book_id}/exports/{file_name}")
+async def get_book_export(book_id: str, file_name: str) -> FileResponse:
+    _get_book_or_404(book_id)
+    export_dir = (EXPORT_ROOT / book_id).resolve()
+    target_path = (export_dir / file_name).resolve()
+    if not target_path.is_relative_to(export_dir):
+        raise HTTPException(status_code=400, detail="非法导出文件路径")
+    if not target_path.exists() or not target_path.is_file():
+        raise HTTPException(status_code=404, detail=f"导出文件不存在：{file_name}")
+    media_type = "application/epub+zip" if target_path.suffix.lower() == ".epub" else "text/plain; charset=utf-8"
+    return FileResponse(target_path, media_type=media_type, filename=target_path.name)
 
 
 @app.post("/books/{book_id}/cover", response_model=BookRecord)
@@ -258,6 +326,10 @@ async def put_reading_progress(book_id: str, payload: ReadingProgressPayload) ->
     progress = ReadingProgressRecord(
         bookId=book.id,
         lastChapterIndex=payload.chapterIndex,
+        lastScrollRatio=_clamp_unit_float(payload.scrollRatio),
+        lastAnchorType=_normalize_progress_anchor_type(payload.anchorType),
+        lastAnchorIndex=max(0, payload.anchorIndex),
+        lastAnchorOffsetRatio=_clamp_unit_float(payload.anchorOffsetRatio),
         lastReadAt=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     )
     return save_reading_progress(progress)
@@ -267,6 +339,14 @@ async def put_reading_progress(book_id: str, payload: ReadingProgressPayload) ->
 async def get_book_tasks(book_id: str) -> list[TaskRecord]:
     _get_book_or_404(book_id)
     return list_tasks(book_id)
+
+
+@app.get("/tasks/{task_id}/logs", response_model=list[TaskLogRecord])
+async def get_task_logs(task_id: str, after: int = Query(default=0, ge=0)) -> list[TaskLogRecord]:
+    task = get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"未找到任务：{task_id}")
+    return list_task_logs(task.id, after)
 
 
 @app.post("/books/{book_id}/chapters/download", response_model=TaskRecord)
@@ -316,7 +396,7 @@ async def post_import(payload: AddBookPayload) -> BookRecord:
         id=f"book-{uuid4()}",
         title=result.title,
         sourceUrl=str(payload.sourceUrl),
-        bookKind=payload.bookKind,
+        bookKind=preview.bookKind,
         language=payload.language,
         status="已下载",
         chapterCount=len(result.chapters),
@@ -434,8 +514,8 @@ def _resolve_book_dir(book: BookRecord) -> Path:
 
 def _validate_book_kind(value: str) -> str:
     normalized = _normalize_form_text(value).strip()
-    if normalized not in {"长小说", "轻小说"}:
-        raise HTTPException(status_code=400, detail=f"不支持的小说类型：{value}")
+    if normalized not in {"长小说", "轻小说", "漫画"}:
+        raise HTTPException(status_code=400, detail=f"不支持的内容类型：{value}")
     return normalized
 
 
@@ -567,9 +647,12 @@ def _write_local_book_chapters(book_dir: Path, chapters: list[tuple[str, str]]) 
                 "downloaded": True,
                 "translated": False,
                 "translated_file_name": build_translated_filename(file_name),
+                "translated_meta_file_name": f"{Path(file_name).stem}.translated.json",
                 "illustration": False,
                 "image_urls": [],
                 "image_files": [],
+                "translated_image_files": [],
+                "page_count": 0,
             }
         )
     return chapter_manifest
@@ -609,6 +692,8 @@ def _load_chapter_records(book: BookRecord) -> list[ChapterRecord]:
                 imageCount=len(_read_string_list(meta.get("image_urls"))),
                 imageUrls=_read_string_list(meta.get("image_urls")),
                 imageFiles=_read_string_list(meta.get("image_files")),
+                translatedImageFiles=_read_string_list(meta.get("translated_image_files")),
+                pageCount=int(meta.get("page_count") or len(_read_string_list(meta.get("image_files"))) or len(_read_string_list(meta.get("image_urls"))) or 0),
             )
         )
 
@@ -677,9 +762,12 @@ def _load_or_initialize_manifest(book: BookRecord, book_dir: Path) -> dict:
                     "downloaded": True,
                     "translated": _translated_path_for_filename(book_dir, file_path.name).exists(),
                     "translated_file_name": build_translated_filename(file_path.name),
+                    "translated_meta_file_name": f"{Path(file_path.name).stem}.translated.json",
                     "illustration": False,
                     "image_urls": [],
                     "image_files": [],
+                    "translated_image_files": [],
+                    "page_count": 0,
                 }
             )
         changed = True
@@ -691,14 +779,19 @@ def _load_or_initialize_manifest(book: BookRecord, book_dir: Path) -> dict:
             translated_path = _translated_path_for_filename(book_dir, filename)
             chapter["translated"] = translated_path.exists()
             chapter["translated_file_name"] = build_translated_filename(filename)
+            chapter["translated_meta_file_name"] = str(chapter.get("translated_meta_file_name") or f"{Path(filename).stem}.translated.json")
             chapter.setdefault("title", _title_from_filename(book_dir / filename, index))
             chapter.setdefault("illustration", False)
             chapter["image_urls"] = _read_string_list(chapter.get("image_urls"))
             chapter["image_files"] = _read_string_list(chapter.get("image_files"))
+            chapter["translated_image_files"] = _read_string_list(chapter.get("translated_image_files"))
+            chapter["page_count"] = int(chapter.get("page_count") or len(chapter["image_files"]) or len(chapter["image_urls"]) or 0)
+            chapter["images_repaired"] = bool(chapter.get("images_repaired"))
             changed = True
 
     manifest["title"] = manifest.get("title") or book.title
     manifest["synopsis"] = manifest.get("synopsis") or book.synopsis
+    manifest["book_kind"] = manifest.get("book_kind") or book.bookKind
     if "cover_url" not in manifest:
         manifest["cover_url"] = book.cover
         changed = True
@@ -765,6 +858,10 @@ def _build_book_detail(book: BookRecord) -> BookDetailResponse:
             ReadingProgressRecord(
                 bookId=book.id,
                 lastChapterIndex=max_index,
+                lastScrollRatio=0,
+                lastAnchorType="top",
+                lastAnchorIndex=0,
+                lastAnchorOffsetRatio=0,
                 lastReadAt=progress.lastReadAt,
             )
         )
@@ -775,12 +872,26 @@ def _build_book_detail(book: BookRecord) -> BookDetailResponse:
         author=_read_optional_string(manifest, "author"),
         synopsis=_read_optional_string(manifest, "synopsis") or refreshed_book.synopsis,
         addedAt=refreshed_book.updatedAt,
-        totalWords=sum(chapter.wordCount for chapter in chapters),
+        totalWords=sum(chapter.pageCount for chapter in chapters)
+        if refreshed_book.bookKind == "漫画"
+        else sum(chapter.wordCount for chapter in chapters),
         downloadedChapterCount=len([chapter for chapter in chapters if chapter.downloaded]),
         translatedChapterCount=len([chapter for chapter in chapters if chapter.translated]),
         progress=progress,
         chapters=chapters,
     )
+
+
+def _clamp_unit_float(value: float | int | None) -> float:
+    if value is None:
+        return 0.0
+    return max(0.0, min(float(value), 1.0))
+
+
+def _normalize_progress_anchor_type(value: str | None) -> str:
+    if value in {"top", "paragraph", "image"}:
+        return value
+    return "top"
 
 
 def _refresh_book_state(book: BookRecord, chapters: list[ChapterRecord] | None = None) -> BookRecord:
@@ -876,6 +987,303 @@ def _build_book_asset_url(book_id: str, asset_path: str) -> str:
     return f"/books/{book_id}/assets/{normalized}"
 
 
+def _guess_asset_media_type(path: Path) -> str | None:
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(16)
+    except OSError:
+        header = b""
+
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header[:6] in {b"GIF87a", b"GIF89a"}:
+        return "image/gif"
+    if header.startswith(b"BM"):
+        return "image/bmp"
+    if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "image/webp"
+
+    media_type, _ = mimetypes.guess_type(path.name)
+    return media_type
+
+
+def _build_export_download_url(book_id: str, file_name: str) -> str:
+    return f"/books/{book_id}/exports/{quote(file_name)}"
+
+
+def _download_url_for_export_path(book: BookRecord, export_path: Path) -> str:
+    export_dir = (EXPORT_ROOT / book.id).resolve()
+    resolved_path = export_path.resolve()
+    if resolved_path.parent == export_dir:
+        return _build_export_download_url(book.id, resolved_path.name)
+    return ""
+
+
+def _build_file_url(path: Path) -> str:
+    return path.resolve().as_uri()
+
+
+def _safe_export_stem(value: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", value).strip()
+    return cleaned[:120] or "未命名小说"
+
+
+def _epub_language(language: str) -> str:
+    return {
+        "中文": "zh-CN",
+        "英文": "en",
+        "日文": "ja",
+    }.get(language, "zh-CN")
+
+
+def _export_file_path(book: BookRecord, export_format: str, target_path: str | None = None) -> Path:
+    extension = ".epub" if export_format == "epub" else ".txt"
+
+    if target_path and target_path.strip():
+        candidate = Path(target_path.strip()).expanduser()
+        if candidate.suffix.lower() != extension:
+            candidate = candidate.with_suffix(extension)
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        return candidate.resolve()
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    export_dir = EXPORT_ROOT / book.id
+    export_dir.mkdir(parents=True, exist_ok=True)
+    return export_dir / f"{_safe_export_stem(book.title)}-{timestamp}{extension}"
+
+
+def _load_export_chapters(book: BookRecord) -> tuple[dict, list[dict[str, object]]]:
+    book_dir = _resolve_book_dir(book)
+    manifest = _load_or_initialize_manifest(book, book_dir)
+    chapter_records = _load_chapter_records(book)
+    export_items: list[dict[str, object]] = []
+
+    for chapter in chapter_records:
+        source_path = book_dir / chapter.fileName
+        translated_path = _translated_path_for_chapter(book_dir, chapter)
+        use_path = translated_path if translated_path.exists() else source_path
+        if not use_path.exists():
+            continue
+        content = use_path.read_text(encoding="utf-8")
+        image_paths: list[Path] = []
+        translated_image_assets = [
+            asset_path
+            for asset_path in chapter.translatedImageFiles
+            if (book_dir / asset_path).exists()
+        ]
+        image_assets = translated_image_assets if use_path == translated_path and translated_image_assets else chapter.imageFiles
+        for asset_path in image_assets:
+            candidate = (book_dir / asset_path).resolve()
+            if candidate.exists() and candidate.is_file():
+                image_paths.append(candidate)
+        export_items.append(
+            {
+                "chapter": chapter,
+                "content": content,
+                "image_paths": image_paths,
+                "mode": "translated" if use_path == translated_path else "original",
+            }
+        )
+
+    if not export_items:
+        raise HTTPException(status_code=400, detail="当前书籍暂无可导出的章节内容")
+
+    return manifest, export_items
+
+
+def _write_txt_export(book: BookRecord, manifest: dict, export_items: list[dict[str, object]], target_path: Path) -> None:
+    lines = [
+        book.title,
+        f"作者：{_read_optional_string(manifest, 'author') or '未知'}",
+        f"语言：{book.language}",
+        f"原始链接：{book.sourceUrl or '本地导入'}",
+        f"导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+    ]
+    synopsis = _read_optional_string(manifest, "synopsis") or book.synopsis
+    if synopsis:
+        lines.extend(["简介：", synopsis, ""])
+
+    separator = "=" * 48
+    for item in export_items:
+        chapter = item["chapter"]
+        content = str(item["content"])
+        image_paths = item["image_paths"]
+        lines.extend([separator, str(chapter.title), ""])
+        if content.strip():
+            lines.append(content.strip())
+        if image_paths:
+            lines.extend(["", "插图文件："])
+            lines.extend(str(path) for path in image_paths)
+        lines.extend(["", ""])
+
+    target_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+
+
+def _epub_paragraphs(content: str) -> str:
+    paragraphs = _split_paragraphs(content)
+    if not paragraphs:
+        return "<p>（本章无正文）</p>"
+    blocks: list[str] = []
+    for paragraph in paragraphs:
+        escaped = html.escape(paragraph).replace("\n", "<br/>")
+        blocks.append(f"<p>{escaped}</p>")
+    return "\n".join(blocks)
+
+
+def _write_epub_export(book: BookRecord, manifest: dict, export_items: list[dict[str, object]], target_path: Path) -> None:
+    book_uuid = str(uuid4())
+    language = _epub_language(book.language)
+    author = html.escape(_read_optional_string(manifest, "author") or "未知")
+    title = html.escape(book.title)
+    synopsis = html.escape(_read_optional_string(manifest, "synopsis") or book.synopsis or "")
+    chapter_entries: list[dict[str, str]] = []
+    nav_items: list[str] = ['<li><a href="cover.xhtml">书籍信息</a></li>']
+    manifest_items: list[str] = [
+        '<item id="nav" href="Text/nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
+        '<item id="cover" href="Text/cover.xhtml" media-type="application/xhtml+xml"/>',
+        '<item id="style" href="Styles/book.css" media-type="text/css"/>',
+    ]
+    spine_items: list[str] = ['<itemref idref="cover"/>']
+    image_entries: dict[str, Path] = {}
+
+    for index, item in enumerate(export_items, start=1):
+        chapter = item["chapter"]
+        content = str(item["content"])
+        image_paths: list[Path] = list(item["image_paths"])
+        chapter_file = f"chapter-{index:04d}.xhtml"
+        chapter_id = f"chapter-{index:04d}"
+        title_html = html.escape(str(chapter.title))
+        body_parts = [f"<h1>{title_html}</h1>", _epub_paragraphs(content)]
+        if image_paths:
+            for image_number, image_path in enumerate(image_paths, start=1):
+                image_name = f"{index:04d}-{image_number:02d}-{image_path.name}"
+                image_entries[image_name] = image_path
+                body_parts.append(
+                    "<figure class=\"chapter-image\">"
+                    f"<img src=\"../Images/{html.escape(image_name)}\" alt=\"{title_html} 插图 {image_number}\"/>"
+                    "</figure>"
+                )
+                manifest_items.append(
+                    f'<item id="image-{index:04d}-{image_number:02d}" href="Images/{html.escape(image_name)}" media-type="{mimetypes.guess_type(image_name)[0] or "image/jpeg"}"/>'
+                )
+        chapter_entries.append({"file_name": chapter_file, "body": "\n".join(body_parts)})
+        manifest_items.append(f'<item id="{chapter_id}" href="Text/{chapter_file}" media-type="application/xhtml+xml"/>')
+        spine_items.append(f'<itemref idref="{chapter_id}"/>')
+        nav_items.append(f'<li><a href="{chapter_file}">{title_html}</a></li>')
+
+    synopsis_section = ""
+    if synopsis:
+        synopsis_section = f'<section class="synopsis"><h2>简介</h2><p>{synopsis.replace(chr(10), "<br/>")}</p></section>'
+
+    cover_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="{language}">
+  <head>
+    <title>{title}</title>
+    <link rel="stylesheet" type="text/css" href="../Styles/book.css"/>
+  </head>
+  <body>
+    <section class="cover-page">
+      <h1>{title}</h1>
+      <p class="meta">作者：{author}</p>
+      <p class="meta">语言：{html.escape(book.language)}</p>
+      <p class="meta">导出时间：{html.escape(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}</p>
+      <p class="meta">来源：{html.escape(book.sourceUrl or '本地导入')}</p>
+      {synopsis_section}
+    </section>
+  </body>
+</html>
+"""
+    nav_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="{language}" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head>
+    <title>目录</title>
+    <link rel="stylesheet" type="text/css" href="../Styles/book.css"/>
+  </head>
+  <body>
+    <nav epub:type="toc" id="toc">
+      <h1>目录</h1>
+      <ol>
+        {''.join(nav_items)}
+      </ol>
+    </nav>
+  </body>
+</html>
+"""
+    content_opf = f"""<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="book-id">urn:uuid:{book_uuid}</dc:identifier>
+    <dc:title>{title}</dc:title>
+    <dc:language>{language}</dc:language>
+    <dc:creator>{author}</dc:creator>
+    <meta property="dcterms:modified">{datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}</meta>
+  </metadata>
+  <manifest>
+    {''.join(manifest_items)}
+  </manifest>
+  <spine>
+    {''.join(spine_items)}
+  </spine>
+</package>
+"""
+    css_content = """
+body { font-family: serif; line-height: 1.8; padding: 0 1rem; }
+h1, h2 { line-height: 1.4; }
+.cover-page { margin-top: 2rem; }
+.meta { color: #555; }
+.synopsis { margin-top: 2rem; }
+.chapter-image { margin: 1.5rem 0; text-align: center; }
+.chapter-image img { max-width: 100%; height: auto; }
+"""
+
+    with zipfile.ZipFile(target_path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        archive.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+""",
+        )
+        archive.writestr("OEBPS/Styles/book.css", css_content)
+        archive.writestr("OEBPS/Text/cover.xhtml", cover_xhtml)
+        archive.writestr("OEBPS/Text/nav.xhtml", nav_xhtml)
+        archive.writestr("OEBPS/content.opf", content_opf)
+        for entry in chapter_entries:
+            archive.writestr(
+                f"OEBPS/Text/{entry['file_name']}",
+                f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="{language}">
+  <head>
+    <title>{title}</title>
+    <link rel="stylesheet" type="text/css" href="../Styles/book.css"/>
+  </head>
+  <body>
+    {entry['body']}
+  </body>
+</html>
+""",
+            )
+        for image_name, image_path in image_entries.items():
+            archive.write(image_path, f"OEBPS/Images/{image_name}")
+
+
+def _export_book(book: BookRecord, export_format: str, target_path: str | None = None) -> Path:
+    manifest, export_items = _load_export_chapters(book)
+    final_path = _export_file_path(book, export_format, target_path)
+    if export_format == "epub":
+        _write_epub_export(book, manifest, export_items, final_path)
+    else:
+        _write_txt_export(book, manifest, export_items, final_path)
+    return final_path
+
+
 def _enqueue_task(book: BookRecord, task_type: str, payload: ChapterActionPayload) -> TaskRecord:
     chapter_indexes = _normalize_chapter_indexes(payload.chapterIndexes)
     now = _now()
@@ -913,6 +1321,18 @@ def _ensure_task_resources_exist(task_id: str, book_id: str) -> None:
         raise HTTPException(status_code=404, detail="任务或书籍已被删除")
 
 
+def _append_task_runtime_log(task: TaskRecord, level: str, message: str, *, update_message: bool = True) -> None:
+    normalized = message.strip()
+    if not normalized:
+        return
+    timestamp = _now()
+    append_task_log(task.id, level, normalized, timestamp)
+    if update_message:
+        task.message = normalized
+        task.updatedAt = timestamp
+        save_task(task)
+
+
 async def _task_worker() -> None:
     while True:
         task_id = await TASK_QUEUE.get()
@@ -940,6 +1360,7 @@ async def _run_task(task_id: str) -> None:
     task.message = "任务开始执行"
     task.updatedAt = _now()
     save_task(task)
+    _append_task_runtime_log(task, "info", "任务开始执行", update_message=False)
 
     try:
         if task.taskType == "download":
@@ -955,6 +1376,7 @@ async def _run_task(task_id: str) -> None:
         task.message = "任务已完成"
         task.updatedAt = _now()
         save_task(task)
+        _append_task_runtime_log(task, "info", "任务已完成", update_message=False)
         if not _is_book_deleted(book.id):
             _refresh_book_state(book)
     except Exception as exc:
@@ -965,6 +1387,7 @@ async def _run_task(task_id: str) -> None:
         task.message = "任务执行失败"
         task.updatedAt = _now()
         save_task(task)
+        _append_task_runtime_log(task, "error", str(exc), update_message=False)
 
 
 async def _process_download_task(task: TaskRecord, book: BookRecord) -> None:
@@ -1000,21 +1423,31 @@ async def _process_translate_task(task: TaskRecord, book: BookRecord) -> None:
     book_dir = _resolve_book_dir(book)
     manifest = _load_or_initialize_manifest(book, book_dir)
     settings = load_settings()
+    unit = "话" if book.bookKind == "漫画" else "章"
+
+    async def on_log(level: str, message: str) -> None:
+        _ensure_task_resources_exist(task.id, book.id)
+        _append_task_runtime_log(task, level, message)
+
     for index, chapter_index in enumerate(task.chapterIndexes, start=1):
         _ensure_task_resources_exist(task.id, book.id)
+        chapter_label = f"{unit} {chapter_index}"
+        _append_task_runtime_log(task, "info", f"开始处理{chapter_label}")
         await translate_selected_chapters(
             book_dir=book_dir,
             manifest=manifest,
             chapter_indexes=[chapter_index],
             language=book.language,
             settings=settings,
+            log_callback=on_log,
         )
         _ensure_task_resources_exist(task.id, book.id)
         task.completedCount = index
         task.progress = round(index / task.totalCount * 100, 2)
-        task.message = f"已翻译 {index}/{task.totalCount} 章"
+        task.message = f"已翻译 {index}/{task.totalCount} {unit}"
         task.updatedAt = _now()
         save_task(task)
+        _append_task_runtime_log(task, "info", f"已完成{chapter_label}", update_message=False)
         manifest = load_manifest(book_dir)
 
 

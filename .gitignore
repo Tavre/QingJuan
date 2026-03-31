@@ -19,5 +19,10 @@ python-backend/*.spec
 !.keep
 ui示例/
 qj_icon.png
-qj_icon_1.png
+qj_icon2.png
 tmp/
+debug_bubble_cleanup/
+debug_bubble_cleanup/
+debug_masks/
+debug_masks2/
+.gitignore

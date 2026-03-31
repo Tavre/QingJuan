@@ -1,12 +1,18 @@
 import type {
   AddBookPayload,
   BookDetailResponse,
+  BookExportFormat,
+  BookExportPayload,
+  BookExportResponse,
   BookRecord,
   ChapterActionPayload,
   ChapterContentResponse,
   PreviewResponse,
+  ReadingProgressPayload,
   ReadingProgressRecord,
+  TaskLogRecord,
   TaskRecord,
+  TranslationProvider,
   TranslationSettings,
 } from '../types';
 import { defaultSettings } from '../lib/mock';
@@ -46,6 +52,37 @@ function normalizePreview(preview: PreviewResponse): PreviewResponse {
   };
 }
 
+function normalizeBookExport(response: BookExportResponse): BookExportResponse {
+  return {
+    ...response,
+    downloadUrl: toAbsoluteBackendUrl(response.downloadUrl),
+  };
+}
+
+function normalizeSettings(settings: TranslationSettings): TranslationSettings {
+  const providerKeys = Object.keys(defaultSettings.providers) as TranslationProvider[];
+  const providers = providerKeys.reduce<TranslationSettings['providers']>((result, key) => {
+    result[key] = {
+      ...defaultSettings.providers[key],
+      ...(settings.providers?.[key] ?? {}),
+    };
+    return result;
+  }, {} as TranslationSettings['providers']);
+  const defaultProvider = settings.defaultProvider ?? defaultSettings.defaultProvider;
+  providers[defaultProvider].enabled = true;
+
+  return {
+    ...defaultSettings,
+    ...settings,
+    defaultProvider,
+    providers,
+    bika: {
+      ...defaultSettings.bika,
+      ...(settings.bika ?? {}),
+    },
+  };
+}
+
 export function buildBookAssetUrl(bookId: string, assetPath: string): string {
   const normalized = assetPath
     .split('/')
@@ -58,20 +95,37 @@ export function buildBookAssetUrl(bookId: string, assetPath: string): string {
 async function safeJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     let message = `HTTP ${response.status}`;
+    const responseText = await response.text();
 
     try {
-      const payload = (await response.json()) as { detail?: string };
+      const payload = JSON.parse(responseText) as { detail?: unknown };
       if (typeof payload.detail === 'string' && payload.detail.trim()) {
         message = payload.detail;
+      } else if (Array.isArray(payload.detail) && payload.detail.length > 0) {
+        const details = payload.detail
+          .map((item) => {
+            if (!item || typeof item !== 'object') {
+              return '';
+            }
+            const entry = item as { loc?: unknown; msg?: unknown };
+            const loc = Array.isArray(entry.loc)
+              ? entry.loc
+                  .filter((segment): segment is string | number => typeof segment === 'string' || typeof segment === 'number')
+                  .join('.')
+              : '';
+            const msg = typeof entry.msg === 'string' ? entry.msg : '';
+            return [loc, msg].filter(Boolean).join(': ');
+          })
+          .filter(Boolean);
+        if (details.length > 0) {
+          message = details.join('\n');
+        }
+      } else if (payload.detail && typeof payload.detail === 'object') {
+        message = JSON.stringify(payload.detail);
       }
     } catch {
-      try {
-        const text = await response.text();
-        if (text.trim()) {
-          message = text.trim();
-        }
-      } catch {
-        // ignore parsing errors for fallback message
+      if (responseText.trim()) {
+        message = responseText.trim();
       }
     }
 
@@ -103,9 +157,13 @@ export async function fetchChapterContent(
 ): Promise<ChapterContentResponse> {
   const response = await fetch(`${getBaseUrl()}/books/${bookId}/chapters/${chapterIndex}?mode=${mode}`);
   const payload = await safeJson<ChapterContentResponse>(response);
+  const fallbackAssets =
+    payload.mode === 'translated' && (payload.chapter.translatedImageFiles?.length ?? 0) > 0
+      ? payload.chapter.translatedImageFiles
+      : payload.chapter.imageFiles;
   const imageSources = payload.imageSources.length
     ? payload.imageSources
-    : payload.chapter.imageFiles.map((assetPath) => buildBookAssetUrl(bookId, assetPath));
+    : fallbackAssets.map((assetPath) => buildBookAssetUrl(bookId, assetPath));
 
   return {
     ...payload,
@@ -115,14 +173,14 @@ export async function fetchChapterContent(
 
 export async function saveReadingProgress(
   bookId: string,
-  chapterIndex: number,
+  payload: ReadingProgressPayload,
 ): Promise<ReadingProgressRecord> {
   const response = await fetch(`${getBaseUrl()}/books/${bookId}/progress`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ chapterIndex }),
+    body: JSON.stringify(payload),
   });
   return await safeJson<ReadingProgressRecord>(response);
 }
@@ -170,6 +228,11 @@ export async function retryTask(taskId: string): Promise<TaskRecord> {
     method: 'POST',
   });
   return await safeJson<TaskRecord>(response);
+}
+
+export async function fetchTaskLogs(taskId: string, after = 0): Promise<TaskLogRecord[]> {
+  const response = await fetch(`${getBaseUrl()}/tasks/${taskId}/logs?after=${Math.max(0, Math.trunc(after))}`);
+  return await safeJson<TaskLogRecord[]>(response);
 }
 
 export async function previewBook(payload: AddBookPayload): Promise<PreviewResponse> {
@@ -224,6 +287,24 @@ export async function uploadBookCover(bookId: string, file: File): Promise<BookR
   return normalizeBook(await safeJson<BookRecord>(response));
 }
 
+export async function exportBook(
+  bookId: string,
+  format: BookExportFormat,
+  targetPath?: string,
+): Promise<BookExportResponse> {
+  const payload: BookExportPayload = targetPath?.trim()
+    ? { format, targetPath: targetPath.trim() }
+    : { format };
+  const response = await fetch(`${getBaseUrl()}/books/${bookId}/export`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  return normalizeBookExport(await safeJson<BookExportResponse>(response));
+}
+
 export async function deleteBook(bookId: string): Promise<void> {
   const response = await fetch(`${getBaseUrl()}/books/${bookId}`, {
     method: 'DELETE',
@@ -234,12 +315,12 @@ export async function deleteBook(bookId: string): Promise<void> {
 export async function fetchSettings(): Promise<TranslationSettings> {
   try {
     const response = await fetch(`${getBaseUrl()}/settings`);
-    return await safeJson<TranslationSettings>(response);
+    return normalizeSettings(await safeJson<TranslationSettings>(response));
   } catch (error) {
     if (isTauriRuntime()) {
       throw error;
     }
-    return defaultSettings;
+    return normalizeSettings(defaultSettings);
   }
 }
 
@@ -250,13 +331,13 @@ export async function saveSettings(payload: TranslationSettings): Promise<Transl
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(normalizeSettings(payload)),
     });
-    return await safeJson<TranslationSettings>(response);
+    return normalizeSettings(await safeJson<TranslationSettings>(response));
   } catch (error) {
     if (isTauriRuntime()) {
       throw error;
     }
-    return payload;
+    return normalizeSettings(payload);
   }
 }

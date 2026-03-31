@@ -1,4 +1,4 @@
-﻿import type { BookRecord, PreviewResponse, TranslationSettings } from '../types';
+import type { BookRecord, PreviewResponse, TranslationSettings } from '../types';
 
 export const mockBooks: BookRecord[] = [
   {
@@ -61,6 +61,21 @@ export const mockBooks: BookRecord[] = [
     lastReadChapterIndex: 567,
     lastReadAt: '2026-03-15 09:30',
   },
+  {
+    id: 'book-005',
+    title: '赛博夜行者',
+    sourceUrl: 'https://18comic.vip/album/1254235/leticia-latex-bimbo-pit-stop',
+    bookKind: '漫画',
+    language: '日文',
+    status: '已下载',
+    chapterCount: 12,
+    translated: true,
+    localPath: '文库/日文/赛博夜行者',
+    updatedAt: '2026-03-21 10:15',
+    synopsis: '漫画模式示例，用于展示按页下载、图片阅读与逐页翻译的交互。',
+    lastReadChapterIndex: 3,
+    lastReadAt: '2026-03-21 10:15',
+  },
 ];
 
 export const mockPreview: PreviewResponse = {
@@ -68,9 +83,11 @@ export const mockPreview: PreviewResponse = {
   author: 'A. Sterling',
   synopsis: '一本从废弃图书馆延展出的奇异调查小说，适合作为英文站点解析演示。',
   chapterCount: 12,
+  bookKind: '轻小说',
   chapters: Array.from({ length: 12 }, (_, index) => ({
     title: `Chapter ${index + 1}`,
     url: `https://example.com/moonlit-registry/${index + 1}`,
+    pageCount: 0,
   })),
 };
 
@@ -99,13 +116,13 @@ export const defaultSettings: TranslationSettings = {
       enabled: true,
       baseUrl: 'https://api.openai.com/v1',
       apiKey: '',
-      model: 'gpt-4.1-mini',
+      model: 'gpt-5.4',
     },
     newapi: {
       enabled: false,
       baseUrl: 'https://your-newapi-endpoint/v1',
       apiKey: '',
-      model: 'gpt-4.1-mini',
+      model: 'gpt-5.4',
     },
     anthropic: {
       enabled: false,
@@ -113,11 +130,21 @@ export const defaultSettings: TranslationSettings = {
       apiKey: '',
       model: 'claude-3-7-sonnet-latest',
     },
+    grok2api: {
+      enabled: false,
+      baseUrl: 'http://127.0.0.1:8000/v1',
+      apiKey: '',
+      model: 'grok-4',
+    },
     custom: {
       enabled: false,
       baseUrl: 'https://localhost:8001/v1',
       apiKey: '',
       model: 'custom-model',
     },
+  },
+  bika: {
+    email: '',
+    password: '',
   },
 };

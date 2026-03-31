@@ -1,5 +1,5 @@
-﻿<script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 // QingJuan
 // Author: Tavre
 // License: GPL-3.0-only
@@ -7,8 +7,10 @@ import { defaultSettings } from '../lib/mock';
 import {
   deleteBook,
   downloadChapters,
+  exportBook,
   fetchBookDetail,
   fetchBooks,
+  fetchTaskLogs,
   fetchBookTasks,
   fetchTasks,
   fetchChapterContent,
@@ -22,15 +24,18 @@ import {
   translateChapters,
   uploadBookCover,
 } from '../services/api';
-import { openExternalLink, startDesktopBackend } from '../services/desktop';
-import brandIcon from '../../qj_icon_1.png';
+import { chooseExportPath, openExternalLink, startDesktopBackend } from '../services/desktop';
+import brandIcon from '../../qj_icon2.png';
 import type {
   AddBookPayload,
   BookDetailResponse,
+  BookExportFormat,
   BookRecord,
   ChapterContentResponse,
   ChapterRecord,
   PreviewResponse,
+  ReaderProgressAnchorType,
+  ReadingProgressRecord,
   TaskRecord,
   TranslationProvider,
   TranslationSettings,
@@ -78,6 +83,31 @@ interface ActivityLogEntry {
   at: string;
 }
 
+interface TaskLogSyncState {
+  sequence: number;
+  signature: string;
+}
+
+interface ReaderProgressSnapshot {
+  chapterIndex: number;
+  scrollRatio: number;
+  anchorType: ReaderProgressAnchorType;
+  anchorIndex: number;
+  anchorOffsetRatio: number;
+}
+
+interface LoadReaderChapterOptions {
+  autoTranslate?: boolean;
+  restoreProgress?: ReaderProgressSnapshot | null;
+  scrollToTop?: boolean;
+  scrollBehavior?: ScrollBehavior;
+}
+
+interface OpenReaderOptions extends LoadReaderChapterOptions {
+  mode?: 'original' | 'translated';
+  restoreSavedProgress?: boolean;
+}
+
 const navItems: NavItem[] = [
   { key: 'library', label: '我的书架', icon: '▥' },
   { key: 'logs', label: '运行日志', icon: '◫' },
@@ -87,6 +117,7 @@ const navItems: NavItem[] = [
 const providerOptions: ProviderOption[] = [
   { key: 'openai', label: 'OpenAI', description: '支持 GPT 系列与兼容接口' },
   { key: 'anthropic', label: 'Anthropic', description: '适合长文本与自然表达' },
+  { key: 'grok2api', label: 'Grok2API', description: '兼容自建 grok2api / Grok OpenAI 接口代理' },
   { key: 'newapi', label: 'New API', description: '兼容聚合网关与中转服务' },
   { key: 'custom', label: '自定义', description: '连接本地或私有翻译端点' },
 ];
@@ -108,6 +139,7 @@ const READER_FONT_SIZE_STORAGE_KEY = 'qingjuan.readerFontSize';
 const READER_TEXT_COLOR_STORAGE_KEY = 'qingjuan.readerTextColor';
 const READER_BACKGROUND_COLOR_STORAGE_KEY = 'qingjuan.readerBackgroundColor';
 const LOG_LIMIT = 80;
+const BACK_TO_TOP_VISIBLE_SCROLL = 280;
 
 const addBookForm = reactive<AddBookPayload>({
   sourceUrl: '',
@@ -136,6 +168,8 @@ const coverFileInput = ref<HTMLInputElement | null>(null);
 const savingSettings = ref(false);
 const coverUploading = ref(false);
 const deletingBook = ref(false);
+const exportMenuOpen = ref(false);
+const exportingFormat = ref<BookExportFormat | null>(null);
 const detailLoading = ref(false);
 const detailError = ref('');
 const readerTheme = ref<ReaderTheme>(readStoredReaderTheme());
@@ -143,7 +177,9 @@ const readerFontSize = ref<ReaderFontSize>(readStoredReaderFontSize());
 const readerTextColor = ref(readStoredReaderColor(READER_TEXT_COLOR_STORAGE_KEY));
 const readerBackgroundColor = ref(readStoredReaderColor(READER_BACKGROUND_COLOR_STORAGE_KEY));
 const showReaderPanel = ref(true);
+const readerChapterPickerOpen = ref(false);
 const sidebarCollapsed = ref(false);
+const showBackToTopButton = ref(false);
 const bookDetail = ref<BookDetailResponse | null>(null);
 const selectedChapterIndexes = ref<number[]>([]);
 const activeChapterIndex = ref<number | null>(null);
@@ -151,6 +187,7 @@ const readerContent = ref<ChapterContentResponse | null>(null);
 const readerLoading = ref(false);
 const readerError = ref('');
 const readerMode = ref<'original' | 'translated'>('translated');
+const readerPaperRef = ref<HTMLElement | null>(null);
 const chapterActionLoading = ref<'download' | 'translate' | null>(null);
 const bookTasks = ref<TaskRecord[]>([]);
 const tasksLoading = ref(false);
@@ -161,16 +198,24 @@ const tasksOverviewOpen = ref(false);
 const activityLogs = ref<ActivityLogEntry[]>([]);
 let taskPollTimer: number | null = null;
 let globalTaskPollTimer: number | null = null;
+let readerScrollSaveTimer: number | null = null;
+let readerScrollReleaseTimer: number | null = null;
+let readerPendingRestoreTimer: number | null = null;
+let readerScrollSaveSuspended = false;
+let readerPendingRestoreSnapshot: ReaderProgressSnapshot | null = null;
+let readerLastSavedProgressKey = '';
 const lastCompletedTaskStamp = ref('');
 const lastGlobalTaskStamp = ref('');
 const taskLogSignatures = new Map<string, string>();
+const taskLogSyncState = new Map<string, TaskLogSyncState>();
+const taskLogRequests = new Map<string, Promise<void>>();
 
 const stats = computed(() => {
   const translated = books.value.filter((item) => item.translated).length;
   const totalChapters = books.value.reduce((count, item) => count + item.chapterCount, 0);
 
   return [
-    { label: '已收藏', value: `${books.value.length}`, suffix: '本小说' },
+    { label: '已收藏', value: `${books.value.length}`, suffix: '本作品' },
     { label: '章节总数', value: `${totalChapters}`, suffix: '章' },
     { label: '已启用翻译', value: `${translated}`, suffix: '本' },
   ];
@@ -214,7 +259,7 @@ const selectedPresentation = computed(() => {
 
   const base = getPresentation(book);
   const detail = bookDetail.value?.book.id === book.id ? bookDetail.value : null;
-  const progressIndex = activeChapterIndex.value ?? detail?.progress.lastChapterIndex ?? 0;
+  const progressIndex = detail?.progress.lastChapterIndex ?? book.lastReadChapterIndex ?? 0;
   return {
     ...base,
     author: detail?.author?.trim() || '作者暂未识别',
@@ -230,6 +275,61 @@ const selectedChapterCount = computed(() => selectedChapterIndexes.value.length)
 const allChaptersSelected = computed(
   () => chapters.value.length > 0 && selectedChapterIndexes.value.length === chapters.value.length,
 );
+const isComicBook = computed(() => selectedBook.value?.bookKind === '漫画');
+const persistedReadingProgress = computed(() => {
+  const book = selectedBook.value;
+  const detail = book && bookDetail.value?.book.id === book.id ? bookDetail.value : null;
+  const chapterList = detail?.chapters ?? chapters.value;
+  const maxIndex = chapterList.length ? chapterList[chapterList.length - 1].index : book?.chapterCount ?? 0;
+  const rawIndex = detail?.progress.lastChapterIndex ?? book?.lastReadChapterIndex ?? 0;
+  const currentIndex = maxIndex > 0 ? Math.max(0, Math.min(rawIndex, maxIndex)) : 0;
+  const currentChapter = chapterList.find((chapter) => chapter.index === currentIndex) ?? null;
+  const continueChapter = currentChapter ?? chapterList[0] ?? null;
+
+  return {
+    currentIndex,
+    maxIndex,
+    hasProgress: currentIndex > 0,
+    currentChapter,
+    continueChapter,
+    continueIndex: continueChapter?.index ?? null,
+    lastScrollRatio: clampUnit(detail?.progress.lastScrollRatio ?? 0),
+    lastAnchorType: normalizeReaderAnchorType(detail?.progress.lastAnchorType),
+    lastAnchorIndex: Math.max(0, detail?.progress.lastAnchorIndex ?? 0),
+    lastAnchorOffsetRatio: clampUnit(detail?.progress.lastAnchorOffsetRatio ?? 0),
+    lastReadAt: detail?.progress.lastReadAt ?? book?.lastReadAt ?? null,
+  };
+});
+const continueReadingLabel = computed(() => (persistedReadingProgress.value.hasProgress ? '继续阅读' : '开始阅读'));
+const continueReadingDescription = computed(() => {
+  const progress = persistedReadingProgress.value;
+  const chapter = progress.continueChapter;
+  if (!chapter) {
+    return '当前还没有可阅读的章节。';
+  }
+
+  const chapterLabel = chapter.title || formatChapterOrder(chapter.index, selectedBook.value?.bookKind);
+  if (!progress.hasProgress) {
+    return `尚未开始阅读，将从 ${chapterLabel} 开始。`;
+  }
+
+  const timestamp = formatReadingTimestamp(progress.lastReadAt);
+  const progressPercent = Math.round(progress.lastScrollRatio * 100);
+  const progressSuffix = progressPercent > 0 ? ` · 章内 ${progressPercent}%` : '';
+  return timestamp
+    ? `上次读到 ${chapterLabel}${progressSuffix} · ${timestamp}`
+    : `上次读到 ${chapterLabel}${progressSuffix}`;
+});
+const readerChapterPickerSummary = computed(() => {
+  const progress = persistedReadingProgress.value;
+  if (!chapters.value.length) {
+    return '当前还没有可切换的章节。';
+  }
+  if (!progress.hasProgress) {
+    return '尚未有历史进度，点击任一章节即可开始阅读。';
+  }
+  return continueReadingDescription.value;
+});
 
 const readerChapter = computed(() =>
   chapters.value.find((item) => item.index === activeChapterIndex.value) ?? chapters.value[0] ?? null,
@@ -237,6 +337,14 @@ const readerChapter = computed(() =>
 
 const readerParagraphs = computed(() => readerContent.value?.paragraphs ?? []);
 const readerImages = computed(() => readerContent.value?.imageSources ?? []);
+const readerPageTranslations = computed(() => readerContent.value?.pageTranslations ?? []);
+const readerUsesTranslatedImages = computed(
+  () =>
+    isComicBook.value &&
+    readerMode.value === 'translated' &&
+    readerContent.value?.mode === 'translated' &&
+    (readerContent.value?.chapter.translatedImageFiles?.length ?? 0) > 0,
+);
 const visibleReaderParagraphs = computed(() =>
   readerParagraphs.value.filter((paragraph) => {
     const normalized = paragraph.trim();
@@ -270,7 +378,10 @@ const readerColorSummary = computed(() => {
 const readerProgressTotal = computed(() => chapters.value.length || selectedBook.value?.chapterCount || 0);
 const readerProgressIndex = computed(() => readerChapter.value?.index ?? 0);
 const readerWordCount = computed(
-  () => readerContent.value?.chapter.wordCount ?? readerChapter.value?.wordCount ?? 0,
+  () =>
+    isComicBook.value
+      ? readerContent.value?.chapter.pageCount ?? readerChapter.value?.pageCount ?? 0
+      : readerContent.value?.chapter.wordCount ?? readerChapter.value?.wordCount ?? 0,
 );
 const hasPreviousChapter = computed(() => readerProgressIndex.value > 1);
 const hasNextChapter = computed(
@@ -280,6 +391,413 @@ const translatedReadable = computed(
   () => readerContent.value?.translatedAvailable ?? readerChapter.value?.translated ?? false,
 );
 const readerSourceUrl = computed(() => readerChapter.value?.sourceUrl?.trim() || selectedBook.value?.sourceUrl?.trim() || '');
+
+function clampUnit(value: number | null | undefined): number {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(value, 1));
+}
+
+function normalizeReaderAnchorType(value: string | null | undefined): ReaderProgressAnchorType {
+  return value === 'paragraph' || value === 'image' ? value : 'top';
+}
+
+function buildTopProgressSnapshot(chapterIndex: number): ReaderProgressSnapshot {
+  return {
+    chapterIndex,
+    scrollRatio: 0,
+    anchorType: 'top',
+    anchorIndex: 0,
+    anchorOffsetRatio: 0,
+  };
+}
+
+function buildPersistedProgressSnapshot(chapterIndex?: number | null): ReaderProgressSnapshot | null {
+  const progress = persistedReadingProgress.value;
+  const targetChapterIndex = chapterIndex ?? progress.currentIndex;
+  if (!targetChapterIndex || progress.currentIndex !== targetChapterIndex) {
+    return null;
+  }
+  return {
+    chapterIndex: targetChapterIndex,
+    scrollRatio: clampUnit(progress.lastScrollRatio),
+    anchorType: progress.lastAnchorType,
+    anchorIndex: Math.max(0, progress.lastAnchorIndex),
+    anchorOffsetRatio: clampUnit(progress.lastAnchorOffsetRatio),
+  };
+}
+
+function serializeProgressSnapshot(snapshot: ReaderProgressSnapshot): string {
+  return [
+    snapshot.chapterIndex,
+    snapshot.scrollRatio.toFixed(4),
+    snapshot.anchorType,
+    snapshot.anchorIndex,
+    snapshot.anchorOffsetRatio.toFixed(4),
+  ].join(':');
+}
+
+function getReaderViewportOffset(): number {
+  if (typeof window === 'undefined') {
+    return 0;
+  }
+  const topbar = document.querySelector<HTMLElement>('.reader-topbar');
+  return (topbar?.offsetHeight ?? 0) + 16;
+}
+
+function getDocumentScrollRatio(scrollTop = window.scrollY): number {
+  const maxScroll = Math.max(document.documentElement.scrollHeight - window.innerHeight, 0);
+  return maxScroll > 0 ? clampUnit(scrollTop / maxScroll) : 0;
+}
+
+function captureReaderProgressSnapshot(chapterIndex = readerChapter.value?.index ?? null): ReaderProgressSnapshot | null {
+  if (typeof window === 'undefined' || currentView.value !== 'reader' || !readerContent.value || chapterIndex === null) {
+    return null;
+  }
+
+  const currentScroll = Math.max(window.scrollY || 0, 0);
+  if (currentScroll <= 12) {
+    return buildTopProgressSnapshot(chapterIndex);
+  }
+
+  const paper = readerPaperRef.value;
+  const scrollRatio = getDocumentScrollRatio(currentScroll);
+  if (!paper) {
+    return {
+      chapterIndex,
+      scrollRatio,
+      anchorType: 'top',
+      anchorIndex: 0,
+      anchorOffsetRatio: 0,
+    };
+  }
+
+  const viewportTop = getReaderViewportOffset();
+  const anchors = Array.from(
+    paper.querySelectorAll<HTMLElement>('[data-reader-anchor-type][data-reader-anchor-index]'),
+  );
+  if (!anchors.length) {
+    return {
+      chapterIndex,
+      scrollRatio,
+      anchorType: 'top',
+      anchorIndex: 0,
+      anchorOffsetRatio: 0,
+    };
+  }
+
+  let bestAnchor: HTMLElement | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const anchor of anchors) {
+    const rect = anchor.getBoundingClientRect();
+    const distance = rect.top - viewportTop;
+    const score = distance <= 0 ? Math.abs(distance) : distance + 24;
+    if (score < bestScore) {
+      bestScore = score;
+      bestAnchor = anchor;
+    }
+  }
+
+  if (!bestAnchor) {
+    return {
+      chapterIndex,
+      scrollRatio,
+      anchorType: 'top',
+      anchorIndex: 0,
+      anchorOffsetRatio: 0,
+    };
+  }
+
+  const anchorRect = bestAnchor.getBoundingClientRect();
+  const anchorHeight = Math.max(bestAnchor.offsetHeight, 1);
+  const rawAnchorIndex = Number.parseInt(bestAnchor.dataset.readerAnchorIndex ?? '0', 10);
+
+  return {
+    chapterIndex,
+    scrollRatio,
+    anchorType: normalizeReaderAnchorType(bestAnchor.dataset.readerAnchorType),
+    anchorIndex: Number.isNaN(rawAnchorIndex) ? 0 : Math.max(0, rawAnchorIndex),
+    anchorOffsetRatio: clampUnit((viewportTop - anchorRect.top) / anchorHeight),
+  };
+}
+
+function resolveReaderAnchorElement(snapshot: ReaderProgressSnapshot): HTMLElement | null {
+  if (!readerPaperRef.value || snapshot.anchorType === 'top') {
+    return null;
+  }
+  return readerPaperRef.value.querySelector<HTMLElement>(
+    `[data-reader-anchor-type="${snapshot.anchorType}"][data-reader-anchor-index="${snapshot.anchorIndex}"]`,
+  );
+}
+
+function resolveReaderScrollTop(snapshot: ReaderProgressSnapshot): number {
+  if (typeof window === 'undefined') {
+    return 0;
+  }
+
+  const anchorElement = resolveReaderAnchorElement(snapshot);
+  if (anchorElement) {
+    const viewportOffset = getReaderViewportOffset();
+    const anchorRect = anchorElement.getBoundingClientRect();
+    const anchorHeight = Math.max(anchorElement.offsetHeight, 1);
+    return Math.max(
+      0,
+      Math.round(window.scrollY + anchorRect.top - viewportOffset + anchorHeight * clampUnit(snapshot.anchorOffsetRatio)),
+    );
+  }
+
+  const maxScroll = Math.max(document.documentElement.scrollHeight - window.innerHeight, 0);
+  return maxScroll > 0 ? Math.round(maxScroll * clampUnit(snapshot.scrollRatio)) : 0;
+}
+
+function clearReaderScrollSaveTimer() {
+  if (readerScrollSaveTimer !== null) {
+    window.clearTimeout(readerScrollSaveTimer);
+    readerScrollSaveTimer = null;
+  }
+}
+
+function clearReaderScrollReleaseTimer() {
+  if (readerScrollReleaseTimer !== null) {
+    window.clearTimeout(readerScrollReleaseTimer);
+    readerScrollReleaseTimer = null;
+  }
+}
+
+function clearPendingReaderRestore() {
+  if (readerPendingRestoreTimer !== null) {
+    window.clearTimeout(readerPendingRestoreTimer);
+    readerPendingRestoreTimer = null;
+  }
+  readerPendingRestoreSnapshot = null;
+}
+
+function rememberPendingReaderRestore(snapshot: ReaderProgressSnapshot, durationMs: number) {
+  clearPendingReaderRestore();
+  if (durationMs <= 0) {
+    return;
+  }
+  readerPendingRestoreSnapshot = snapshot;
+  readerPendingRestoreTimer = window.setTimeout(() => {
+    clearPendingReaderRestore();
+  }, durationMs);
+}
+
+function releaseReaderScrollSaveAfter(delayMs: number) {
+  clearReaderScrollReleaseTimer();
+  readerScrollReleaseTimer = window.setTimeout(() => {
+    readerScrollSaveSuspended = false;
+    readerScrollReleaseTimer = null;
+  }, delayMs);
+}
+
+function waitForAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
+}
+
+async function waitForAnimationFrames(count = 2): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    await waitForAnimationFrame();
+  }
+}
+
+async function waitForReaderAssets(timeoutMs = 1200): Promise<void> {
+  if (!readerPaperRef.value) {
+    return;
+  }
+
+  const pendingImages = Array.from(readerPaperRef.value.querySelectorAll<HTMLImageElement>('img')).filter(
+    (image) => !image.complete,
+  );
+  if (!pendingImages.length) {
+    return;
+  }
+
+  await Promise.race([
+    Promise.all(
+      pendingImages.map(
+        (image) =>
+          new Promise<void>((resolve) => {
+            const done = () => resolve();
+            image.addEventListener('load', done, { once: true });
+            image.addEventListener('error', done, { once: true });
+          }),
+      ),
+    ).then(() => undefined),
+    new Promise<void>((resolve) => {
+      window.setTimeout(resolve, timeoutMs);
+    }),
+  ]);
+}
+
+async function applyReaderViewportProgress(
+  snapshot: ReaderProgressSnapshot,
+  behavior: ScrollBehavior = 'auto',
+): Promise<void> {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  readerScrollSaveSuspended = true;
+  clearReaderScrollReleaseTimer();
+  rememberPendingReaderRestore(snapshot, snapshot.anchorType === 'image' ? 1800 : 0);
+
+  await nextTick();
+  if (snapshot.anchorType === 'image' || readerImages.value.length > 0) {
+    await waitForReaderAssets(snapshot.anchorType === 'image' ? 1400 : 600);
+  }
+  await waitForAnimationFrames(2);
+
+  window.scrollTo({
+    top: resolveReaderScrollTop(snapshot),
+    behavior,
+  });
+
+  if (snapshot.anchorType !== 'top' || snapshot.scrollRatio > 0) {
+    await waitForAnimationFrames(1);
+    const correctedTop = resolveReaderScrollTop(snapshot);
+    if (Math.abs(window.scrollY - correctedTop) > 6) {
+      window.scrollTo({
+        top: correctedTop,
+        behavior: 'auto',
+      });
+    }
+  }
+
+  releaseReaderScrollSaveAfter(behavior === 'smooth' ? 420 : 80);
+}
+
+async function reapplyPendingReaderRestore() {
+  if (!readerPendingRestoreSnapshot || currentView.value !== 'reader') {
+    return;
+  }
+  await waitForAnimationFrames(1);
+  window.scrollTo({
+    top: resolveReaderScrollTop(readerPendingRestoreSnapshot),
+    behavior: 'auto',
+  });
+}
+
+function applyReadingProgressState(bookId: string, progress: ReadingProgressRecord) {
+  if (bookDetail.value?.book.id === bookId) {
+    bookDetail.value = {
+      ...bookDetail.value,
+      progress,
+    };
+  }
+  updateBookProgressCache(bookId, progress);
+  readerLastSavedProgressKey = serializeProgressSnapshot({
+    chapterIndex: progress.lastChapterIndex,
+    scrollRatio: clampUnit(progress.lastScrollRatio),
+    anchorType: normalizeReaderAnchorType(progress.lastAnchorType),
+    anchorIndex: Math.max(0, progress.lastAnchorIndex),
+    anchorOffsetRatio: clampUnit(progress.lastAnchorOffsetRatio),
+  });
+}
+
+async function persistReaderProgressSnapshot(
+  bookId: string | null,
+  snapshot: ReaderProgressSnapshot | null,
+  options: { force?: boolean; silent?: boolean } = {},
+): Promise<ReadingProgressRecord | null> {
+  if (!bookId || !snapshot) {
+    return null;
+  }
+
+  const normalizedSnapshot: ReaderProgressSnapshot = {
+    chapterIndex: snapshot.chapterIndex,
+    scrollRatio: clampUnit(snapshot.scrollRatio),
+    anchorType: normalizeReaderAnchorType(snapshot.anchorType),
+    anchorIndex: Math.max(0, snapshot.anchorIndex),
+    anchorOffsetRatio: clampUnit(snapshot.anchorOffsetRatio),
+  };
+  const snapshotKey = serializeProgressSnapshot(normalizedSnapshot);
+  if (!options.force && snapshotKey === readerLastSavedProgressKey) {
+    return null;
+  }
+
+  try {
+    const progress = await saveReadingProgress(bookId, normalizedSnapshot);
+    applyReadingProgressState(bookId, progress);
+    return progress;
+  } catch (error) {
+    if (!options.silent) {
+      lastMessage.value = `阅读进度保存失败：${toErrorMessage(error)}`;
+    } else {
+      console.error('阅读进度保存失败', error);
+    }
+    return null;
+  }
+}
+
+async function persistCurrentReadingProgress(
+  options: { force?: boolean; silent?: boolean } = {},
+): Promise<ReadingProgressRecord | null> {
+  return await persistReaderProgressSnapshot(selectedBookId.value, captureReaderProgressSnapshot(), options);
+}
+
+function scheduleReaderProgressSave() {
+  if (
+    typeof window === 'undefined' ||
+    readerScrollSaveSuspended ||
+    currentView.value !== 'reader' ||
+    readerLoading.value ||
+    !readerContent.value
+  ) {
+    return;
+  }
+
+  clearReaderScrollSaveTimer();
+  readerScrollSaveTimer = window.setTimeout(() => {
+    readerScrollSaveTimer = null;
+    void persistCurrentReadingProgress({ silent: true });
+  }, 420);
+}
+
+async function flushReaderProgressSave(options: { silent?: boolean } = {}): Promise<ReadingProgressRecord | null> {
+  clearReaderScrollSaveTimer();
+  return await persistCurrentReadingProgress({
+    force: true,
+    silent: options.silent ?? true,
+  });
+}
+
+function handleReaderWindowScroll() {
+  scheduleReaderProgressSave();
+}
+
+function updateScrollAffordances() {
+  if (typeof window === 'undefined') {
+    showBackToTopButton.value = false;
+    return;
+  }
+  showBackToTopButton.value = currentView.value !== 'reader' && window.scrollY > BACK_TO_TOP_VISIBLE_SCROLL;
+}
+
+function handleWindowScroll() {
+  handleReaderWindowScroll();
+  updateScrollAffordances();
+}
+
+function scrollPageToTop() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.scrollTo({
+    top: 0,
+    behavior: 'smooth',
+  });
+}
+
+function handleReaderAssetLoad() {
+  if (readerPendingRestoreSnapshot) {
+    void reapplyPendingReaderRestore();
+  }
+}
+
 const activeTasks = computed(() => bookTasks.value.filter((task) => task.status === 'queued' || task.status === 'running'));
 const failedTasks = computed(() => bookTasks.value.filter((task) => task.status === 'failed'));
 const globalActiveTasks = computed(() =>
@@ -298,9 +816,10 @@ const logSummary = computed(() => {
 
 const providerModelOptions = computed(() => {
   const options: Record<TranslationProvider, string[]> = {
-    openai: ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini'],
+    openai: ['gpt-5.4', 'gpt-4.1', 'gpt-4o-mini'],
     anthropic: ['claude-3-7-sonnet-latest', 'claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest'],
-    newapi: ['gpt-4.1-mini', 'deepseek-chat', 'gemini-2.0-flash'],
+    grok2api: ['grok-4', 'grok-3', 'grok-3-reasoning', 'grok-3-deepsearch'],
+    newapi: ['gpt-5.4', 'deepseek-chat', 'gemini-2.0-flash'],
     custom: ['custom-model', 'local-llm', 'translator-proxy'],
   };
 
@@ -387,6 +906,36 @@ function buildLogTime() {
     second: '2-digit',
     hour12: false,
   }).format(new Date());
+}
+
+function formatChapterOrder(index: number, bookKind: BookRecord['bookKind'] | PreviewResponse['bookKind'] | null | undefined): string {
+  const normalizedIndex = Math.max(0, Math.trunc(index || 0));
+  if (normalizedIndex <= 0) {
+    return bookKind === '漫画' ? '未开始阅读' : '未开始阅读';
+  }
+  return `第 ${normalizedIndex} ${bookKind === '漫画' ? '话' : '章'}`;
+}
+
+function formatReadingTimestamp(value: string | null | undefined): string {
+  const normalized = (value ?? '').trim();
+  if (!normalized) {
+    return '';
+  }
+
+  const parsed = new Date(normalized.replace(' ', 'T'));
+  if (Number.isNaN(parsed.getTime())) {
+    return normalized;
+  }
+
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+    .format(parsed)
+    .replace(',', '');
 }
 
 function appendActivityLog(category: ActivityLogEntry['category'], title: string, detail: string) {
@@ -478,7 +1027,7 @@ async function refreshBooks() {
 
 async function handlePreview() {
   if (!addBookForm.sourceUrl.trim()) {
-    lastMessage.value = '请先输入小说链接';
+    lastMessage.value = '请先输入作品链接';
     return;
   }
 
@@ -487,7 +1036,11 @@ async function handlePreview() {
 
   try {
     preview.value = await previewBook(addBookForm);
-    lastMessage.value = `已获取 ${preview.value.chapterCount} 个章节候选`;
+    addBookForm.bookKind = preview.value.bookKind;
+    lastMessage.value =
+      preview.value.bookKind === '漫画'
+        ? `已自动识别为漫画，获取 ${preview.value.chapterCount} 话候选`
+        : `已获取 ${preview.value.chapterCount} 个章节候选`;
   } catch (error) {
     preview.value = null;
     lastMessage.value = `预览失败：${toErrorMessage(error)}`;
@@ -498,7 +1051,7 @@ async function handlePreview() {
 
 async function handleImport() {
   if (!addBookForm.sourceUrl.trim()) {
-    lastMessage.value = '导入前必须填写小说链接';
+    lastMessage.value = '导入前必须填写作品链接';
     return;
   }
 
@@ -690,8 +1243,15 @@ async function loadReaderChapter(
   bookId: string,
   chapterIndex: number,
   mode: 'original' | 'translated' = readerMode.value,
-  autoTranslate = true,
+  options: LoadReaderChapterOptions = {},
 ) {
+  const autoTranslate = options.autoTranslate ?? true;
+  const restoreProgress =
+    options.restoreProgress && options.restoreProgress.chapterIndex === chapterIndex ? options.restoreProgress : null;
+  const initialProgressSnapshot =
+    restoreProgress ?? (options.scrollToTop === false ? null : buildTopProgressSnapshot(chapterIndex));
+  const shouldPersistInitialProgress = Boolean(initialProgressSnapshot) && !restoreProgress;
+
   activeChapterIndex.value = chapterIndex;
   if (!selectedChapterIndexes.value.includes(chapterIndex)) {
     selectedChapterIndexes.value = [...selectedChapterIndexes.value, chapterIndex];
@@ -703,14 +1263,21 @@ async function loadReaderChapter(
   try {
     readerContent.value = await fetchChapterContent(bookId, chapterIndex, mode);
     readerMode.value = readerContent.value.mode;
-    const progress = await saveReadingProgress(bookId, chapterIndex);
-    if (bookDetail.value?.book.id === bookId) {
-      bookDetail.value = {
-        ...bookDetail.value,
-        progress,
-      };
+    readerLoading.value = false;
+
+    if (initialProgressSnapshot) {
+      await applyReaderViewportProgress(initialProgressSnapshot, options.scrollBehavior ?? 'auto');
+    } else {
+      clearPendingReaderRestore();
     }
-    updateBookProgressCache(bookId, progress);
+
+    if (shouldPersistInitialProgress) {
+      await persistReaderProgressSnapshot(bookId, initialProgressSnapshot, {
+        force: true,
+        silent: false,
+      });
+    }
+
     lastMessage.value = `正在阅读：${readerContent.value.chapter.title}`;
     if (!autoTranslate) {
       return;
@@ -725,7 +1292,10 @@ async function loadReaderChapter(
   }
 }
 
-function navigate(view: ViewMode) {
+async function navigate(view: ViewMode) {
+  if (currentView.value === 'reader' && view !== 'reader') {
+    await flushReaderProgressSave({ silent: true });
+  }
   currentView.value = view;
   if (view === 'settings') {
     showImportPanel.value = false;
@@ -747,32 +1317,58 @@ function navigate(view: ViewMode) {
 async function openBook(bookId: string) {
   stopGlobalTaskPolling();
   tasksOverviewOpen.value = false;
+  readerChapterPickerOpen.value = false;
   selectedBookId.value = bookId;
   currentView.value = 'detail';
   await loadBookDetail(bookId);
 }
 
-async function openReader(chapterIndex?: number | null) {
+async function openReader(chapterIndex?: number | null, options: OpenReaderOptions = {}) {
   const book = selectedBook.value;
   if (!book) {
     return;
   }
 
-  selectedBookId.value = book.id;
+  const previousView = currentView.value;
+  const previousBookId = selectedBookId.value;
+  const previousChapterIndex = readerChapter.value?.index ?? null;
+  const previousMode = readerMode.value;
+
   if (!bookDetail.value || bookDetail.value.book.id !== book.id) {
+    selectedBookId.value = book.id;
     await loadBookDetail(book.id);
   }
 
-  const targetIndex = chapterIndex ?? activeChapterIndex.value ?? chapters.value[0]?.index ?? null;
+  const targetIndex = chapterIndex ?? persistedReadingProgress.value.continueIndex ?? activeChapterIndex.value ?? chapters.value[0]?.index ?? null;
+  if (
+    previousView === 'reader' &&
+    previousBookId === book.id &&
+    readerContent.value &&
+    (previousChapterIndex !== targetIndex || (options.mode && options.mode !== previousMode))
+  ) {
+    await flushReaderProgressSave({ silent: true });
+  }
+
+  selectedBookId.value = book.id;
   currentView.value = 'reader';
   showReaderPanel.value = false;
+  readerChapterPickerOpen.value = false;
 
   if (targetIndex === null) {
     readerContent.value = null;
     return;
   }
 
-  await loadReaderChapter(book.id, targetIndex, readerMode.value);
+  const restoreProgress =
+    options.restoreProgress ??
+    (options.restoreSavedProgress ? buildPersistedProgressSnapshot(targetIndex) : null);
+
+  await loadReaderChapter(book.id, targetIndex, options.mode ?? readerMode.value, {
+    autoTranslate: options.autoTranslate,
+    restoreProgress,
+    scrollToTop: options.scrollToTop ?? !restoreProgress,
+    scrollBehavior: options.scrollBehavior ?? (restoreProgress ? 'auto' : 'auto'),
+  });
 }
 
 async function handleDownloadSelected() {
@@ -823,14 +1419,22 @@ async function toggleReaderMode() {
   }
 
   const nextMode = readerMode.value === 'translated' ? 'original' : 'translated';
-  await loadReaderChapter(selectedBookId.value, readerChapter.value.index, nextMode, false);
+  await openReader(readerChapter.value.index, {
+    mode: nextMode,
+    autoTranslate: false,
+    restoreProgress: captureReaderProgressSnapshot(readerChapter.value.index),
+    scrollToTop: false,
+  });
 }
 
-function backToLibrary() {
-  navigate('library');
+async function backToLibrary() {
+  readerChapterPickerOpen.value = false;
+  await navigate('library');
 }
 
-function backToDetail() {
+async function backToDetail() {
+  readerChapterPickerOpen.value = false;
+  await flushReaderProgressSave({ silent: true });
   currentView.value = 'detail';
 }
 
@@ -853,8 +1457,71 @@ async function handleOpenExternal(url: string | null | undefined, label = '链�
   }
 }
 
+function isTauriRuntime() {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+function triggerBrowserDownload(url: string, fileName: string) {
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.rel = 'noopener noreferrer';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
+function buildDefaultExportFileName(title: string, format: BookExportFormat) {
+  const normalized = title.replace(/[\\/:*?"<>|]+/g, '_').trim() || '未命名小说';
+  return `${normalized}.${format}`;
+}
+
+function toggleExportMenu() {
+  if (!chapters.value.length || exportingFormat.value !== null) {
+    return;
+  }
+  exportMenuOpen.value = !exportMenuOpen.value;
+}
+
+async function handleExportBook(format: BookExportFormat) {
+  if (!selectedBookId.value || !selectedBook.value) {
+    lastMessage.value = '请先选择要导出的书籍';
+    return;
+  }
+
+  const tauriRuntime = isTauriRuntime();
+
+  try {
+    let targetPath: string | undefined;
+    if (tauriRuntime) {
+      const selectedPath = await chooseExportPath(buildDefaultExportFileName(selectedBook.value.title, format), format);
+      if (!selectedPath) {
+        lastMessage.value = '已取消导出';
+        return;
+      }
+      targetPath = selectedPath;
+    }
+
+    exportingFormat.value = format;
+    const result = await exportBook(selectedBookId.value, format, targetPath);
+    if (tauriRuntime) {
+      lastMessage.value = `已导出 ${format.toUpperCase()}：${result.filePath}`;
+      return;
+    }
+
+    triggerBrowserDownload(result.downloadUrl, result.fileName);
+    lastMessage.value = `已生成 ${format.toUpperCase()} 导出文件：${result.fileName}`;
+  } catch (error) {
+    lastMessage.value = `导出 ${format.toUpperCase()} 失败：${toErrorMessage(error)}`;
+  } finally {
+    exportingFormat.value = null;
+    exportMenuOpen.value = false;
+  }
+}
+
 function setDefaultProvider(provider: TranslationProvider) {
   settings.value.defaultProvider = provider;
+  settings.value.providers[provider].enabled = true;
   activeProvider.value = provider;
 }
 
@@ -955,12 +1622,30 @@ async function triggerAutoTranslateOnRead(bookId: string, chapterIndex: number) 
   }
 }
 
-function formatChapterCount(count: number): string {
-  return `${count} 章`;
+function formatChapterCount(
+  count: number,
+  bookKind: BookRecord['bookKind'] | PreviewResponse['bookKind'] = '轻小说',
+): string {
+  return `${count} ${bookKind === '漫画' ? '话' : '章'}`;
 }
 
 function formatWordCount(count: number): string {
   return `${count.toLocaleString('en-US')} 字`;
+}
+
+function formatPageCount(count: number): string {
+  return `${count.toLocaleString('en-US')} 页`;
+}
+
+function formatContentCount(count: number, bookKind: BookRecord['bookKind'] | PreviewResponse['bookKind'] = '轻小说'): string {
+  return bookKind === '漫画' ? formatPageCount(count) : formatWordCount(count);
+}
+
+function formatChapterMeta(chapter: ChapterRecord, bookKind: BookRecord['bookKind'] | null | undefined): string {
+  if (bookKind === '漫画') {
+    return formatPageCount(chapter.pageCount || chapter.imageCount || 0);
+  }
+  return formatWordCount(chapter.wordCount);
 }
 
 function setActiveChapter(chapterIndex: number) {
@@ -968,6 +1653,29 @@ function setActiveChapter(chapterIndex: number) {
   if (!selectedChapterIndexes.value.includes(chapterIndex)) {
     selectedChapterIndexes.value = [...selectedChapterIndexes.value, chapterIndex];
   }
+}
+
+async function handleContinueReading() {
+  await openReader(persistedReadingProgress.value.continueIndex, {
+    restoreSavedProgress: true,
+  });
+}
+
+async function handleReadSelectedChapter() {
+  await openReader(activeChapterIndex.value, {
+    scrollToTop: true,
+  });
+}
+
+async function selectReaderChapter(chapterIndex: number) {
+  if (!selectedBookId.value) {
+    return;
+  }
+  readerChapterPickerOpen.value = false;
+  await openReader(chapterIndex, {
+    scrollToTop: true,
+    scrollBehavior: 'smooth',
+  });
 }
 
 function toggleAllChapters() {
@@ -993,7 +1701,10 @@ async function goToAdjacentChapter(offset: -1 | 1) {
     return;
   }
 
-  await openReader(nextChapter.index);
+  await openReader(nextChapter.index, {
+    scrollToTop: true,
+    scrollBehavior: 'smooth',
+  });
 }
 
 function coverSeed(value: string): number {
@@ -1052,7 +1763,7 @@ function updateBookCache(book: BookRecord) {
   books.value = books.value.map((item) => (item.id === book.id ? book : item));
 }
 
-function updateBookProgressCache(bookId: string, progress: { lastChapterIndex: number; lastReadAt?: string | null }) {
+function updateBookProgressCache(bookId: string, progress: Pick<ReadingProgressRecord, 'lastChapterIndex' | 'lastReadAt'>) {
   books.value = books.value.map((item) =>
     item.id === bookId
       ? {
@@ -1085,6 +1796,7 @@ async function refreshGlobalTasks() {
     const previousStamp = lastGlobalTaskStamp.value;
     globalTasks.value = tasks;
     syncTaskLogState(tasks);
+    await syncTaskRuntimeLogs(tasks);
     const currentStamp = tasks
       .filter((task) => task.status === 'completed' || task.status === 'failed')
       .map((task) => `${task.id}:${task.status}:${task.updatedAt}`)
@@ -1119,6 +1831,7 @@ async function refreshBookTasks(bookId: string) {
     const previousStamp = lastCompletedTaskStamp.value;
     bookTasks.value = tasks;
     syncTaskLogState(tasks);
+    await syncTaskRuntimeLogs(tasks);
     const currentStamp = tasks
       .filter((task) => task.status === 'completed' || task.status === 'failed')
       .map((task) => `${task.id}:${task.status}:${task.updatedAt}`)
@@ -1201,6 +1914,12 @@ function upsertGlobalTask(task: TaskRecord) {
 }
 
 function upsertTaskCollections(task: TaskRecord) {
+  if (!taskLogSyncState.has(task.id)) {
+    taskLogSyncState.set(task.id, {
+      sequence: 0,
+      signature: taskRuntimeSignature(task),
+    });
+  }
   upsertTask(task);
   upsertGlobalTask(task);
   syncTaskLogState([task]);
@@ -1249,7 +1968,6 @@ function syncTaskLogState(tasks: TaskRecord[]) {
       task.status,
       task.completedCount,
       task.totalCount,
-      task.message,
       task.error ?? '',
     ].join('|');
     const previous = taskLogSignatures.get(task.id);
@@ -1266,6 +1984,75 @@ function syncTaskLogState(tasks: TaskRecord[]) {
       task.error?.trim() || task.message || `章节 ${task.completedCount} / ${task.totalCount}`,
     );
   });
+}
+
+function taskRuntimeSignature(task: TaskRecord) {
+  return [
+    task.status,
+    task.completedCount,
+    task.totalCount,
+    task.updatedAt,
+    task.message,
+    task.error ?? '',
+  ].join('|');
+}
+
+async function fetchAndAppendTaskLogs(task: TaskRecord): Promise<void> {
+  const state = taskLogSyncState.get(task.id) ?? { sequence: 0, signature: '' };
+  const requestKey = `${task.id}:${state.sequence}`;
+  const pending = taskLogRequests.get(requestKey);
+  if (pending) {
+    await pending;
+    return;
+  }
+
+  const request = (async () => {
+    try {
+      const logs = await fetchTaskLogs(task.id, state.sequence);
+      if (logs.length) {
+        taskLogSyncState.set(task.id, {
+          sequence: logs[logs.length - 1]?.sequence ?? state.sequence,
+          signature: taskRuntimeSignature(task),
+        });
+        logs.forEach((entry) => {
+          appendActivityLog(entry.level === 'error' ? 'error' : 'task', taskLogTitle(task), entry.message);
+        });
+      } else {
+        taskLogSyncState.set(task.id, {
+          sequence: state.sequence,
+          signature: taskRuntimeSignature(task),
+        });
+      }
+    } catch {
+      taskLogSyncState.set(task.id, {
+        sequence: state.sequence,
+        signature: '',
+      });
+    } finally {
+      taskLogRequests.delete(requestKey);
+    }
+  })();
+
+  taskLogRequests.set(requestKey, request);
+  await request;
+}
+
+async function syncTaskRuntimeLogs(tasks: TaskRecord[]) {
+  const targets = tasks.filter((task) => {
+    const currentSignature = taskRuntimeSignature(task);
+    const previous = taskLogSyncState.get(task.id);
+    if (!previous) {
+      taskLogSyncState.set(task.id, { sequence: 0, signature: currentSignature });
+      return task.status === 'queued' || task.status === 'running';
+    }
+    return previous.signature !== currentSignature;
+  });
+
+  if (!targets.length) {
+    return;
+  }
+
+  await Promise.all(targets.map((task) => fetchAndAppendTaskLogs(task)));
 }
 
 function toggleTasksOverview() {
@@ -1329,11 +2116,25 @@ watch(readerBackgroundColor, (value, previous) => {
   appendActivityLog('action', '阅读背景已更新', value ? `当前背景：${value}` : '已恢复跟随主题');
 });
 
+watch(currentView, (value, previous) => {
+  if (previous === 'reader' && value !== 'reader') {
+    clearPendingReaderRestore();
+  }
+  updateScrollAffordances();
+});
+
 onMounted(() => {
+  window.addEventListener('scroll', handleWindowScroll, { passive: true });
+  updateScrollAffordances();
   void bootstrap();
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener('scroll', handleWindowScroll);
+  void flushReaderProgressSave({ silent: true });
+  clearReaderScrollSaveTimer();
+  clearReaderScrollReleaseTimer();
+  clearPendingReaderRestore();
   stopTaskPolling();
   stopGlobalTaskPolling();
 });
@@ -1398,7 +2199,7 @@ onBeforeUnmount(() => {
           <div>
             <p class="page-kicker">我的书架</p>
             <h2>我的书架</h2>
-            <p class="page-subtitle">已收藏 {{ books.length }} 本小说</p>
+            <p class="page-subtitle">已收藏 {{ books.length }} 本作品</p>
           </div>
           <button
             class="primary-btn"
@@ -1651,7 +2452,7 @@ onBeforeUnmount(() => {
               <div class="drawer-head">
                 <div>
                   <p class="page-kicker">添加书籍</p>
-                  <h3>导入新小说</h3>
+                  <h3>导入新内容</h3>
                 </div>
                 <button
                   class="icon-btn"
@@ -1662,12 +2463,15 @@ onBeforeUnmount(() => {
               </div>
 
               <label class="form-field">
-                <span>小说链接</span>
+                <span>内容链接</span>
                 <input
                   v-model="addBookForm.sourceUrl"
-                  placeholder="https://example.com/novel/123"
+                  placeholder="https://example.com/novel/123 或漫画详情页链接"
                   type="url"
                 />
+                <small class="field-hint">
+                  已支持自动识别小说 / 漫画；漫画目前支持 18comic.vip 与 bikawebapp.com。
+                </small>
               </label>
 
               <label class="form-field">
@@ -1691,11 +2495,13 @@ onBeforeUnmount(() => {
 
               <div class="field-grid">
                 <label class="form-field">
-                  <span>小说类型</span>
+                  <span>内容类型</span>
                   <select v-model="addBookForm.bookKind">
                     <option value="长小说">长小说</option>
                     <option value="轻小说">轻小说</option>
+                    <option value="漫画">漫画</option>
                   </select>
+                  <small class="field-hint">远程链接会自动识别，手动选择主要用于本地导入。</small>
                 </label>
 
                 <label class="form-field">
@@ -1766,7 +2572,7 @@ onBeforeUnmount(() => {
                     <span class="page-kicker">抓取预览</span>
                     <h4>{{ preview.title }}</h4>
                   </div>
-                  <strong>{{ formatChapterCount(preview.chapterCount) }}</strong>
+                  <strong>{{ preview.bookKind }} · {{ formatChapterCount(preview.chapterCount, preview.bookKind) }}</strong>
                 </div>
                 <p>{{ preview.synopsis }}</p>
                 <ul>
@@ -1775,6 +2581,7 @@ onBeforeUnmount(() => {
                     :key="chapter.url"
                   >
                     {{ chapter.title }}
+                    <small v-if="preview.bookKind === '漫画' && chapter.pageCount > 0">（{{ formatPageCount(chapter.pageCount) }}）</small>
                   </li>
                 </ul>
               </div>
@@ -1864,7 +2671,7 @@ onBeforeUnmount(() => {
           <div>
             <p class="page-kicker">配置中心</p>
             <h2>设置</h2>
-            <p class="page-subtitle">配置 AI 翻译服务和应用偏好</p>
+            <p class="page-subtitle">配置 AI 翻译服务、漫画站点凭证和应用偏好</p>
           </div>
         </header>
 
@@ -1914,7 +2721,7 @@ onBeforeUnmount(() => {
               <input
                 v-model="settings.providers[activeProvider].model"
                 :list="`${activeProvider}-model-options`"
-                placeholder="输入模型名，例如 gpt-4.1-mini"
+                placeholder="输入模型名，例如 gpt-5.4"
                 type="text"
               />
               <datalist :id="`${activeProvider}-model-options`">
@@ -1974,7 +2781,35 @@ onBeforeUnmount(() => {
                 step="1"
                 type="number"
               />
-              <small>用于控制章节下载并发数。建议设置 2-5；过高可能触发目标站点限流。</small>
+              <small>用于控制章节与漫画图片下载并发数。建议设置 2-5；18comic / Bika 会自动放大图片并发，过高可能触发目标站点限流。</small>
+            </label>
+
+            <div class="status-note flush">
+              <strong>漫画译图</strong>
+              <p>漫画译图已改为内置流程，不再开放命令模板设置。当前会严格复用默认翻译提供商里配置的接口地址、密钥和模型执行图片翻译；仅支持 openai / newapi / grok2api / custom 这类 OpenAI 兼容图片接口。</p>
+            </div>
+
+            <div class="status-note flush">
+              <strong>Bika 漫画凭证</strong>
+              <p>用于抓取 bikawebapp.com 对应的漫画目录和章节图片；留空时会在首次抓取时自动创建并登录本地账户，也支持手动填写已有账户。</p>
+            </div>
+
+            <label class="form-field">
+              <span>Bika 账号</span>
+              <input
+                v-model="settings.bika.email"
+                placeholder="留空则自动创建，或输入已有邮箱/用户名"
+                type="text"
+              />
+            </label>
+
+            <label class="form-field">
+              <span>Bika 密码</span>
+              <input
+                v-model="settings.bika.password"
+                placeholder="留空则自动创建，或输入已有账户密码"
+                type="password"
+              />
             </label>
 
             <label class="form-field">
@@ -2064,16 +2899,23 @@ onBeforeUnmount(() => {
 
             <div class="detail-stats">
               <article>
-                <span>总章节</span>
+                <span>{{ selectedBook.bookKind === '漫画' ? '总话数' : '总章节' }}</span>
                 <strong>{{ selectedPresentation.progressTotal }}</strong>
               </article>
               <article>
-                <span>当前章节</span>
-                <strong>{{ selectedPresentation.progressCurrent }}</strong>
+                <span>阅读进度</span>
+                <strong>
+                  {{
+                    persistedReadingProgress.hasProgress
+                      ? `${persistedReadingProgress.currentIndex} / ${selectedPresentation.progressTotal}`
+                      : '未开始'
+                  }}
+                </strong>
+                <small v-if="persistedReadingProgress.lastReadAt">{{ formatReadingTimestamp(persistedReadingProgress.lastReadAt) }}</small>
               </article>
               <article>
-                <span>总字数</span>
-                <strong>{{ selectedPresentation.words }}</strong>
+                <span>{{ selectedBook.bookKind === '漫画' ? '总页数' : '总字数' }}</span>
+                <strong>{{ formatContentCount(Number(selectedPresentation.words), selectedBook.bookKind) }}</strong>
               </article>
               <article>
                 <span>添加日期</span>
@@ -2086,13 +2928,16 @@ onBeforeUnmount(() => {
             </p>
 
             <div class="detail-actions">
-              <button
-                class="primary-btn"
-                :disabled="!chapters.length"
-                @click="openReader(activeChapterIndex)"
-              >
-                ▶ 继续阅读
-              </button>
+              <div class="detail-continue">
+                <button
+                  class="primary-btn"
+                  :disabled="!chapters.length"
+                  @click="handleContinueReading"
+                >
+                  ▶ {{ continueReadingLabel }}
+                </button>
+                <small>{{ continueReadingDescription }}</small>
+              </div>
               <button
                 class="ghost-btn anchor-btn"
                 :disabled="!selectedBook.sourceUrl"
@@ -2100,16 +2945,45 @@ onBeforeUnmount(() => {
               >
                 ↗ 访问原帖
               </button>
+              <div class="export-menu">
+                <button
+                  class="ghost-btn"
+                  :disabled="!chapters.length || exportingFormat !== null"
+                  @click="toggleExportMenu"
+                >
+                  {{ exportingFormat ? `${exportingFormat.toUpperCase()} 导出中...` : exportMenuOpen ? '收起导出' : '导出' }}
+                </button>
+                <div
+                  v-if="exportMenuOpen"
+                  class="export-submenu"
+                >
+                  <button
+                    class="ghost-btn compact"
+                    :disabled="exportingFormat !== null"
+                    @click="handleExportBook('txt')"
+                  >
+                    TXT 文本
+                  </button>
+                  <button
+                    class="ghost-btn compact"
+                    :disabled="exportingFormat !== null"
+                    @click="handleExportBook('epub')"
+                  >
+                    EPUB 电子书
+                  </button>
+                  <span class="export-hint">导出时可自由选择保存位置</span>
+                </div>
+              </div>
               <button
                 class="ghost-btn"
-                :disabled="coverUploading"
+                :disabled="coverUploading || exportingFormat !== null"
                 @click="triggerCoverUpload"
               >
                 {{ coverUploading ? '封面上传中...' : '自定义封面' }}
               </button>
               <button
                 class="danger-btn"
-                :disabled="deletingBook"
+                :disabled="deletingBook || exportingFormat !== null"
                 @click="handleDeleteSelectedBook"
               >
                 {{ deletingBook ? '删除中...' : '删除书籍' }}
@@ -2123,7 +2997,10 @@ onBeforeUnmount(() => {
             <div>
               <h3>章节列表</h3>
               <p v-if="detailLoading">正在读取本地章节...</p>
-              <p v-else>已选择 {{ selectedChapterCount }} 章，共 {{ chapters.length }} 章</p>
+              <p v-else>
+                已选择 {{ selectedChapterCount }} {{ selectedBook.bookKind === '漫画' ? '话' : '章' }}，共
+                {{ chapters.length }} {{ selectedBook.bookKind === '漫画' ? '话' : '章' }}
+              </p>
             </div>
             <div
               v-if="chapters.length"
@@ -2138,7 +3015,7 @@ onBeforeUnmount(() => {
               <button
                 class="primary-btn soft"
                 :disabled="!chapters.length"
-                @click="openReader(activeChapterIndex)"
+                @click="handleReadSelectedChapter"
               >
                 阅读当前章
               </button>
@@ -2209,9 +3086,10 @@ onBeforeUnmount(() => {
               />
               <div class="chapter-copy">
                 <strong>{{ chapter.title }}</strong>
-                <span>{{ formatWordCount(chapter.wordCount) }}</span>
+                <span>{{ formatChapterMeta(chapter, selectedBook.bookKind) }}</span>
               </div>
               <div class="chapter-flags">
+                <em v-if="selectedBook.bookKind === '漫画' && chapter.pageCount > 0">{{ formatPageCount(chapter.pageCount) }}</em>
                 <em v-if="chapter.illustration">插图</em>
                 <em v-if="chapter.downloaded">已下载</em>
                 <em v-if="chapter.translated">已翻译</em>
@@ -2301,24 +3179,31 @@ onBeforeUnmount(() => {
             </button>
             <button
               class="ghost-btn compact"
+              :disabled="!chapters.length"
+              @click="readerChapterPickerOpen = !readerChapterPickerOpen"
+            >
+              {{ readerChapterPickerOpen ? '收起章节' : '章节选择' }}
+            </button>
+            <button
+              class="ghost-btn compact"
               :disabled="!translatedReadable"
               @click="toggleReaderMode"
             >
-              {{ readerMode === 'translated' ? '原文' : '译文' }}
+              {{ readerMode === 'translated' ? (isComicBook ? '原图' : '原文') : '译文' }}
             </button>
             <button
               class="ghost-btn compact"
               :disabled="!hasPreviousChapter"
               @click="goToAdjacentChapter(-1)"
             >
-              上一章
+              {{ isComicBook ? '上一话' : '上一章' }}
             </button>
             <button
               class="ghost-btn compact"
               :disabled="!hasNextChapter"
               @click="goToAdjacentChapter(1)"
             >
-              下一章
+              {{ isComicBook ? '下一话' : '下一章' }}
             </button>
             <button
               class="icon-btn"
@@ -2330,8 +3215,8 @@ onBeforeUnmount(() => {
         </header>
 
         <div class="reader-progress">
-          <span>章节 {{ readerProgressIndex }} / {{ readerProgressTotal }}</span>
-          <span>{{ formatWordCount(readerWordCount) }}</span>
+          <span>{{ isComicBook ? '话数' : '章节' }} {{ readerProgressIndex }} / {{ readerProgressTotal }}</span>
+          <span>{{ formatContentCount(readerWordCount, selectedBook.bookKind) }}</span>
           <div class="reader-line">
             <div
               class="reader-line-fill"
@@ -2340,11 +3225,49 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
+        <transition name="panel-fade">
+          <section
+            v-if="readerChapterPickerOpen"
+            class="reader-chapter-picker"
+          >
+            <div class="reader-chapter-picker-head">
+              <div>
+                <strong>章节选择</strong>
+                <p>{{ readerChapterPickerSummary }}</p>
+              </div>
+              <button
+                class="ghost-btn compact"
+                @click="readerChapterPickerOpen = false"
+              >
+                收起
+              </button>
+            </div>
+            <div class="reader-chapter-picker-list">
+              <button
+                v-for="chapter in chapters"
+                :key="chapter.id"
+                class="reader-chapter-chip"
+                :class="{
+                  active: chapter.index === activeChapterIndex,
+                  progress: persistedReadingProgress.currentIndex > 0 && chapter.index === persistedReadingProgress.currentIndex,
+                }"
+                @click="selectReaderChapter(chapter.index)"
+              >
+                <span>{{ chapter.title || formatChapterOrder(chapter.index, selectedBook.bookKind) }}</span>
+                <small>{{ formatChapterMeta(chapter, selectedBook.bookKind) }}</small>
+              </button>
+            </div>
+          </section>
+        </transition>
+
         <section
           class="reader-layout"
           :class="{ 'reader-layout--focus': !showReaderPanel }"
         >
-          <article class="reader-paper">
+          <article
+            ref="readerPaperRef"
+            class="reader-paper"
+          >
             <template v-if="readerLoading">
               <h2>{{ readerChapter?.title || '正在加载章节' }}</h2>
               <p>正在从本地章节文件读取正文...</p>
@@ -2365,20 +3288,49 @@ onBeforeUnmount(() => {
                   v-for="(imageSource, index) in readerImages"
                   :key="`${readerContent.chapter.id}-image-${index}`"
                   class="reader-figure"
+                  data-reader-anchor-type="image"
+                  :data-reader-anchor-index="index"
                 >
                   <img
                     :src="imageSource"
                     :alt="`${readerContent.chapter.title} 插图 ${index + 1}`"
+                    @load="handleReaderAssetLoad"
+                    @error="handleReaderAssetLoad"
                   />
-                  <figcaption>插图 {{ index + 1 }}</figcaption>
+                  <figcaption>{{ isComicBook ? `第 ${index + 1} 页` : `插图 ${index + 1}` }}</figcaption>
+                  <div
+                    v-if="isComicBook && readerMode === 'translated' && !readerUsesTranslatedImages && readerPageTranslations[index]"
+                    class="reader-page-translation"
+                  >
+                    <strong>本页译文</strong>
+                    <p class="reader-page-translation-text">{{ readerPageTranslations[index] }}</p>
+                  </div>
                 </figure>
               </div>
-              <p
-                v-for="(paragraph, index) in visibleReaderParagraphs"
-                :key="`${readerContent.chapter.id}-${index}`"
+              <template v-if="!isComicBook">
+                <p
+                  v-for="(paragraph, index) in visibleReaderParagraphs"
+                  :key="`${readerContent.chapter.id}-${index}`"
+                  data-reader-anchor-type="paragraph"
+                  :data-reader-anchor-index="index"
+                >
+                  {{ paragraph }}
+                </p>
+              </template>
+              <div
+                v-else-if="readerMode === 'translated' && !readerUsesTranslatedImages && !readerPageTranslations.length && visibleReaderParagraphs.length"
+                class="reader-comic-fallback"
               >
-                {{ paragraph }}
-              </p>
+                <strong>整话译文</strong>
+                <p
+                  v-for="(paragraph, index) in visibleReaderParagraphs"
+                  :key="`${readerContent.chapter.id}-fallback-${index}`"
+                  data-reader-anchor-type="paragraph"
+                  :data-reader-anchor-index="index"
+                >
+                  {{ paragraph }}
+                </p>
+              </div>
             </template>
 
             <template v-else>
@@ -2487,5 +3439,15 @@ onBeforeUnmount(() => {
         </section>
       </template>
     </section>
+
+    <button
+      v-if="showBackToTopButton"
+      class="scroll-top-btn"
+      type="button"
+      title="返回顶部"
+      @click="scrollPageToTop"
+    >
+      ↑ 返回顶部
+    </button>
   </div>
 </template>

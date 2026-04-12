@@ -1517,6 +1517,36 @@ def _resolve_manga_image_provider_config(
     return provider, base_url, api_key, configured_model
 
 
+def _has_custom_manga_ocr_config(settings: TranslationSettings) -> bool:
+    return bool(settings.mangaOcr.enabled)
+
+
+def _resolve_manga_ocr_config(
+    settings: TranslationSettings,
+    *,
+    fallback_base_url: str,
+    fallback_api_key: str,
+) -> tuple[str, str]:
+    ocr_config = settings.mangaOcr
+    if not ocr_config.enabled:
+        return fallback_base_url, fallback_api_key
+
+    base_url = str(ocr_config.baseUrl or "").strip().rstrip("/")
+    api_key = str(ocr_config.apiKey or "").strip()
+
+    if not base_url:
+        raise ValueError("漫画 OCR 接口地址未配置")
+    base_host = (urlparse(base_url).hostname or "").lower()
+    if base_host in {"example.com", "www.example.com", "your-newapi-endpoint"}:
+        raise ValueError("漫画 OCR 接口地址仍是占位值，请先在设置中填写真实 API 地址")
+
+    return base_url, api_key
+
+
+def _should_force_manga_ocr_pipeline(settings: TranslationSettings) -> bool:
+    return _has_custom_manga_ocr_config(settings)
+
+
 def _build_manga_image_edit_prompt(
     *,
     target_language: str,
@@ -3202,6 +3232,7 @@ def _build_manga_ocr_prompt(*, image_size: tuple[int, int]) -> str:
         "Auto-detect the original language from the image. "
         "Do not translate the text. Keep source_text exactly as recognized from the image. "
         "Prefer one region per speech bubble, caption box, or sound effect block. "
+        "Bounding boxes must tightly fit the visible text and bubble body instead of the entire panel. "
         "bbox may include the full readable area, but body_bbox should cover the bubble or caption body and exclude tails when possible. "
         "safe_box should be a conservative inner rectangle that avoids borders and tails. "
         "source_direction should describe the original text flow; direction should describe the recommended render direction for translated text. "
@@ -3212,8 +3243,397 @@ def _build_manga_ocr_prompt(*, image_size: tuple[int, int]) -> str:
 
 
 
+def _expand_region_bbox(
+    bbox: tuple[int, int, int, int],
+    image_size: tuple[int, int],
+    *,
+    expand_x_ratio: float,
+    expand_y_ratio: float,
+    min_expand: int = 4,
+) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = bbox
+    width, height = image_size
+    box_width = max(1, x2 - x1)
+    box_height = max(1, y2 - y1)
+    expand_x = max(min_expand, int(round(box_width * expand_x_ratio)))
+    expand_y = max(min_expand, int(round(box_height * expand_y_ratio)))
+    return (
+        max(0, x1 - expand_x),
+        max(0, y1 - expand_y),
+        min(width, x2 + expand_x),
+        min(height, y2 + expand_y),
+    )
+
+
+def _external_ocr_inferred_direction(bbox: tuple[int, int, int, int]) -> str:
+    width = max(1, bbox[2] - bbox[0])
+    height = max(1, bbox[3] - bbox[1])
+    return "vertical" if height > width * 1.35 else "horizontal"
+
+
+def _axis_overlap_length(left_start: int, left_end: int, right_start: int, right_end: int) -> int:
+    return max(0, min(left_end, right_end) - max(left_start, right_start))
+
+
+def _axis_gap_length(left_start: int, left_end: int, right_start: int, right_end: int) -> int:
+    overlap = _axis_overlap_length(left_start, left_end, right_start, right_end)
+    if overlap > 0:
+        return 0
+    return max(right_start - left_end, left_start - right_end, 0)
+
+
+def _union_region_bboxes(
+    left: tuple[int, int, int, int],
+    right: tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
+    return (
+        min(left[0], right[0]),
+        min(left[1], right[1]),
+        max(left[2], right[2]),
+        max(left[3], right[3]),
+    )
+
+
+def _should_merge_external_ocr_boxes(
+    left_bbox: tuple[int, int, int, int],
+    right_bbox: tuple[int, int, int, int],
+    direction: str,
+) -> bool:
+    left_width = max(1, left_bbox[2] - left_bbox[0])
+    right_width = max(1, right_bbox[2] - right_bbox[0])
+    left_height = max(1, left_bbox[3] - left_bbox[1])
+    right_height = max(1, right_bbox[3] - right_bbox[1])
+    avg_width = (left_width + right_width) / 2
+    avg_height = (left_height + right_height) / 2
+
+    horizontal_gap = _axis_gap_length(left_bbox[0], left_bbox[2], right_bbox[0], right_bbox[2])
+    vertical_gap = _axis_gap_length(left_bbox[1], left_bbox[3], right_bbox[1], right_bbox[3])
+    horizontal_overlap = _axis_overlap_length(left_bbox[0], left_bbox[2], right_bbox[0], right_bbox[2])
+    vertical_overlap = _axis_overlap_length(left_bbox[1], left_bbox[3], right_bbox[1], right_bbox[3])
+    horizontal_overlap_ratio = horizontal_overlap / max(1.0, min(left_width, right_width))
+    vertical_overlap_ratio = vertical_overlap / max(1.0, min(left_height, right_height))
+
+    if direction == "vertical":
+        return (
+            horizontal_gap <= max(10, int(round(avg_width * 0.9)))
+            and vertical_overlap_ratio >= 0.52
+            and vertical_gap <= max(10, int(round(avg_height * 0.22)))
+        )
+
+    return (
+        vertical_overlap_ratio >= 0.58
+        and vertical_gap <= max(8, int(round(avg_height * 0.28)))
+        and horizontal_gap <= max(12, int(round(avg_width * 0.95)))
+    )
+
+
+def _merge_external_ocr_lines(
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if len(items) <= 1:
+        return items
+
+    remaining = [dict(item) for item in items]
+    merged: list[dict[str, Any]] = []
+
+    while remaining:
+        current = remaining.pop(0)
+        current_bbox = current["bbox"]
+        current_direction = str(current["direction"] or "horizontal")
+        group = [current]
+        changed = True
+
+        while changed:
+            changed = False
+            next_remaining: list[dict[str, Any]] = []
+            for candidate in remaining:
+                if str(candidate["direction"] or "horizontal") != current_direction:
+                    next_remaining.append(candidate)
+                    continue
+                if _should_merge_external_ocr_boxes(current_bbox, candidate["bbox"], current_direction):
+                    group.append(candidate)
+                    current_bbox = _union_region_bboxes(current_bbox, candidate["bbox"])
+                    changed = True
+                else:
+                    next_remaining.append(candidate)
+            remaining = next_remaining
+
+        if current_direction == "vertical":
+            ordered_group = sorted(group, key=lambda item: (item["bbox"][0], item["bbox"][1]), reverse=True)
+        else:
+            ordered_group = sorted(group, key=lambda item: (item["bbox"][1], item["bbox"][0]))
+
+        merged_text = "\n".join(str(item["text"]).strip() for item in ordered_group if str(item["text"]).strip()).strip()
+        merged_bbox = ordered_group[0]["bbox"]
+        for item in ordered_group[1:]:
+            merged_bbox = _union_region_bboxes(merged_bbox, item["bbox"])
+        merged.append(
+            {
+                "bbox": merged_bbox,
+                "text": merged_text,
+                "direction": current_direction,
+                "line_count": len(ordered_group),
+            }
+        )
+
+    return merged
+
+
+def _estimate_external_ocr_fill_color(
+    image: Image.Image,
+    text_bbox: tuple[int, int, int, int],
+    direction: str,
+) -> tuple[int, int, int]:
+    sample_bbox = _expand_region_bbox(
+        text_bbox,
+        image.size,
+        expand_x_ratio=0.22 if direction == "vertical" else 0.16,
+        expand_y_ratio=0.16 if direction == "vertical" else 0.22,
+        min_expand=5,
+    )
+    return _sample_region_fill_color(image, sample_bbox, body_bbox=sample_bbox)
+
+
+def _region_strip_pixels(
+    rgb_image: Image.Image,
+    bbox: tuple[int, int, int, int],
+    direction: str,
+    step: int,
+) -> list[tuple[int, int, int]]:
+    x1, y1, x2, y2 = bbox
+    if direction == "left":
+        crop_box = (x1, y1, min(rgb_image.size[0], x1 + step), y2)
+    elif direction == "right":
+        crop_box = (max(0, x2 - step), y1, x2, y2)
+    elif direction == "top":
+        crop_box = (x1, y1, x2, min(rgb_image.size[1], y1 + step))
+    else:
+        crop_box = (x1, max(0, y2 - step), x2, y2)
+    crop = rgb_image.crop(crop_box)
+    return list(crop.getdata())
+
+
+def _strip_matches_fill_color(
+    pixels: list[tuple[int, int, int]],
+    fill_color: tuple[int, int, int],
+) -> bool:
+    if not pixels:
+        return False
+    matched = sum(1 for pixel in pixels if _pixel_matches_bubble_fill(pixel, fill_color, fill_color))
+    return matched / len(pixels) >= 0.52
+
+
+def _estimate_external_ocr_body_bbox(
+    image: Image.Image,
+    text_bbox: tuple[int, int, int, int],
+    direction: str,
+    line_count: int,
+) -> tuple[int, int, int, int]:
+    body_bbox = _expand_region_bbox(
+        text_bbox,
+        image.size,
+        expand_x_ratio=0.14 if direction == "vertical" else 0.10,
+        expand_y_ratio=0.10 if direction == "vertical" else 0.14,
+        min_expand=4,
+    )
+    fill_color = _estimate_external_ocr_fill_color(image, text_bbox, direction)
+    rgb_image = image.convert("RGB")
+    width_limit, height_limit = image.size
+    text_width = max(1, text_bbox[2] - text_bbox[0])
+    text_height = max(1, text_bbox[3] - text_bbox[1])
+    capped_line_count = max(1, min(4, int(line_count)))
+    max_width = max(text_width + 24, int(round(text_width * (1.8 + (0.18 if direction == "vertical" else 0.08) * capped_line_count))))
+    max_height = max(text_height + 24, int(round(text_height * (1.8 + (0.08 if direction == "vertical" else 0.18) * capped_line_count))))
+    step_x = max(3, min(10, (text_bbox[2] - text_bbox[0]) // 4))
+    step_y = max(3, min(10, (text_bbox[3] - text_bbox[1]) // 4))
+
+    for _ in range(10):
+        expanded = False
+        x1, y1, x2, y2 = body_bbox
+        if x1 > 0:
+            candidate = (max(0, x1 - step_x), y1, x2, y2)
+            if candidate[2] - candidate[0] <= max_width and _strip_matches_fill_color(_region_strip_pixels(rgb_image, candidate, "left", step_x), fill_color):
+                body_bbox = candidate
+                expanded = True
+        x1, y1, x2, y2 = body_bbox
+        if x2 < width_limit:
+            candidate = (x1, y1, min(width_limit, x2 + step_x), y2)
+            if candidate[2] - candidate[0] <= max_width and _strip_matches_fill_color(_region_strip_pixels(rgb_image, candidate, "right", step_x), fill_color):
+                body_bbox = candidate
+                expanded = True
+        x1, y1, x2, y2 = body_bbox
+        if y1 > 0:
+            candidate = (x1, max(0, y1 - step_y), x2, y2)
+            if candidate[3] - candidate[1] <= max_height and _strip_matches_fill_color(_region_strip_pixels(rgb_image, candidate, "top", step_y), fill_color):
+                body_bbox = candidate
+                expanded = True
+        x1, y1, x2, y2 = body_bbox
+        if y2 < height_limit:
+            candidate = (x1, y1, x2, min(height_limit, y2 + step_y))
+            if candidate[3] - candidate[1] <= max_height and _strip_matches_fill_color(_region_strip_pixels(rgb_image, candidate, "bottom", step_y), fill_color):
+                body_bbox = candidate
+                expanded = True
+        if not expanded:
+            break
+
+    return body_bbox
+
+
+def _infer_external_ocr_shape(
+    image: Image.Image,
+    body_bbox: tuple[int, int, int, int],
+    fill_color: tuple[int, int, int],
+    direction: str,
+) -> str:
+    if direction == "vertical":
+        return "ellipse"
+
+    crop = image.crop(body_bbox).convert("RGB")
+    width, height = crop.size
+    patch = max(3, min(width, height) // 6)
+    if patch <= 2:
+        return "roundrect"
+
+    corner_boxes = [
+        (0, 0, patch, patch),
+        (width - patch, 0, width, patch),
+        (0, height - patch, patch, height),
+        (width - patch, height - patch, width, height),
+    ]
+    matches = 0
+    total = 0
+    for left, top, right, bottom in corner_boxes:
+        pixels = list(crop.crop((left, top, right, bottom)).getdata())
+        total += len(pixels)
+        matches += sum(1 for pixel in pixels if _pixel_matches_bubble_fill(pixel, fill_color, fill_color))
+
+    ratio = matches / max(total, 1)
+    if ratio <= 0.28:
+        return "ellipse"
+    if ratio <= 0.62:
+        return "roundrect"
+    return "rect"
+
+
+def _build_external_ocr_region(
+    *,
+    order: int,
+    text: str,
+    bbox: tuple[int, int, int, int],
+    image: Image.Image,
+    direction: str | None = None,
+    line_count: int = 1,
+) -> dict[str, Any]:
+    resolved_direction = direction or _external_ocr_inferred_direction(bbox)
+    fill_color = _estimate_external_ocr_fill_color(image, bbox, resolved_direction)
+    body_bbox = _estimate_external_ocr_body_bbox(image, bbox, resolved_direction, line_count)
+    shape = _infer_external_ocr_shape(image, body_bbox, fill_color, resolved_direction)
+    if shape == "rect" and resolved_direction == "horizontal" and _color_luminance(fill_color) < 228:
+        compact_body = _expand_region_bbox(
+            bbox,
+            image.size,
+            expand_x_ratio=0.05,
+            expand_y_ratio=0.12,
+            min_expand=2,
+        )
+        body_bbox = _intersect_region_bboxes(compact_body, body_bbox) or compact_body
+
+    safe_source = _expand_region_bbox(
+        bbox,
+        image.size,
+        expand_x_ratio=0.06 if resolved_direction == "vertical" else 0.04,
+        expand_y_ratio=0.05 if resolved_direction == "vertical" else 0.05,
+        min_expand=2,
+    )
+    body_padding_x = max(2, min(16, (body_bbox[2] - body_bbox[0]) // (8 if resolved_direction == "vertical" else 11)))
+    body_padding_y = max(2, min(16, (body_bbox[3] - body_bbox[1]) // (10 if resolved_direction == "vertical" else 9)))
+    body_safe = _shrink_absolute_bbox(body_bbox, body_padding_x, body_padding_y) or body_bbox
+    safe_box = _intersect_region_bboxes(safe_source, body_safe) or body_safe
+    padding_ratio = 0.80 if line_count > 1 else 0.84 if resolved_direction == "horizontal" else 0.82
+    return {
+        "order": order,
+        "bbox": list(body_bbox),
+        "body_bbox": list(body_bbox),
+        "safe_box": list(_intersect_region_bboxes(safe_box, body_bbox) or safe_box),
+        "source_text": text,
+        "source_direction": resolved_direction,
+        "direction": resolved_direction,
+        "background": "#{:02X}{:02X}{:02X}".format(*fill_color),
+        "shape": shape,
+        "padding_ratio": padding_ratio,
+    }
+
+
+def _coerce_external_service_ocr_page_payload(
+    raw_payload: dict[str, Any],
+    *,
+    image: Image.Image,
+    image_size: tuple[int, int],
+    page_number: int,
+) -> MangaOcrPagePayload:
+    result = raw_payload.get("result")
+    if not isinstance(result, dict):
+        raise ValueError("OCR 服务返回缺少 result")
+
+    ocr_results = result.get("ocrResults")
+    if not isinstance(ocr_results, list):
+        raise ValueError("OCR 服务返回缺少 ocrResults 数组")
+
+    raw_items: list[dict[str, Any]] = []
+    raw_line_count = 0
+    for ocr_result in ocr_results:
+        if not isinstance(ocr_result, dict):
+            continue
+        pruned_result = ocr_result.get("prunedResult")
+        if not isinstance(pruned_result, dict):
+            continue
+        rec_texts = pruned_result.get("rec_texts")
+        rec_boxes = pruned_result.get("rec_boxes")
+        if not isinstance(rec_texts, list) or not isinstance(rec_boxes, list):
+            continue
+        for text_value, raw_box in zip(rec_texts, rec_boxes):
+            text = str(text_value or "").strip()
+            bbox = _normalize_region_bbox(raw_box, image_size)
+            if not text or bbox is None:
+                continue
+            raw_line_count += 1
+            raw_items.append(
+                {
+                    "bbox": bbox,
+                    "text": text,
+                    "direction": _external_ocr_inferred_direction(bbox),
+                }
+            )
+
+    merged_items = _merge_external_ocr_lines(raw_items)
+    regions: list[dict[str, Any]] = []
+    for item in merged_items:
+        regions.append(
+            _build_external_ocr_region(
+                order=len(regions) + 1,
+                text=str(item["text"]),
+                bbox=item["bbox"],
+                image=image,
+                direction=str(item["direction"] or "horizontal"),
+                line_count=int(item.get("line_count") or 1),
+            )
+        )
+
+    payload = _coerce_manga_ocr_page_payload(
+        {"regions": regions},
+        image_size=image_size,
+        page_number=page_number,
+    )
+    diagnostics = dict(payload.diagnostics or {})
+    diagnostics["ocr_backend"] = "external_service"
+    diagnostics["raw_line_count"] = raw_line_count
+    diagnostics["merged_line_count"] = len(merged_items)
+    return payload.model_copy(update={"diagnostics": diagnostics})
+
+
 async def _request_manga_ocr_regions_payload(
     *,
+    settings: TranslationSettings,
     base_url: str,
     api_key: str,
     model: str,
@@ -3223,6 +3643,53 @@ async def _request_manga_ocr_regions_payload(
 ) -> MangaOcrPagePayload:
     with Image.open(image_path) as image:
         image_size = image.size
+    if settings.mangaOcr.enabled:
+        ocr_base_url, ocr_api_key = _resolve_manga_ocr_config(
+            settings,
+            fallback_base_url=base_url,
+            fallback_api_key=api_key,
+        )
+        image_bytes = image_path.read_bytes()
+        request_payload: dict[str, Any] = {
+            "file": base64.b64encode(image_bytes).decode("ascii"),
+            "fileType": 1,
+            "returnWordBox": True,
+        }
+        headers = {"Content-Type": "application/json"}
+        if ocr_api_key:
+            headers["Authorization"] = f"Bearer {ocr_api_key}"
+        if requests is not None:
+            def _submit_external_ocr_request() -> dict[str, Any]:
+                response = requests.post(
+                    f"{ocr_base_url}/ocr",
+                    json=request_payload,
+                    headers=headers,
+                    timeout=timeout_seconds,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("OCR 服务返回的不是有效 JSON 对象")
+                return payload
+
+            response_payload = await asyncio.to_thread(_submit_external_ocr_request)
+        else:
+            async with _create_async_http_client(timeout=float(timeout_seconds), follow_redirects=True) as client:
+                response_payload = await _post_translation_json(
+                    client,
+                    f"{ocr_base_url}/ocr",
+                    headers=headers,
+                    payload=request_payload,
+                )
+        with Image.open(image_path) as source_image:
+            normalized_image = source_image.convert("RGB")
+        return _coerce_external_service_ocr_page_payload(
+            response_payload,
+            image=normalized_image,
+            image_size=image_size,
+            page_number=page_number,
+        )
+
     image_bytes = image_path.read_bytes()
     image_b64 = base64.b64encode(image_bytes).decode("ascii")
     prompt = _build_manga_ocr_prompt(image_size=image_size)
@@ -3464,6 +3931,7 @@ async def _build_translated_manga_page_payload(
     translated_image_file: str | None = None,
 ) -> MangaTranslatedPagePayload:
     ocr_payload = await _request_manga_ocr_regions_payload(
+        settings=settings,
         base_url=base_url,
         api_key=api_key,
         model=model,
@@ -3485,6 +3953,9 @@ async def _build_translated_manga_page_payload(
         timeout_seconds=timeout_seconds,
     )
     diagnostics = _build_manga_page_translation_diagnostics(ocr_payload, translated_regions)
+    diagnostics["translation_model"] = model
+    diagnostics["ocr_api_base"] = str(settings.mangaOcr.baseUrl or "").strip().rstrip("/") or base_url
+    diagnostics["ocr_backend"] = "external_service" if settings.mangaOcr.enabled else "model_json"
     page_translation = "\n".join(
         region.translation.strip()
         for region in translated_regions
@@ -3953,7 +4424,14 @@ async def _translate_manga_pages_with_command_detailed(
         )
         page_translation = f"【本页已通过模型 {image_model} 完成图片翻译】"
         page_payload: MangaTranslatedPagePayload | None = None
-        if _should_use_chat_completions_image_fallback(image_model):
+        prefer_ocr_pipeline = _should_use_chat_completions_image_fallback(image_model) or _should_force_manga_ocr_pipeline(settings)
+        if prefer_ocr_pipeline:
+            if _should_force_manga_ocr_pipeline(settings) and not _should_use_chat_completions_image_fallback(image_model):
+                await _notify_task_log(
+                    log_callback,
+                    "info",
+                    f"{log_prefix}已启用漫画 OCR 定位服务，优先执行文字定位、翻译与本地修复",
+                )
             await _notify_task_log(
                 log_callback,
                 "info",

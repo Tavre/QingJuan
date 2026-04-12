@@ -18,6 +18,7 @@ import type {
 import { defaultSettings } from '../lib/mock';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:19453';
+const BACKEND_FETCH_RETRY_DELAYS_MS = [250, 500, 1000];
 
 function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -25,6 +26,41 @@ function isTauriRuntime(): boolean {
 
 function getBaseUrl(): string {
   return (window as Window & { __QINGJUAN_BACKEND__?: string }).__QINGJUAN_BACKEND__ ?? DEFAULT_BASE_URL;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function isRetryableBackendFetchError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.trim().toLowerCase();
+  return message.includes('failed to fetch') || message.includes('networkerror');
+}
+
+async function backendFetch(path: string, init?: RequestInit): Promise<Response> {
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt <= BACKEND_FETCH_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await fetch(`${getBaseUrl()}${path}`, init);
+    } catch (error) {
+      lastError = error;
+      const shouldRetry = isTauriRuntime() && isRetryableBackendFetchError(error) && attempt < BACKEND_FETCH_RETRY_DELAYS_MS.length;
+      if (!shouldRetry) {
+        throw error;
+      }
+
+      await sleep(BACKEND_FETCH_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('未知网络错误');
 }
 
 function toAbsoluteBackendUrl(pathOrUrl: string): string {
@@ -76,6 +112,10 @@ function normalizeSettings(settings: TranslationSettings): TranslationSettings {
     ...settings,
     defaultProvider,
     providers,
+    mangaOcr: {
+      ...defaultSettings.mangaOcr,
+      ...(settings.mangaOcr ?? {}),
+    },
     bika: {
       ...defaultSettings.bika,
       ...(settings.bika ?? {}),
@@ -136,13 +176,13 @@ async function safeJson<T>(response: Response): Promise<T> {
 }
 
 export async function fetchBooks(): Promise<BookRecord[]> {
-  const response = await fetch(`${getBaseUrl()}/books`);
+  const response = await backendFetch('/books');
   const payload = await safeJson<BookRecord[]>(response);
   return payload.map((book) => normalizeBook(book));
 }
 
 export async function fetchBookDetail(bookId: string): Promise<BookDetailResponse> {
-  const response = await fetch(`${getBaseUrl()}/books/${bookId}`);
+  const response = await backendFetch(`/books/${bookId}`);
   const payload = await safeJson<BookDetailResponse>(response);
   return {
     ...payload,
@@ -155,7 +195,7 @@ export async function fetchChapterContent(
   chapterIndex: number,
   mode: 'original' | 'translated' = 'translated',
 ): Promise<ChapterContentResponse> {
-  const response = await fetch(`${getBaseUrl()}/books/${bookId}/chapters/${chapterIndex}?mode=${mode}`);
+  const response = await backendFetch(`/books/${bookId}/chapters/${chapterIndex}?mode=${mode}`);
   const payload = await safeJson<ChapterContentResponse>(response);
   const fallbackAssets =
     payload.mode === 'translated' && (payload.chapter.translatedImageFiles?.length ?? 0) > 0
@@ -175,7 +215,7 @@ export async function saveReadingProgress(
   bookId: string,
   payload: ReadingProgressPayload,
 ): Promise<ReadingProgressRecord> {
-  const response = await fetch(`${getBaseUrl()}/books/${bookId}/progress`, {
+  const response = await backendFetch(`/books/${bookId}/progress`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -189,7 +229,7 @@ export async function downloadChapters(
   bookId: string,
   payload: ChapterActionPayload,
 ): Promise<TaskRecord> {
-  const response = await fetch(`${getBaseUrl()}/books/${bookId}/chapters/download`, {
+  const response = await backendFetch(`/books/${bookId}/chapters/download`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -203,7 +243,7 @@ export async function translateChapters(
   bookId: string,
   payload: ChapterActionPayload,
 ): Promise<TaskRecord> {
-  const response = await fetch(`${getBaseUrl()}/books/${bookId}/chapters/translate`, {
+  const response = await backendFetch(`/books/${bookId}/chapters/translate`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -214,29 +254,29 @@ export async function translateChapters(
 }
 
 export async function fetchBookTasks(bookId: string): Promise<TaskRecord[]> {
-  const response = await fetch(`${getBaseUrl()}/books/${bookId}/tasks`);
+  const response = await backendFetch(`/books/${bookId}/tasks`);
   return await safeJson<TaskRecord[]>(response);
 }
 
 export async function fetchTasks(): Promise<TaskRecord[]> {
-  const response = await fetch(`${getBaseUrl()}/tasks`);
+  const response = await backendFetch('/tasks');
   return await safeJson<TaskRecord[]>(response);
 }
 
 export async function retryTask(taskId: string): Promise<TaskRecord> {
-  const response = await fetch(`${getBaseUrl()}/tasks/${taskId}/retry`, {
+  const response = await backendFetch(`/tasks/${taskId}/retry`, {
     method: 'POST',
   });
   return await safeJson<TaskRecord>(response);
 }
 
 export async function fetchTaskLogs(taskId: string, after = 0): Promise<TaskLogRecord[]> {
-  const response = await fetch(`${getBaseUrl()}/tasks/${taskId}/logs?after=${Math.max(0, Math.trunc(after))}`);
+  const response = await backendFetch(`/tasks/${taskId}/logs?after=${Math.max(0, Math.trunc(after))}`);
   return await safeJson<TaskLogRecord[]>(response);
 }
 
 export async function previewBook(payload: AddBookPayload): Promise<PreviewResponse> {
-  const response = await fetch(`${getBaseUrl()}/books/preview`, {
+  const response = await backendFetch('/books/preview', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -247,7 +287,7 @@ export async function previewBook(payload: AddBookPayload): Promise<PreviewRespo
 }
 
 export async function importBook(payload: AddBookPayload): Promise<BookRecord> {
-  const response = await fetch(`${getBaseUrl()}/books/import`, {
+  const response = await backendFetch('/books/import', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -270,7 +310,7 @@ export async function importLocalBook(
     formData.append('title', payload.title.trim());
   }
 
-  const response = await fetch(`${getBaseUrl()}/books/import-local`, {
+  const response = await backendFetch('/books/import-local', {
     method: 'POST',
     body: formData,
   });
@@ -280,7 +320,7 @@ export async function importLocalBook(
 export async function uploadBookCover(bookId: string, file: File): Promise<BookRecord> {
   const formData = new FormData();
   formData.append('file', file);
-  const response = await fetch(`${getBaseUrl()}/books/${bookId}/cover`, {
+  const response = await backendFetch(`/books/${bookId}/cover`, {
     method: 'POST',
     body: formData,
   });
@@ -295,7 +335,7 @@ export async function exportBook(
   const payload: BookExportPayload = targetPath?.trim()
     ? { format, targetPath: targetPath.trim() }
     : { format };
-  const response = await fetch(`${getBaseUrl()}/books/${bookId}/export`, {
+  const response = await backendFetch(`/books/${bookId}/export`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -306,7 +346,7 @@ export async function exportBook(
 }
 
 export async function deleteBook(bookId: string): Promise<void> {
-  const response = await fetch(`${getBaseUrl()}/books/${bookId}`, {
+  const response = await backendFetch(`/books/${bookId}`, {
     method: 'DELETE',
   });
   await safeJson<{ status: string; bookId: string }>(response);
@@ -314,7 +354,7 @@ export async function deleteBook(bookId: string): Promise<void> {
 
 export async function fetchSettings(): Promise<TranslationSettings> {
   try {
-    const response = await fetch(`${getBaseUrl()}/settings`);
+    const response = await backendFetch('/settings');
     return normalizeSettings(await safeJson<TranslationSettings>(response));
   } catch (error) {
     if (isTauriRuntime()) {
@@ -326,7 +366,7 @@ export async function fetchSettings(): Promise<TranslationSettings> {
 
 export async function saveSettings(payload: TranslationSettings): Promise<TranslationSettings> {
   try {
-    const response = await fetch(`${getBaseUrl()}/settings`, {
+    const response = await backendFetch('/settings', {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',

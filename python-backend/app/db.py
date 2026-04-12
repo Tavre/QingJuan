@@ -9,6 +9,7 @@ from pathlib import Path
 from .models import (
     BookRecord,
     ComicSourceConfig,
+    MangaOcrConfig,
     ProviderConfig,
     ReadingProgressRecord,
     TaskLogRecord,
@@ -63,6 +64,7 @@ DEFAULT_SETTINGS = TranslationSettings(
         "grok2api": ProviderConfig(enabled=False, baseUrl="http://127.0.0.1:8000/v1", model="grok-4"),
         "custom": ProviderConfig(enabled=False, baseUrl="https://localhost:8001/v1", model="custom-model"),
     },
+    mangaOcr=MangaOcrConfig(),
     bika=ComicSourceConfig(),
 )
 
@@ -525,6 +527,7 @@ def _normalize_settings(settings: TranslationSettings) -> TranslationSettings:
     normalized.downloadConcurrency = settings.downloadConcurrency
     normalized.providers.update(settings.providers)
     normalized.providers[normalized.defaultProvider].enabled = True
+    normalized.mangaOcr = settings.mangaOcr.model_copy(deep=True)
     normalized.bika = settings.bika.model_copy(deep=True)
     return normalized
 

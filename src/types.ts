@@ -157,6 +157,12 @@ export interface ProviderConfig {
   model: string;
 }
 
+export interface MangaOcrConfig {
+  enabled: boolean;
+  baseUrl: string;
+  apiKey: string;
+}
+
 export interface ComicSourceConfig {
   email: string;
   password: string;
@@ -168,6 +174,7 @@ export interface TranslationSettings {
   autoTranslateNextChapters: number;
   downloadConcurrency: number;
   providers: Record<TranslationProvider, ProviderConfig>;
+  mangaOcr: MangaOcrConfig;
   bika: ComicSourceConfig;
 }
 

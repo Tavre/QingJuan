@@ -3102,6 +3102,47 @@ onBeforeUnmount(() => {
                   />
                   <span>启用当前提供商</span>
                 </label>
+
+                <div class="status-note flush">
+                  <strong>漫画 OCR 定位</strong>
+                  <p>启用后优先调用独立 OCR 服务识别文字内容和位置，翻译完成后按定位区域进行本地修复与重绘。该服务按文档直接调用 `/ocr`，无需再配置模型，也可以不填写鉴权。</p>
+                </div>
+
+                <label class="check-line">
+                  <input
+                    v-model="settings.mangaOcr.enabled"
+                    type="checkbox"
+                  />
+                  <span>启用漫画 OCR 定位与修复管线</span>
+                </label>
+
+                <label class="form-field">
+                  <span>OCR API 地址</span>
+                  <input
+                    v-model="settings.mangaOcr.baseUrl"
+                    placeholder="http://114.66.46.74:8080"
+                    type="text"
+                  />
+                </label>
+
+                <label class="form-field">
+                  <span>OCR API 密钥</span>
+                  <input
+                    v-model="settings.mangaOcr.apiKey"
+                    placeholder="可选：仅当 OCR 服务本身需要鉴权时填写"
+                    type="password"
+                  />
+                </label>
+
+                <label class="form-field">
+                  <span>OCR 服务说明</span>
+                  <input
+                    value="当前 OCR 服务按文档直接调用 /ocr，无需再配置模型名称"
+                    readonly
+                    type="text"
+                  />
+                  <small>通常只需要填写 OCR API 地址；只有 OCR 服务本身要求鉴权时，才需要额外填写上面的 OCR API 密钥。</small>
+                </label>
               </div>
             </div>
           </section>

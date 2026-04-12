@@ -202,6 +202,12 @@ class ProviderConfig(BaseModel):
     model: str = ""
 
 
+class MangaOcrConfig(BaseModel):
+    enabled: bool = False
+    baseUrl: str = ""
+    apiKey: str = ""
+
+
 class ComicSourceConfig(BaseModel):
     email: str = ""
     password: str = ""
@@ -228,4 +234,5 @@ class TranslationSettings(BaseModel):
     autoTranslateNextChapters: int = 0
     downloadConcurrency: int = Field(default=3, ge=1, le=8)
     providers: dict[TranslationProvider, ProviderConfig]
+    mangaOcr: MangaOcrConfig = Field(default_factory=MangaOcrConfig)
     bika: ComicSourceConfig = Field(default_factory=ComicSourceConfig)

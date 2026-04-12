@@ -143,6 +143,11 @@ export const defaultSettings: TranslationSettings = {
       model: 'custom-model',
     },
   },
+  mangaOcr: {
+    enabled: false,
+    baseUrl: '',
+    apiKey: '',
+  },
   bika: {
     email: '',
     password: '',

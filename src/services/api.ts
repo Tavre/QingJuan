@@ -4,6 +4,12 @@ import type {
   BookExportFormat,
   BookExportPayload,
   BookExportResponse,
+  BookSourceImportResult,
+  BookSourceImportTextPayload,
+  BookSourceImportUrlPayload,
+  BookSourceSearchPayload,
+  BookSourceSearchResult,
+  BookSourceRecord,
   BookRecord,
   ChapterActionPayload,
   ChapterContentResponse,
@@ -85,6 +91,13 @@ function normalizePreview(preview: PreviewResponse): PreviewResponse {
   return {
     ...preview,
     cover: preview.cover ? toAbsoluteBackendUrl(preview.cover) : preview.cover,
+  };
+}
+
+function normalizeBookSourceSearchResult(result: BookSourceSearchResult): BookSourceSearchResult {
+  return {
+    ...result,
+    cover: result.cover ? toAbsoluteBackendUrl(result.cover) : result.cover,
   };
 }
 
@@ -179,6 +192,49 @@ export async function fetchBooks(): Promise<BookRecord[]> {
   const response = await backendFetch('/books');
   const payload = await safeJson<BookRecord[]>(response);
   return payload.map((book) => normalizeBook(book));
+}
+
+export async function fetchBookSources(): Promise<BookSourceRecord[]> {
+  const response = await backendFetch('/sources');
+  return await safeJson<BookSourceRecord[]>(response);
+}
+
+export async function searchBookSourceWorks(payload: BookSourceSearchPayload): Promise<BookSourceSearchResult[]> {
+  const response = await backendFetch('/sources/search', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  const results = await safeJson<BookSourceSearchResult[]>(response);
+  return results.map((item) => normalizeBookSourceSearchResult(item));
+}
+
+export async function importBookSourcesFromUrl(
+  payload: BookSourceImportUrlPayload,
+): Promise<BookSourceImportResult> {
+  const response = await backendFetch('/sources/import-url', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  return await safeJson<BookSourceImportResult>(response);
+}
+
+export async function importBookSourcesFromText(
+  payload: BookSourceImportTextPayload,
+): Promise<BookSourceImportResult> {
+  const response = await backendFetch('/sources/import-text', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  return await safeJson<BookSourceImportResult>(response);
 }
 
 export async function fetchBookDetail(bookId: string): Promise<BookDetailResponse> {

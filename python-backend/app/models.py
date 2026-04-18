@@ -11,6 +11,8 @@ TranslationProvider = Literal["openai", "newapi", "anthropic", "grok2api", "cust
 TaskType = Literal["download", "translate"]
 TaskStatus = Literal["queued", "running", "completed", "failed"]
 TaskLogLevel = Literal["info", "warning", "error"]
+SourceOrigin = Literal["builtin", "manual", "file", "remote"]
+SourceStatus = Literal["unknown", "online", "slow", "offline", "unsupported"]
 MangaTextDirection = Literal["vertical", "horizontal"]
 MangaRegionShape = Literal["ellipse", "roundrect", "rect"]
 MangaRenderMode = Literal["ocr_pipeline", "image_edit_fallback"]
@@ -236,3 +238,56 @@ class TranslationSettings(BaseModel):
     providers: dict[TranslationProvider, ProviderConfig]
     mangaOcr: MangaOcrConfig = Field(default_factory=MangaOcrConfig)
     bika: ComicSourceConfig = Field(default_factory=ComicSourceConfig)
+
+
+class BookSourceRecord(BaseModel):
+    id: str
+    name: str
+    baseUrl: str
+    description: str = ""
+    bookKind: BookKind | None = None
+    language: Language | None = None
+    enabled: bool = True
+    supported: bool = True
+    sampleUrl: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    origin: SourceOrigin = "manual"
+    importUrl: str | None = None
+    status: SourceStatus = "unknown"
+    statusMessage: str = ""
+    lastCheckedAt: str | None = None
+    createdAt: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    updatedAt: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class BookSourceSearchPayload(BaseModel):
+    sourceId: str
+    keyword: str = Field(min_length=1, max_length=100)
+    limit: int = Field(default=8, ge=1, le=20)
+
+
+class BookSourceSearchResult(BaseModel):
+    title: str
+    author: str | None = None
+    synopsis: str = ""
+    cover: str | None = None
+    sourceUrl: str
+    bookKind: BookKind | None = None
+
+
+class BookSourceTextImportPayload(BaseModel):
+    content: str
+
+
+class BookSourceUrlImportPayload(BaseModel):
+    url: HttpUrl
+
+
+class BookSourceCheckPayload(BaseModel):
+    sourceIds: list[str] = Field(default_factory=list)
+
+
+class BookSourceImportResult(BaseModel):
+    imported: list[BookSourceRecord] = Field(default_factory=list)
+    duplicates: list[str] = Field(default_factory=list)
+    ignored: list[str] = Field(default_factory=list)

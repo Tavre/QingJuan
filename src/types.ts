@@ -183,3 +183,59 @@ export interface BackendInfo {
   port: number;
   already_running: boolean;
 }
+
+export type BookSourceOrigin = 'builtin' | 'manual' | 'file' | 'remote';
+export type BookSourceStatus = 'unknown' | 'online' | 'slow' | 'offline' | 'unsupported';
+
+export interface BookSourceRecord {
+  id: string;
+  name: string;
+  baseUrl: string;
+  description: string;
+  bookKind?: BookKind | null;
+  language?: Language | null;
+  enabled: boolean;
+  supported: boolean;
+  sampleUrl?: string | null;
+  tags: string[];
+  origin: BookSourceOrigin;
+  importUrl?: string | null;
+  status: BookSourceStatus;
+  statusMessage: string;
+  lastCheckedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BookSourceSearchPayload {
+  sourceId: string;
+  keyword: string;
+  limit?: number;
+}
+
+export interface BookSourceSearchResult {
+  title: string;
+  author?: string | null;
+  synopsis: string;
+  cover?: string | null;
+  sourceUrl: string;
+  bookKind?: BookKind | null;
+}
+
+export interface BookSourceImportTextPayload {
+  content: string;
+}
+
+export interface BookSourceImportUrlPayload {
+  url: string;
+}
+
+export interface BookSourceCheckPayload {
+  sourceIds: string[];
+}
+
+export interface BookSourceImportResult {
+  imported: BookSourceRecord[];
+  duplicates: string[];
+  ignored: string[];
+}

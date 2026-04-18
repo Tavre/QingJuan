@@ -16,10 +16,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urljoin, urlparse
 from uuid import uuid4
 
+import httpx
 import uvicorn
+from bs4 import BeautifulSoup
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
@@ -29,7 +31,9 @@ try:
         DATA_DIR,
         append_task_log,
         get_book,
+        get_book_source,
         init_db,
+        list_book_sources,
         list_books,
         list_pending_tasks,
         list_task_logs,
@@ -40,12 +44,19 @@ try:
         delete_book,
         get_task,
         save_book,
+        save_book_source,
         save_reading_progress,
         save_settings,
         save_task,
     )
     from .models import (
         AddBookPayload,
+        BookSourceImportResult,
+        BookSourceRecord,
+        BookSourceSearchPayload,
+        BookSourceSearchResult,
+        BookSourceTextImportPayload,
+        BookSourceUrlImportPayload,
         BookDetailResponse,
         BookExportPayload,
         BookExportResponse,
@@ -66,9 +77,11 @@ try:
         download_selected_chapters,
         load_manifest,
         load_translated_page_payload,
+        _fetch_with_edge_cdp,
         preview_from_url,
         repair_18comic_chapter_images,
         save_manifest,
+        search_source_books,
         translated_image_payload_is_current,
         translate_single_manga_image,
         translate_selected_chapters,
@@ -78,7 +91,9 @@ except ImportError:
         DATA_DIR,
         append_task_log,
         get_book,
+        get_book_source,
         init_db,
+        list_book_sources,
         list_books,
         list_pending_tasks,
         list_task_logs,
@@ -89,12 +104,19 @@ except ImportError:
         delete_book,
         get_task,
         save_book,
+        save_book_source,
         save_reading_progress,
         save_settings,
         save_task,
     )
     from app.models import (
         AddBookPayload,
+        BookSourceImportResult,
+        BookSourceRecord,
+        BookSourceSearchPayload,
+        BookSourceSearchResult,
+        BookSourceTextImportPayload,
+        BookSourceUrlImportPayload,
         BookDetailResponse,
         BookExportPayload,
         BookExportResponse,
@@ -115,9 +137,11 @@ except ImportError:
         download_selected_chapters,
         load_manifest,
         load_translated_page_payload,
+        _fetch_with_edge_cdp,
         preview_from_url,
         repair_18comic_chapter_images,
         save_manifest,
+        search_source_books,
         translated_image_payload_is_current,
         translate_single_manga_image,
         translate_selected_chapters,
@@ -126,6 +150,11 @@ except ImportError:
 LIBRARY_ROOT = DATA_DIR / "library"
 EXPORT_ROOT = DATA_DIR / "exports"
 TASK_QUEUE: asyncio.Queue[str] = asyncio.Queue()
+SOURCE_IMPORT_HEADERS = {
+    "User-Agent": "QingJuan/0.3.0 BookSourceImporter",
+    "Accept": "application/json,text/plain;q=0.9,*/*;q=0.8",
+}
+SOURCE_IMPORT_TIMEOUT = 20.0
 
 async def _run_startup(app_instance: FastAPI) -> None:
     init_db()
@@ -174,6 +203,46 @@ app.add_middleware(
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "qingjuan-backend", "dataDir": str(DATA_DIR)}
+
+
+@app.get("/sources", response_model=list[BookSourceRecord])
+async def get_sources() -> list[BookSourceRecord]:
+    return list_book_sources()
+
+
+@app.post("/sources/search", response_model=list[BookSourceSearchResult])
+async def post_source_search(payload: BookSourceSearchPayload) -> list[BookSourceSearchResult]:
+    source = _get_source_or_404(payload.sourceId)
+    keyword = payload.keyword.strip()
+    if not keyword:
+        raise HTTPException(status_code=400, detail="搜索关键词不能为空")
+    try:
+        return await search_source_books(source, keyword, payload.limit)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"书源站内搜索失败：{exc}") from exc
+
+
+@app.post("/sources/import-url", response_model=BookSourceImportResult)
+async def post_source_import_url(payload: BookSourceUrlImportPayload) -> BookSourceImportResult:
+    try:
+        content = await _fetch_book_source_import_payload(str(payload.url))
+        return _import_book_sources(content, import_url=str(payload.url))
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=400, detail=f"书源链接获取失败：{exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"书源链接导入失败：{exc}") from exc
+
+
+@app.post("/sources/import-text", response_model=BookSourceImportResult)
+async def post_source_import_text(payload: BookSourceTextImportPayload) -> BookSourceImportResult:
+    try:
+        return _import_book_sources(payload.content)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"书源内容导入失败：{exc}") from exc
 
 
 @app.get("/books", response_model=list[BookRecord])
@@ -563,6 +632,13 @@ def _get_book_or_404(book_id: str) -> BookRecord:
     return book
 
 
+def _get_source_or_404(source_id: str) -> BookSourceRecord:
+    source = get_book_source(source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail=f"未找到书源：{source_id}")
+    return source
+
+
 def _resolve_book_dir(book: BookRecord) -> Path:
     book_dir = Path(book.localPath)
     if book_dir.is_absolute():
@@ -600,6 +676,224 @@ def _normalize_form_text(value: str) -> str:
     except (UnicodeEncodeError, UnicodeDecodeError):
         return normalized
     return repaired.strip() or normalized
+
+
+async def _fetch_book_source_import_payload(url: str) -> str:
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=SOURCE_IMPORT_TIMEOUT,
+            headers=SOURCE_IMPORT_HEADERS,
+        ) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            return response.text
+    except httpx.HTTPError:
+        return await _fetch_book_source_import_payload_with_browser(url)
+
+
+async def _fetch_book_source_import_payload_with_browser(url: str) -> str:
+    snapshot = await _fetch_with_edge_cdp(
+        url,
+        ready_expression="""
+(() => {
+  const text = (document.body?.innerText || document.body?.textContent || '').trim();
+  return Boolean(text) && (text.startsWith('[') || text.startsWith('{'));
+})()
+""".strip(),
+        headless=False,
+        timeout_seconds=40.0,
+        blocked_message="浏览器会话仍然无法读取书源链接内容",
+    )
+    content = _extract_book_source_payload_from_html(snapshot.html)
+    if not content:
+        raise ValueError("浏览器会话未提取到有效的书源 JSON 内容")
+    return content
+
+
+def _extract_book_source_payload_from_html(document_html: str) -> str:
+    text = BeautifulSoup(document_html, "html.parser").get_text("\n", strip=True)
+    text = html.unescape(text).strip()
+    start_positions = [position for position in (text.find("["), text.find("{")) if position >= 0]
+    if not start_positions:
+        return ""
+    return text[min(start_positions) :].strip()
+
+
+def _import_book_sources(content: str, import_url: str | None = None) -> BookSourceImportResult:
+    payload = _parse_book_source_payload(content)
+    existing_by_base = {
+        _normalize_book_source_identity(source.baseUrl): source
+        for source in list_book_sources()
+    }
+    result = BookSourceImportResult()
+
+    for index, item in enumerate(payload, start=1):
+        if not isinstance(item, dict):
+            result.ignored.append(f"第 {index} 项不是对象，已跳过")
+            continue
+
+        candidate = _build_imported_book_source(item, import_url=import_url)
+        if candidate is None:
+            display_name = _normalize_form_text(str(item.get("bookSourceName") or "")).strip() or f"第 {index} 项"
+            result.ignored.append(f"{display_name} 缺少有效的 bookSourceUrl，已跳过")
+            continue
+
+        identity = _normalize_book_source_identity(candidate.baseUrl)
+        if identity in existing_by_base:
+            duplicate_name = candidate.name or existing_by_base[identity].name or candidate.baseUrl
+            result.duplicates.append(duplicate_name)
+            continue
+
+        saved = save_book_source(candidate)
+        existing_by_base[identity] = saved
+        result.imported.append(saved)
+
+    return result
+
+
+def _parse_book_source_payload(content: str) -> list[object]:
+    normalized = _normalize_form_text(content).lstrip("\ufeff").strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="书源内容不能为空")
+
+    try:
+        payload = json.loads(normalized)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"书源内容不是合法 JSON：{exc.msg}") from exc
+
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("data", "bookSources", "sources"):
+            nested = payload.get(key)
+            if isinstance(nested, list):
+                return nested
+        return [payload]
+
+    raise HTTPException(status_code=400, detail="书源内容必须是 JSON 对象或数组")
+
+
+def _build_imported_book_source(entry: dict[str, object], import_url: str | None = None) -> BookSourceRecord | None:
+    name = _normalize_form_text(str(entry.get("bookSourceName") or "")).strip()
+    base_url = _normalize_http_url(str(entry.get("bookSourceUrl") or ""))
+    if not name or not base_url:
+        return None
+
+    group = _normalize_form_text(str(entry.get("bookSourceGroup") or "")).strip()
+    comment = _normalize_form_text(str(entry.get("bookSourceComment") or "")).strip()
+    source_type = _normalize_source_rule_type(entry.get("bookSourceType"))
+    search_url = str(entry.get("searchUrl") or "").strip()
+
+    return BookSourceRecord(
+        id=f"source-imported-{uuid4()}",
+        name=name,
+        baseUrl=base_url,
+        description=_build_imported_source_description(group, comment, search_url),
+        bookKind=_map_imported_source_book_kind(source_type),
+        language=None,
+        enabled=_coerce_imported_source_enabled(entry.get("enabled"), default=True),
+        supported=False,
+        sampleUrl=_resolve_imported_source_sample_url(base_url, search_url),
+        tags=_build_imported_source_tags(group, source_type, entry),
+        origin="remote" if import_url else "manual",
+        importUrl=import_url,
+        status="unsupported",
+        statusMessage="已导入书源配置，当前版本暂不执行此规则",
+    )
+
+
+def _normalize_book_source_identity(url: str) -> str:
+    parsed = urlparse(url.strip())
+    netloc = parsed.netloc.lower()
+    path = parsed.path.rstrip("/")
+    return f"{parsed.scheme.lower()}://{netloc}{path}"
+
+
+def _normalize_http_url(value: str) -> str:
+    normalized = _normalize_form_text(value).strip()
+    if not normalized:
+        return ""
+    parsed = urlparse(normalized)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return ""
+    cleaned_path = parsed.path.rstrip("/")
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{cleaned_path}"
+
+
+def _resolve_imported_source_sample_url(base_url: str, search_url: str) -> str | None:
+    normalized_search_url = _normalize_form_text(search_url).strip()
+    if not normalized_search_url:
+        return base_url
+    candidate = urljoin(f"{base_url}/", normalized_search_url)
+    return _normalize_http_url(candidate) or base_url
+
+
+def _normalize_source_rule_type(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _map_imported_source_book_kind(source_type: int | None) -> str | None:
+    if source_type == 2:
+        return "婕敾"
+    return None
+
+
+def _coerce_imported_source_enabled(value: object, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
+def _build_imported_source_tags(group: str, source_type: int | None, entry: dict[str, object]) -> list[str]:
+    tags: list[str] = ["导入书源"]
+    if group:
+        tags.append(group)
+    if source_type == 0:
+        tags.append("文本规则")
+    elif source_type == 1:
+        tags.append("音频规则")
+    elif source_type == 2:
+        tags.append("图片规则")
+    elif source_type == 3:
+        tags.append("文件规则")
+
+    if _normalize_form_text(str(entry.get("searchUrl") or "")).strip():
+        tags.append("可搜索")
+    if isinstance(entry.get("ruleToc"), dict):
+        tags.append("目录规则")
+    if isinstance(entry.get("ruleContent"), dict):
+        tags.append("正文规则")
+
+    unique_tags: list[str] = []
+    for tag in tags:
+        if tag and tag not in unique_tags:
+            unique_tags.append(tag)
+    return unique_tags
+
+
+def _build_imported_source_description(group: str, comment: str, search_url: str) -> str:
+    segments: list[str] = []
+    if group:
+        segments.append(f"分组：{group}")
+    if comment:
+        segments.append(comment)
+    elif _normalize_form_text(search_url).strip():
+        segments.append("包含搜索规则，可用于书源配置管理")
+    else:
+        segments.append("从外部链接导入的书源配置")
+    return " | ".join(segment for segment in segments if segment).strip()
 
 
 def _header_safe_value(value: object, *, max_length: int = 96) -> str | None:

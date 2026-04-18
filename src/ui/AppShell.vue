@@ -5,6 +5,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 // License: GPL-3.0-only
 import { defaultSettings } from '../lib/mock';
 import {
+  fetchBookSources,
   deleteBook,
   downloadChapters,
   exportBook,
@@ -16,8 +17,11 @@ import {
   fetchChapterContent,
   fetchSettings,
   importBook,
+  importBookSourcesFromText,
+  importBookSourcesFromUrl,
   importLocalBook,
   previewBook,
+  searchBookSourceWorks,
   retryTask,
   saveReadingProgress,
   saveSettings,
@@ -31,6 +35,9 @@ import type {
   AddBookPayload,
   BookDetailResponse,
   BookExportFormat,
+  BookSourceImportResult,
+  BookSourceRecord,
+  BookSourceSearchResult,
   BookRecord,
   ChapterContentResponse,
   ChapterRecord,
@@ -42,12 +49,12 @@ import type {
   TranslationSettings,
 } from '../types';
 
-type ViewMode = 'library' | 'logs' | 'settings' | 'detail' | 'reader';
+type ViewMode = 'library' | 'sources' | 'logs' | 'settings' | 'detail' | 'reader';
 type ReaderTheme = 'default' | 'care' | 'night';
 type ReaderFontSize = '小' | '中' | '大' | '特大';
 
 interface NavItem {
-  key: 'library' | 'logs' | 'settings';
+  key: 'library' | 'sources' | 'logs' | 'settings';
   label: string;
   icon: string;
 }
@@ -111,6 +118,7 @@ interface OpenReaderOptions extends LoadReaderChapterOptions {
 
 const navItems: NavItem[] = [
   { key: 'library', label: '我的书架', icon: '▥' },
+  { key: 'sources', label: '书源管理', icon: '◎' },
   { key: 'logs', label: '运行日志', icon: '◫' },
   { key: 'settings', label: '设置', icon: '⚙' },
 ];
@@ -150,20 +158,44 @@ const addBookForm = reactive<AddBookPayload>({
   needTranslation: false,
 });
 
+const sourceBookForm = reactive<AddBookPayload>({
+  sourceUrl: '',
+  bookKind: '长小说',
+  title: '',
+  language: '中文',
+  needTranslation: false,
+});
+
 const books = ref<BookRecord[]>([]);
+const bookSources = ref<BookSourceRecord[]>([]);
 const preview = ref<PreviewResponse | null>(null);
+const sourcePreview = ref<PreviewResponse | null>(null);
+const sourceImportForm = reactive({
+  url: '',
+  content: '',
+});
+const sourceImportSummary = ref<BookSourceImportResult | null>(null);
+const sourceImporting = ref(false);
 const settings = ref<TranslationSettings>(defaultSettings);
 const activeProvider = ref<TranslationProvider>('openai');
 const currentView = ref<ViewMode>('library');
 const selectedBookId = ref<string | null>(null);
 const searchQuery = ref('');
+const sourceSearchQuery = ref('');
 const showImportPanel = ref(false);
 const desktopState = ref('正在准备桌面后端...');
 const lastMessage = ref('等待输入小说链接');
 const loadingPreview = ref(false);
 const importing = ref(false);
+const sourceLoading = ref(false);
 const localBookFiles = ref<File[]>([]);
 const localFilePickerKey = ref(0);
+const selectedSourceId = ref<string | null>(null);
+const sourceWorkSearchKeyword = ref('');
+const sourceWorkSearchResults = ref<BookSourceSearchResult[]>([]);
+const sourceWorkSearching = ref(false);
+const sourceWorkSearched = ref(false);
+const sourceWorkSearchError = ref('');
 const coverUploadPickerKey = ref(0);
 const coverFileInput = ref<HTMLInputElement | null>(null);
 const savingSettings = ref(false);
@@ -335,6 +367,53 @@ const filteredBooks = computed(() => {
     return haystack.includes(keyword);
   });
 });
+
+const filteredSources = computed(() => {
+  const keyword = sourceSearchQuery.value.trim().toLowerCase();
+  if (!keyword) {
+    return bookSources.value;
+  }
+
+  return bookSources.value.filter((source) => {
+    const haystack = [
+      source.name,
+      source.baseUrl,
+      source.description,
+      source.bookKind ?? '',
+      source.language ?? '',
+      source.tags.join(' '),
+      source.statusMessage,
+    ]
+      .join(' ')
+      .toLowerCase();
+    return haystack.includes(keyword);
+  });
+});
+
+const sourceStats = computed(() => {
+  const total = bookSources.value.length;
+  const builtin = bookSources.value.filter((source) => source.origin === 'builtin').length;
+  const online = bookSources.value.filter((source) => source.status === 'online' || source.status === 'slow').length;
+  return { total, builtin, online };
+});
+
+const supportedSources = computed(() => filteredSources.value.filter((source) => source.supported));
+
+const selectedSourceForImport = computed(() => {
+  if (selectedSourceId.value) {
+    const selected = supportedSources.value.find((source) => source.id === selectedSourceId.value);
+    if (selected) {
+      return selected;
+    }
+  }
+  return supportedSources.value[0] ?? bookSources.value.find((source) => source.supported) ?? null;
+});
+
+const sourceWorkSearchPlaceholder = computed(() =>
+  selectedSourceForImport.value
+    ? `在 ${selectedSourceForImport.value.name} 里搜索书名或关键词`
+    : '先选择书源，再搜索作品',
+);
 
 const selectedBook = computed(() => {
   const detailBook = bookDetail.value?.book;
@@ -947,6 +1026,14 @@ const appHeaderMeta = computed(() => {
     };
   }
 
+  if (currentView.value === 'sources') {
+    return {
+      kicker: '书源中枢',
+      title: '书源管理',
+      subtitle: `已登记 ${sourceStats.value.total} 个书源，其中在线 ${sourceStats.value.online} 个，内置 ${sourceStats.value.builtin} 个。`,
+    };
+  }
+
   if (currentView.value === 'logs') {
     return {
       kicker: '运行台账',
@@ -1174,6 +1261,13 @@ async function bootstrap() {
   }
 
   try {
+    await refreshBookSources();
+  } catch (error) {
+    bookSources.value = [];
+    lastMessage.value = `书源加载失败：${toErrorMessage(error)}`;
+  }
+
+  try {
     settings.value = await fetchSettings();
     activeProvider.value = settings.value.defaultProvider;
   } catch (error) {
@@ -1195,6 +1289,18 @@ async function refreshBooks() {
     return;
   }
   selectedBookId.value = books.value[0]?.id ?? null;
+}
+
+async function refreshBookSources() {
+  sourceLoading.value = true;
+  try {
+    bookSources.value = await fetchBookSources();
+    if (!selectedSourceId.value || !bookSources.value.some((item) => item.id === selectedSourceId.value)) {
+      selectedSourceId.value = bookSources.value[0]?.id ?? null;
+    }
+  } finally {
+    sourceLoading.value = false;
+  }
 }
 
 async function handlePreview() {
@@ -1416,6 +1522,186 @@ function resetAddBookForm() {
   addBookForm.needTranslation = false;
   localBookFiles.value = [];
   localFilePickerKey.value += 1;
+}
+
+function clearSourceWorkSearchState() {
+  sourceWorkSearchResults.value = [];
+  sourceWorkSearched.value = false;
+  sourceWorkSearchError.value = '';
+}
+
+function buildSourceImportSummaryMessage(result: BookSourceImportResult) {
+  return `新增 ${result.imported.length} 个，重复 ${result.duplicates.length} 个，忽略 ${result.ignored.length} 个`;
+}
+
+function formatImportedSourceNames(sources: BookSourceRecord[]) {
+  return sources.map((item) => item.name).join('、');
+}
+
+async function applyImportedBookSourceResult(result: BookSourceImportResult) {
+  sourceImportSummary.value = result;
+  await refreshBookSources();
+
+  const importedSupportedSource = result.imported.find((item) => item.supported);
+  if (importedSupportedSource) {
+    selectedSourceId.value = importedSupportedSource.id;
+  }
+
+  lastMessage.value = `书源导入完成：${buildSourceImportSummaryMessage(result)}`;
+}
+
+function useSourceForImport(source: BookSourceRecord) {
+  selectedSourceId.value = source.id;
+  if (!source.supported) {
+    sourcePreview.value = null;
+    clearSourceWorkSearchState();
+    currentView.value = 'sources';
+    lastMessage.value = `《${source.name}》已作为书源配置导入，当前版本暂不直接执行这类规则`;
+    return;
+  }
+  if (!sourceBookForm.sourceUrl.trim() || sourceBookForm.sourceUrl.startsWith(source.baseUrl)) {
+    sourceBookForm.sourceUrl = source.sampleUrl || source.baseUrl;
+  }
+  sourceBookForm.bookKind = source.bookKind ?? sourceBookForm.bookKind;
+  sourceBookForm.language = source.language ?? sourceBookForm.language;
+  sourcePreview.value = null;
+  clearSourceWorkSearchState();
+  currentView.value = 'sources';
+  lastMessage.value = `已切换到书源《${source.name}》，可先站内搜索作品，或直接粘贴作品链接`;
+}
+
+async function handleSourceImportByUrl() {
+  const url = sourceImportForm.url.trim();
+  if (!url) {
+    lastMessage.value = '请先填写书源导入链接';
+    return;
+  }
+
+  sourceImporting.value = true;
+  lastMessage.value = '正在导入远程书源配置...';
+  try {
+    const result = await importBookSourcesFromUrl({ url });
+    await applyImportedBookSourceResult(result);
+    sourceImportForm.url = '';
+  } catch (error) {
+    lastMessage.value = `书源链接导入失败：${toErrorMessage(error)}`;
+  } finally {
+    sourceImporting.value = false;
+  }
+}
+
+async function handleSourceImportByText() {
+  const content = sourceImportForm.content.trim();
+  if (!content) {
+    lastMessage.value = '请先粘贴书源内容';
+    return;
+  }
+
+  sourceImporting.value = true;
+  lastMessage.value = '正在导入粘贴的书源配置...';
+  try {
+    const result = await importBookSourcesFromText({ content });
+    await applyImportedBookSourceResult(result);
+  } catch (error) {
+    lastMessage.value = `书源内容导入失败：${toErrorMessage(error)}`;
+  } finally {
+    sourceImporting.value = false;
+  }
+}
+
+async function handleSourceWorkSearch() {
+  const source = selectedSourceForImport.value;
+  const keyword = sourceWorkSearchKeyword.value.trim();
+  if (!source) {
+    lastMessage.value = '请先选择书源';
+    return;
+  }
+  if (!keyword) {
+    lastMessage.value = '请先输入要搜索的作品名';
+    return;
+  }
+
+  sourceWorkSearching.value = true;
+  sourceWorkSearched.value = false;
+  sourceWorkSearchError.value = '';
+  sourceWorkSearchResults.value = [];
+  lastMessage.value = `正在搜索《${source.name}》站内作品...`;
+  try {
+    sourceWorkSearchResults.value = await searchBookSourceWorks({
+      sourceId: source.id,
+      keyword,
+      limit: 8,
+    });
+    sourceWorkSearched.value = true;
+    lastMessage.value = sourceWorkSearchResults.value.length
+      ? `在《${source.name}》中找到 ${sourceWorkSearchResults.value.length} 个候选作品`
+      : `《${source.name}》站内未找到“${keyword}”`;
+  } catch (error) {
+    sourceWorkSearchError.value = toErrorMessage(error);
+    lastMessage.value = `书源搜索失败：${sourceWorkSearchError.value}`;
+  } finally {
+    sourceWorkSearching.value = false;
+  }
+}
+
+function applySourceSearchResult(result: BookSourceSearchResult) {
+  sourceBookForm.sourceUrl = result.sourceUrl;
+  sourceBookForm.title = result.title;
+  sourceBookForm.bookKind = result.bookKind ?? sourceBookForm.bookKind;
+  sourcePreview.value = null;
+  lastMessage.value = `已带入《${result.title}》的作品链接，可继续预览或导入`;
+}
+
+async function handleSourcePreview() {
+  if (!sourceBookForm.sourceUrl.trim()) {
+    lastMessage.value = '请先输入作品链接';
+    return;
+  }
+
+  loadingPreview.value = true;
+  lastMessage.value = '正在解析书源作品链接...';
+  try {
+    sourcePreview.value = await previewBook(sourceBookForm);
+    sourceBookForm.bookKind = sourcePreview.value.bookKind;
+    lastMessage.value = `已获取 ${sourcePreview.value.chapterCount} 个章节候选`;
+  } catch (error) {
+    sourcePreview.value = null;
+    lastMessage.value = `书源预览失败：${toErrorMessage(error)}`;
+  } finally {
+    loadingPreview.value = false;
+  }
+}
+
+async function handleSourceImportBook() {
+  if (!sourceBookForm.sourceUrl.trim()) {
+    lastMessage.value = '请先填写作品链接';
+    return;
+  }
+
+  importing.value = true;
+  lastMessage.value = '正在从书源添加到本地书架...';
+  try {
+    const book = await importBook(sourceBookForm);
+    updateBookCache(book);
+    selectedBookId.value = book.id;
+    await loadBookDetail(book.id);
+    currentView.value = 'detail';
+    lastMessage.value = `《${book.title}》已加入本地书架`;
+    sourcePreview.value = null;
+  } catch (error) {
+    lastMessage.value = `添加到书架失败：${toErrorMessage(error)}`;
+  } finally {
+    importing.value = false;
+  }
+}
+
+function resetSourceBookForm() {
+  sourceBookForm.title = '';
+  sourceBookForm.sourceUrl = '';
+  sourceBookForm.bookKind = '长小说';
+  sourceBookForm.language = '中文';
+  sourceBookForm.needTranslation = false;
+  sourcePreview.value = null;
 }
 
 async function handleSaveSettings() {
@@ -2595,6 +2881,12 @@ onBeforeUnmount(() => {
               {{ logSummary.total }} 条记录
             </span>
             <span
+              v-else-if="currentView === 'sources'"
+              class="book-state-pill"
+            >
+              {{ sourceStats.total }} 个书源
+            </span>
+            <span
               v-else-if="currentView === 'settings'"
               class="book-state-pill"
             >
@@ -2627,6 +2919,17 @@ onBeforeUnmount(() => {
             >
               添加书籍
             </button>
+          </template>
+
+          <template v-else-if="currentView === 'sources'">
+            <label class="search-field library-search-field app-header-search">
+              <span>⌕</span>
+              <input
+                v-model="sourceSearchQuery"
+                placeholder="搜索书源名称、域名或标签..."
+                type="text"
+              />
+            </label>
           </template>
 
           <button
@@ -2966,6 +3269,361 @@ onBeforeUnmount(() => {
             </section>
           </transition>
 
+        </section>
+      </template>
+
+      <template v-else-if="currentView === 'sources'">
+        <section class="source-view">
+          <section class="library-summary-strip source-summary-strip">
+            <p class="library-summary-inline">
+              已登记 <strong>{{ sourceStats.total }}</strong> 个书源
+              &nbsp;&nbsp;|&nbsp;&nbsp;
+              内置 <strong>{{ sourceStats.builtin }}</strong> 个
+              &nbsp;&nbsp;|&nbsp;&nbsp;
+              在线 <strong>{{ sourceStats.online }}</strong> 个
+            </p>
+          </section>
+
+          <section class="source-workbench">
+            <section class="settings-card source-panel">
+              <div class="settings-card-head">
+                <div>
+                  <p class="page-kicker">书源搜索作品</p>
+                  <h3>添加到本地书架</h3>
+                  <p>先选书源做站内搜索，或直接粘贴作品链接，再复用现有抓取与导入流程。</p>
+                </div>
+              </div>
+
+              <label class="form-field">
+                <span>书源导入链接</span>
+                <input
+                  v-model="sourceImportForm.url"
+                  placeholder="https://shuyuan-api.yiove.com/import/book-source/..."
+                  type="url"
+                />
+                <small class="field-hint">
+                  支持直接导入返回 JSON 书源数组的链接，例如 `import/book-source/...`。
+                </small>
+              </label>
+
+              <div class="drawer-actions source-actions">
+                <button
+                  class="ghost-btn"
+                  :disabled="sourceImporting"
+                  type="button"
+                  @click="handleSourceImportByUrl"
+                >
+                  {{ sourceImporting ? '导入中...' : '导入链接' }}
+                </button>
+              </div>
+
+              <label class="form-field">
+                <span>书源内容</span>
+                <textarea
+                  v-model="sourceImportForm.content"
+                  placeholder="直接粘贴书源 JSON 数组或单个书源对象"
+                  rows="6"
+                ></textarea>
+                <small class="field-hint">
+                  支持粘贴 `bookSourceName`、`bookSourceUrl`、`ruleSearch`、`ruleToc`、`ruleContent` 这一类 Legado/阅读书源结构。
+                </small>
+              </label>
+
+              <div class="drawer-actions source-actions">
+                <button
+                  class="ghost-btn"
+                  :disabled="sourceImporting"
+                  type="button"
+                  @click="handleSourceImportByText"
+                >
+                  {{ sourceImporting ? '导入中...' : '导入内容' }}
+                </button>
+              </div>
+
+              <div
+                v-if="sourceImportSummary"
+                class="status-note flush"
+              >
+                <strong>本次书源导入结果</strong>
+                <p>{{ buildSourceImportSummaryMessage(sourceImportSummary) }}</p>
+                <p v-if="sourceImportSummary.imported.length">
+                  新增：{{ formatImportedSourceNames(sourceImportSummary.imported) }}
+                </p>
+                <p v-if="sourceImportSummary.duplicates.length">
+                  重复：{{ sourceImportSummary.duplicates.join('、') }}
+                </p>
+                <p v-if="sourceImportSummary.ignored.length">
+                  忽略：{{ sourceImportSummary.ignored.join('；') }}
+                </p>
+              </div>
+
+              <div
+                v-if="!supportedSources.length"
+                class="status-note flush"
+              >
+                <strong>当前没有可直接抓取的站点</strong>
+                <p>导入的书源配置会先登记到本地书源库；只有当前版本已适配的站点，才会出现在下面的作品搜索与抓取流程里。</p>
+              </div>
+
+              <div class="source-quick-grid">
+                <button
+                  v-for="source in supportedSources.slice(0, 8)"
+                  :key="`${source.id}-quick`"
+                  :class="['ghost-btn compact source-chip', { active: selectedSourceForImport?.id === source.id }]"
+                  type="button"
+                  @click="useSourceForImport(source)"
+                >
+                  {{ source.name }}
+                </button>
+              </div>
+
+              <label class="form-field">
+                <span>书源搜索作品</span>
+                <input
+                  v-model="sourceWorkSearchKeyword"
+                  :placeholder="sourceWorkSearchPlaceholder"
+                  type="text"
+                  @keydown.enter.prevent="handleSourceWorkSearch"
+                />
+                <small class="field-hint">
+                  {{ selectedSourceForImport ? `当前书源：${selectedSourceForImport.name}` : '请先选择一个书源' }}
+                </small>
+              </label>
+
+              <div class="drawer-actions source-actions">
+                <button
+                  class="ghost-btn"
+                  :disabled="sourceWorkSearching"
+                  type="button"
+                  @click="handleSourceWorkSearch"
+                >
+                  {{ sourceWorkSearching ? '搜索中...' : '站内搜索' }}
+                </button>
+              </div>
+
+              <div
+                v-if="sourceWorkSearchError"
+                class="status-note flush"
+              >
+                <strong>站内搜索不可用</strong>
+                <p>{{ sourceWorkSearchError }}</p>
+              </div>
+
+              <div
+                v-else-if="sourceWorkSearchResults.length"
+                class="source-grid source-search-results"
+              >
+                <article
+                  v-for="result in sourceWorkSearchResults"
+                  :key="result.sourceUrl"
+                  class="source-card source-search-result-card"
+                >
+                  <div class="source-search-result-head">
+                    <div
+                      v-if="result.cover"
+                      class="source-search-result-cover"
+                    >
+                      <img
+                        :src="result.cover"
+                        alt=""
+                      />
+                    </div>
+                    <div class="source-search-result-copy">
+                      <div class="source-card-head">
+                        <div>
+                          <h4>{{ result.title }}</h4>
+                          <p v-if="result.author">{{ result.author }}</p>
+                        </div>
+                        <span
+                          v-if="result.bookKind"
+                          class="source-status-pill"
+                        >
+                          {{ result.bookKind }}
+                        </span>
+                      </div>
+                      <p class="source-description">{{ result.synopsis || '该结果未返回简介，可直接带入作品链接预览。' }}</p>
+                    </div>
+                  </div>
+
+                  <div class="source-card-actions">
+                    <p class="source-meta-line">{{ result.sourceUrl }}</p>
+                    <button
+                      class="ghost-btn compact"
+                      type="button"
+                      @click="applySourceSearchResult(result)"
+                    >
+                      带入链接
+                    </button>
+                  </div>
+                </article>
+              </div>
+
+              <div
+                v-else-if="sourceWorkSearched"
+                class="status-note flush"
+              >
+                <strong>未找到匹配作品</strong>
+                <p>可以换关键词重试，或者直接粘贴作品详情页链接。</p>
+              </div>
+
+              <label class="form-field">
+                <span>作品链接</span>
+                <input
+                  v-model="sourceBookForm.sourceUrl"
+                  placeholder="粘贴作品详情页链接"
+                  type="url"
+                />
+              </label>
+
+              <div class="field-grid">
+                <label class="form-field">
+                  <span>内容类型</span>
+                  <select v-model="sourceBookForm.bookKind">
+                    <option value="长小说">长小说</option>
+                    <option value="轻小说">轻小说</option>
+                    <option value="漫画">漫画</option>
+                  </select>
+                </label>
+
+                <label class="form-field">
+                  <span>语言</span>
+                  <select v-model="sourceBookForm.language">
+                    <option value="中文">中文</option>
+                    <option value="英文">英文</option>
+                    <option value="日文">日文</option>
+                  </select>
+                </label>
+              </div>
+
+              <label class="form-field">
+                <span>书名（可选）</span>
+                <input
+                  v-model="sourceBookForm.title"
+                  placeholder="留空则自动识别"
+                  type="text"
+                />
+              </label>
+
+              <label class="check-line">
+                <input
+                  v-model="sourceBookForm.needTranslation"
+                  type="checkbox"
+                />
+                <span>抓取完成后自动进入 AI 翻译流程</span>
+              </label>
+
+              <div class="drawer-actions source-actions">
+                <button
+                  class="ghost-btn"
+                  :disabled="loadingPreview"
+                  type="button"
+                  @click="handleSourcePreview"
+                >
+                  {{ loadingPreview ? '解析中...' : '预览章节' }}
+                </button>
+                <button
+                  class="primary-btn"
+                  :disabled="importing"
+                  type="button"
+                  @click="handleSourceImportBook"
+                >
+                  {{ importing ? '加入中...' : '添加到本地书架' }}
+                </button>
+                <button
+                  class="text-btn compact"
+                  type="button"
+                  @click="resetSourceBookForm"
+                >
+                  清空
+                </button>
+              </div>
+
+              <div
+                v-if="sourcePreview"
+                class="preview-panel source-preview-panel"
+              >
+                <div class="preview-top">
+                  <div>
+                    <span class="page-kicker">抓取预览</span>
+                    <h4>{{ sourcePreview.title }}</h4>
+                  </div>
+                  <strong>{{ sourcePreview.bookKind }} · {{ formatChapterCount(sourcePreview.chapterCount, sourcePreview.bookKind) }}</strong>
+                </div>
+                <p>{{ sourcePreview.synopsis }}</p>
+              </div>
+            </section>
+
+            <section class="settings-card source-list-panel">
+              <div class="settings-card-head">
+                <div>
+                  <p class="page-kicker">书源列表</p>
+                  <h3>已登记书源与导入记录</h3>
+                  <p>这里会同时显示内置已适配站点，以及你导入的外部书源配置记录。</p>
+                </div>
+              </div>
+
+              <div
+                v-if="sourceLoading"
+                class="status-note flush"
+              >
+                <strong>正在加载书源</strong>
+                <p>稍等片刻，正在同步本地书源库...</p>
+              </div>
+
+              <div
+                v-else-if="!filteredSources.length"
+                class="status-note flush"
+              >
+                <strong>暂无可用书源</strong>
+                <p>当前没有匹配的书源记录。</p>
+              </div>
+
+              <div
+                v-else
+                class="source-grid"
+              >
+                <article
+                  v-for="source in filteredSources"
+                  :key="source.id"
+                  class="source-card"
+                >
+                  <div class="source-card-head">
+                    <div>
+                      <h4>{{ source.name }}</h4>
+                      <p>{{ source.baseUrl }}</p>
+                    </div>
+                    <span
+                      class="source-status-pill"
+                      :data-status="source.status"
+                    >
+                      {{ source.statusMessage || source.status }}
+                    </span>
+                  </div>
+                  <p class="source-description">{{ source.description }}</p>
+                  <p class="source-meta-line">{{ source.tags.join(' · ') || '暂无标签' }}</p>
+                  <div class="source-card-actions">
+                    <button
+                      v-if="source.supported"
+                      class="ghost-btn compact"
+                      type="button"
+                      @click="useSourceForImport(source)"
+                    >
+                      选择此源
+                    </button>
+                    <button
+                      v-else-if="source.importUrl"
+                      class="ghost-btn compact"
+                      type="button"
+                      @click="handleOpenExternal(source.importUrl, '书源导入链接')"
+                    >
+                      打开导入链接
+                    </button>
+                    <span v-else class="source-meta-line">当前仅保存为书源配置</span>
+                  </div>
+                </article>
+              </div>
+            </section>
+          </section>
         </section>
       </template>
 

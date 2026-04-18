@@ -4,9 +4,11 @@ import os
 import sqlite3
 import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from .models import (
+    BookSourceRecord,
     BookRecord,
     ComicSourceConfig,
     MangaOcrConfig,
@@ -67,6 +69,119 @@ DEFAULT_SETTINGS = TranslationSettings(
     mangaOcr=MangaOcrConfig(),
     bika=ComicSourceConfig(),
 )
+
+DEFAULT_BOOK_SOURCES = [
+    BookSourceRecord(
+        id="source-builtin-linovelib",
+        name="Linovelib",
+        baseUrl="https://www.linovelib.com",
+        description="轻小说文库站点，适合轻小说与插图内容导入。",
+        bookKind="轻小说",
+        language="日文",
+        sampleUrl="https://www.linovelib.com",
+        tags=["轻小说", "插图"],
+        origin="builtin",
+    ),
+    BookSourceRecord(
+        id="source-builtin-kakuyomu",
+        name="Kakuyomu",
+        baseUrl="https://kakuyomu.jp",
+        description="角川旗下小说平台，适合在线轻小说与原创长篇导入。",
+        bookKind="轻小说",
+        language="日文",
+        sampleUrl="https://kakuyomu.jp",
+        tags=["轻小说", "连载"],
+        origin="builtin",
+    ),
+    BookSourceRecord(
+        id="source-builtin-syosetu",
+        name="Syosetu",
+        baseUrl="https://syosetu.com",
+        description="小説家になろう系列站点，适合日文网络小说导入。",
+        bookKind="长小说",
+        language="日文",
+        sampleUrl="https://syosetu.com",
+        tags=["网络小说", "日文"],
+        origin="builtin",
+    ),
+    BookSourceRecord(
+        id="source-builtin-novel18",
+        name="Novel18",
+        baseUrl="https://novel18.syosetu.com",
+        description="成人向小说站点，适合已成年用户按作品链接导入。",
+        bookKind="长小说",
+        language="日文",
+        sampleUrl="https://novel18.syosetu.com",
+        tags=["R18", "小说"],
+        origin="builtin",
+    ),
+    BookSourceRecord(
+        id="source-builtin-pixiv",
+        name="Pixiv Novels",
+        baseUrl="https://www.pixiv.net",
+        description="Pixiv 小说与系列作品入口，适合按 series / novel 链接导入。",
+        bookKind="长小说",
+        language="日文",
+        sampleUrl="https://www.pixiv.net/novel",
+        tags=["Pixiv", "系列"],
+        origin="builtin",
+    ),
+    BookSourceRecord(
+        id="source-builtin-hameln",
+        name="Hameln",
+        baseUrl="https://syosetu.org",
+        description="同人小说站点，部分环境可能触发挑战页，导入前建议先做检测。",
+        bookKind="长小说",
+        language="日文",
+        sampleUrl="https://syosetu.org",
+        tags=["同人", "小说"],
+        origin="builtin",
+    ),
+    BookSourceRecord(
+        id="source-builtin-alphapolis",
+        name="Alphapolis",
+        baseUrl="https://www.alphapolis.co.jp",
+        description="综合小说平台，当前部分环境会触发 WAF，建议先检测再导入。",
+        bookKind="长小说",
+        language="日文",
+        sampleUrl="https://www.alphapolis.co.jp",
+        tags=["网站", "小说"],
+        origin="builtin",
+    ),
+    BookSourceRecord(
+        id="source-builtin-novelup",
+        name="Novelup",
+        baseUrl="https://novelup.plus",
+        description="小说投稿平台，当前环境下可能受 CloudFront 限制。",
+        bookKind="长小说",
+        language="日文",
+        sampleUrl="https://novelup.plus",
+        tags=["投稿", "小说"],
+        origin="builtin",
+    ),
+    BookSourceRecord(
+        id="source-builtin-18comic",
+        name="18Comic",
+        baseUrl="https://18comic.vip",
+        description="漫画书源，适合按专辑详情页导入到本地书架。",
+        bookKind="漫画",
+        language="中文",
+        sampleUrl="https://18comic.vip",
+        tags=["漫画", "站点"],
+        origin="builtin",
+    ),
+    BookSourceRecord(
+        id="source-builtin-bikawebapp",
+        name="Bika Web App",
+        baseUrl="https://bikawebapp.com",
+        description="哔咔漫画 Web App，导入前请先在设置中确认账号凭证。",
+        bookKind="漫画",
+        language="中文",
+        sampleUrl="https://bikawebapp.com",
+        tags=["漫画", "Bika"],
+        origin="builtin",
+    ),
+]
 
 
 def get_connection() -> sqlite3.Connection:
@@ -181,6 +296,36 @@ def init_db() -> None:
             ON task_logs (task_id, sequence)
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS book_sources (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                base_url TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL,
+                book_kind TEXT,
+                language TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                supported INTEGER NOT NULL DEFAULT 1,
+                sample_url TEXT,
+                tags TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                import_url TEXT,
+                status TEXT NOT NULL DEFAULT 'unknown',
+                status_message TEXT NOT NULL DEFAULT '',
+                last_checked_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_book_sources_origin_name
+            ON book_sources (origin, name)
+            """
+        )
+        _seed_builtin_book_sources(conn)
 
 
 def _ensure_reading_progress_columns(conn: sqlite3.Connection) -> None:
@@ -272,6 +417,94 @@ def delete_book(book_id: str) -> None:
         conn.execute("DELETE FROM tasks WHERE book_id = ?", (book_id,))
         conn.execute("DELETE FROM reading_progress WHERE book_id = ?", (book_id,))
         conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
+
+
+def list_book_sources() -> list[BookSourceRecord]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id, name, base_url, description, book_kind, language,
+                enabled, supported, sample_url, tags, origin, import_url,
+                status, status_message, last_checked_at, created_at, updated_at
+            FROM book_sources
+            ORDER BY CASE origin WHEN 'builtin' THEN 0 ELSE 1 END, lower(name) ASC, created_at DESC
+            """
+        ).fetchall()
+    return [_row_to_book_source(row) for row in rows]
+
+
+def get_book_source(source_id: str) -> BookSourceRecord | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                id, name, base_url, description, book_kind, language,
+                enabled, supported, sample_url, tags, origin, import_url,
+                status, status_message, last_checked_at, created_at, updated_at
+            FROM book_sources
+            WHERE id = ?
+            """,
+            (source_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return _row_to_book_source(row)
+
+
+def save_book_source(source: BookSourceRecord) -> BookSourceRecord:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO book_sources (
+                id, name, base_url, description, book_kind, language,
+                enabled, supported, sample_url, tags, origin, import_url,
+                status, status_message, last_checked_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                base_url = excluded.base_url,
+                description = excluded.description,
+                book_kind = excluded.book_kind,
+                language = excluded.language,
+                enabled = excluded.enabled,
+                supported = excluded.supported,
+                sample_url = excluded.sample_url,
+                tags = excluded.tags,
+                origin = excluded.origin,
+                import_url = excluded.import_url,
+                status = excluded.status,
+                status_message = excluded.status_message,
+                last_checked_at = excluded.last_checked_at,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                source.id,
+                source.name,
+                source.baseUrl,
+                source.description,
+                source.bookKind,
+                source.language,
+                int(source.enabled),
+                int(source.supported),
+                source.sampleUrl,
+                json_dumps(source.tags),
+                source.origin,
+                source.importUrl,
+                source.status,
+                source.statusMessage,
+                source.lastCheckedAt,
+                source.createdAt,
+                source.updatedAt,
+            ),
+        )
+    return source
+
+
+def delete_book_source(source_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM book_sources WHERE id = ?", (source_id,))
 
 
 def load_reading_progress(book_id: str) -> ReadingProgressRecord:
@@ -576,7 +809,7 @@ def _row_to_task(row: sqlite3.Row | tuple) -> TaskRecord:
         id=row[0],
         bookId=row[1],
         taskType=row[2],
-        chapterIndexes=json_loads(row[3]),
+        chapterIndexes=json_load_int_list(row[3]),
         status=row[4],
         totalCount=row[5],
         completedCount=row[6],
@@ -599,16 +832,109 @@ def _row_to_task_log(row: sqlite3.Row | tuple) -> TaskLogRecord:
     )
 
 
-def json_dumps(value: list[int]) -> str:
+def _row_to_book_source(row: sqlite3.Row | tuple) -> BookSourceRecord:
+    payload = json_loads(row[9])
+    tags = [str(item).strip() for item in payload] if isinstance(payload, list) else []
+    return BookSourceRecord(
+        id=row[0],
+        name=row[1],
+        baseUrl=row[2],
+        description=row[3],
+        bookKind=_normalize_optional_book_kind(row[4]),
+        language=_normalize_optional_language(row[5]),
+        enabled=bool(row[6]),
+        supported=bool(row[7]),
+        sampleUrl=row[8],
+        tags=[tag for tag in tags if tag],
+        origin=row[10],
+        importUrl=row[11],
+        status=_normalize_source_status(row[12]),
+        statusMessage=row[13] or "",
+        lastCheckedAt=row[14],
+        createdAt=row[15],
+        updatedAt=row[16],
+    )
+
+
+def _normalize_optional_book_kind(value: object) -> str | None:
+    normalized = str(value or "").strip()
+    if normalized in {"长小说", "轻小说", "漫画"}:
+        return normalized
+    return None
+
+
+def _normalize_optional_language(value: object) -> str | None:
+    normalized = str(value or "").strip()
+    if normalized in {"中文", "英文", "日文"}:
+        return normalized
+    return None
+
+
+def _normalize_source_status(value: object) -> str:
+    normalized = str(value or "").strip()
+    if normalized in {"unknown", "online", "slow", "offline", "unsupported"}:
+        return normalized
+    return "unknown"
+
+
+def _seed_builtin_book_sources(conn: sqlite3.Connection) -> None:
+    for source in DEFAULT_BOOK_SOURCES:
+        conn.execute(
+            """
+            INSERT INTO book_sources (
+                id, name, base_url, description, book_kind, language,
+                enabled, supported, sample_url, tags, origin, import_url,
+                status, status_message, last_checked_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                base_url = excluded.base_url,
+                description = excluded.description,
+                book_kind = excluded.book_kind,
+                language = excluded.language,
+                enabled = excluded.enabled,
+                supported = excluded.supported,
+                sample_url = excluded.sample_url,
+                tags = excluded.tags,
+                origin = excluded.origin,
+                updated_at = excluded.updated_at
+            """,
+            (
+                source.id,
+                source.name,
+                source.baseUrl,
+                source.description,
+                source.bookKind,
+                source.language,
+                int(source.enabled),
+                int(source.supported),
+                source.sampleUrl,
+                json_dumps(source.tags),
+                source.origin,
+                source.importUrl,
+                source.status,
+                source.statusMessage,
+                source.lastCheckedAt,
+                source.createdAt,
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+
+
+def json_dumps(value: object) -> str:
     import json
 
     return json.dumps(value, ensure_ascii=False)
 
 
-def json_loads(value: str) -> list[int]:
+def json_loads(value: str) -> object:
     import json
 
-    payload = json.loads(value)
+    return json.loads(value)
+
+
+def json_load_int_list(value: str) -> list[int]:
+    payload = json_loads(value)
     if isinstance(payload, list):
         return [int(item) for item in payload]
     return []

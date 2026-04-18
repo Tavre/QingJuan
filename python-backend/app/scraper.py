@@ -36,6 +36,8 @@ try:
     from .db import DATA_DIR
     from .models import (
         AddBookPayload,
+        BookSourceRecord,
+        BookSourceSearchResult,
         ChapterPreview,
         MangaOcrPagePayload,
         MangaOcrRegion,
@@ -48,6 +50,8 @@ except ImportError:
     from app.db import DATA_DIR
     from app.models import (
         AddBookPayload,
+        BookSourceRecord,
+        BookSourceSearchResult,
         ChapterPreview,
         MangaOcrPagePayload,
         MangaOcrRegion,
@@ -295,6 +299,26 @@ def _append_prefixed_text(prefix: str | None, body: str | None) -> str:
     return body_value or prefix_value
 
 
+def _normalize_search_text(value: Any, limit: int = 220) -> str:
+    normalized = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[: max(0, limit - 1)].rstrip()}…"
+
+
+def _result_cover_from_card(card: BeautifulSoup | Any, base_url: str) -> str | None:
+    if card is None:
+        return None
+    image = card.select_one("img")
+    if image is None:
+        return None
+    for key in ("data-original", "data-src", "src"):
+        value = str(image.get(key) or "").strip()
+        if value and "blank.jpg" not in value:
+            return urljoin(base_url, value)
+    return None
+
+
 def _is_linovelib_url(url: str) -> bool:
     host = (urlparse(url).hostname or "").lower()
     return any(keyword in host for keyword in LINOVELIB_HOST_KEYWORDS)
@@ -367,6 +391,186 @@ def _normalize_source_url(url: str) -> str:
 
 def _resolved_preview_book_kind(url: str, payload: AddBookPayload) -> str:
     return "漫画" if _is_manga_source_url(url) else payload.bookKind
+
+
+async def _search_kakuyomu_works(
+    source: BookSourceRecord,
+    keyword: str,
+    limit: int,
+) -> list[BookSourceSearchResult]:
+    search_url = f"{_build_origin(source.baseUrl)}/search?q={quote(keyword)}"
+    html, resolved_url = await _fetch_site_html(search_url)
+    state = _kakuyomu_state_from_html(html)
+    root_query = state.get("ROOT_QUERY")
+    if not isinstance(root_query, dict):
+        raise ValueError("Kakuyomu 搜索结果缺少 ROOT_QUERY")
+
+    search_key = next((key for key in root_query if key.startswith("searchWorks(")), "")
+    payload = root_query.get(search_key)
+    if not isinstance(payload, dict):
+        return []
+
+    nodes = payload.get("nodes")
+    if not isinstance(nodes, list):
+        return []
+
+    origin = _build_origin(resolved_url)
+    results: list[BookSourceSearchResult] = []
+    seen: set[str] = set()
+    for node in nodes:
+        ref_key = node.get("__ref") if isinstance(node, dict) else None
+        work = state.get(str(ref_key or ""))
+        if not isinstance(work, dict):
+            continue
+
+        work_id = str(work.get("id") or "").strip()
+        title = str(work.get("title") or "").strip()
+        if not work_id or not title:
+            continue
+
+        source_url = _normalize_source_url(f"{origin}/works/{work_id}")
+        if source_url in seen:
+            continue
+        seen.add(source_url)
+
+        results.append(
+            BookSourceSearchResult(
+                title=title,
+                author=_kakuyomu_author_from_state(state, work),
+                synopsis=_normalize_search_text(_kakuyomu_synopsis_from_work(work)),
+                cover=str(work.get("adminCoverImageUrl") or work.get("ogImageUrl") or "").strip() or None,
+                sourceUrl=source_url,
+                bookKind=source.bookKind,
+            )
+        )
+        if len(results) >= limit:
+            break
+
+    return results
+
+
+async def _search_18comic_works(
+    source: BookSourceRecord,
+    keyword: str,
+    limit: int,
+) -> list[BookSourceSearchResult]:
+    origin = _build_origin(source.baseUrl)
+    search_url = f"{origin}/search/photos?main_tag=0&search_query={quote(keyword)}"
+    response = await asyncio.to_thread(_sync_fetch_18comic_html, search_url, origin)
+    soup = BeautifulSoup(response.text, "html.parser")
+    results: list[BookSourceSearchResult] = []
+    seen: set[str] = set()
+
+    for anchor in soup.select("a[href*='/album/'], a[href*='/photo/']"):
+        href = str(anchor.get("href") or "").strip()
+        if not href:
+            continue
+
+        source_url = _normalize_source_url(urljoin(response.resolved_url, href))
+        if "/album/" not in urlparse(source_url).path or source_url in seen:
+            continue
+
+        title = str(anchor.get("title") or "").strip() or anchor.get_text(" ", strip=True)
+        if not title:
+            continue
+
+        card = anchor.find_parent(["li", "article", "div"])
+        synopsis = _normalize_search_text(card.get_text(" ", strip=True) if card is not None else "")
+        results.append(
+            BookSourceSearchResult(
+                title=title,
+                author=None,
+                synopsis=synopsis if synopsis != title else "",
+                cover=_result_cover_from_card(card, response.resolved_url),
+                sourceUrl=source_url,
+                bookKind="漫画",
+            )
+        )
+        seen.add(source_url)
+        if len(results) >= limit:
+            break
+
+    return results
+
+
+async def _search_bika_works(
+    source: BookSourceRecord,
+    keyword: str,
+    limit: int,
+) -> list[BookSourceSearchResult]:
+    runtime_settings = _load_runtime_settings()
+    async with _create_async_http_client(timeout=40.0) as client:
+        payload = await _bika_authed_request(
+            client,
+            "comics/advanced-search?page=1",
+            "POST",
+            settings=runtime_settings,
+            json_payload={
+                "keyword": keyword,
+                "categories": [],
+                "sort": "ua",
+            },
+        )
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise ValueError("Bika 搜索返回格式异常")
+
+    comics = data.get("comics")
+    docs = comics.get("docs") if isinstance(comics, dict) else data.get("docs")
+    if not isinstance(docs, list):
+        return []
+
+    origin = _build_origin(source.baseUrl)
+    results: list[BookSourceSearchResult] = []
+    seen: set[str] = set()
+    for item in docs:
+        if not isinstance(item, dict):
+            continue
+
+        comic_id = str(item.get("_id") or item.get("id") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if not comic_id or not title:
+            continue
+
+        source_url = _normalize_source_url(f"{origin}/comic/{comic_id}")
+        if source_url in seen:
+            continue
+        seen.add(source_url)
+
+        results.append(
+            BookSourceSearchResult(
+                title=title,
+                author=str(item.get("author") or item.get("chineseTeam") or "").strip() or None,
+                synopsis=_normalize_search_text(item.get("description") or ""),
+                cover=_bika_image_url(item.get("thumb")) or None,
+                sourceUrl=source_url,
+                bookKind="漫画",
+            )
+        )
+        if len(results) >= limit:
+            break
+
+    return results
+
+
+async def search_source_books(
+    source: BookSourceRecord,
+    keyword: str,
+    limit: int = 8,
+) -> list[BookSourceSearchResult]:
+    normalized_keyword = keyword.strip()
+    if not normalized_keyword:
+        return []
+
+    if _is_kakuyomu_url(source.baseUrl):
+        return await _search_kakuyomu_works(source, normalized_keyword, limit)
+    if _is_18comic_url(source.baseUrl):
+        return await _search_18comic_works(source, normalized_keyword, limit)
+    if _is_bikawebapp_url(source.baseUrl):
+        return await _search_bika_works(source, normalized_keyword, limit)
+
+    raise ValueError("当前书源暂未实现站内搜索，请先粘贴作品链接")
 
 
 def _18comic_album_id_from_url(url: str) -> str | None:
@@ -6540,4 +6744,3 @@ def _merge_page_translations(title: str, page_translations: list[str]) -> str:
         lines.append(page_text.strip() or "【本页无对白】")
         lines.append("")
     return "\n".join(lines).strip()
-

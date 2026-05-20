@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import asyncio
 import argparse
+import copy
 import html
 import json
 import mimetypes
+import os
 import re
 import shutil
 import zipfile
@@ -16,12 +18,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 from uuid import uuid4
 
 import httpx
 import uvicorn
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
@@ -55,6 +57,8 @@ try:
         BookSourceRecord,
         BookSourceSearchPayload,
         BookSourceSearchResult,
+        BuiltinSiteSearchPayload,
+        BuiltinSiteSearchResult,
         BookSourceTextImportPayload,
         BookSourceUrlImportPayload,
         BookDetailResponse,
@@ -81,7 +85,7 @@ try:
         preview_from_url,
         repair_18comic_chapter_images,
         save_manifest,
-        search_source_books,
+        search_builtin_site_books,
         translated_image_payload_is_current,
         translate_single_manga_image,
         translate_selected_chapters,
@@ -115,6 +119,8 @@ except ImportError:
         BookSourceRecord,
         BookSourceSearchPayload,
         BookSourceSearchResult,
+        BuiltinSiteSearchPayload,
+        BuiltinSiteSearchResult,
         BookSourceTextImportPayload,
         BookSourceUrlImportPayload,
         BookDetailResponse,
@@ -141,7 +147,7 @@ except ImportError:
         preview_from_url,
         repair_18comic_chapter_images,
         save_manifest,
-        search_source_books,
+        search_builtin_site_books,
         translated_image_payload_is_current,
         translate_single_manga_image,
         translate_selected_chapters,
@@ -212,14 +218,51 @@ async def get_sources() -> list[BookSourceRecord]:
 
 @app.post("/sources/search", response_model=list[BookSourceSearchResult])
 async def post_source_search(payload: BookSourceSearchPayload) -> list[BookSourceSearchResult]:
+    keyword = payload.keyword.strip()
+    if not keyword:
+        raise HTTPException(status_code=400, detail="搜索关键词不能为空")
+
+    source_ids = {source_id.strip() for source_id in payload.sourceIds if source_id.strip()}
+    sources = [
+        source
+        for source in list_book_sources()
+        if source.enabled and (not source_ids or source.id in source_ids)
+    ]
+    if not sources:
+        raise HTTPException(status_code=400, detail="请先导入并启用 Legado 书源")
+
+    searchable_sources = [source for source in sources if _source_has_search_rule(source)]
+    if not searchable_sources:
+        raise HTTPException(status_code=400, detail="当前没有可搜索的 Legado 书源，请重新导入包含 searchUrl 与 ruleSearch 的书源")
+
+    per_source_limit = max(1, min(payload.limit, max(4, payload.limit // max(1, len(searchable_sources)) + 2)))
+    results: list[BookSourceSearchResult] = []
+    errors: list[str] = []
+    for source in searchable_sources:
+        try:
+            source_results = await _search_legado_source(source, keyword, per_source_limit)
+            results.extend(source_results)
+        except Exception as exc:
+            errors.append(f"{source.name}: {exc}")
+        if len(results) >= payload.limit:
+            break
+
+    if not results and errors:
+        raise HTTPException(status_code=400, detail="；".join(errors[:4]))
+
+    return _dedupe_source_search_results(results)[: payload.limit]
+
+
+@app.post("/builtin-sites/search", response_model=list[BuiltinSiteSearchResult])
+async def post_builtin_site_search(payload: BuiltinSiteSearchPayload) -> list[BuiltinSiteSearchResult]:
     source = _get_source_or_404(payload.sourceId)
     keyword = payload.keyword.strip()
     if not keyword:
         raise HTTPException(status_code=400, detail="搜索关键词不能为空")
     try:
-        return await search_source_books(source, keyword, payload.limit)
+        return await search_builtin_site_books(source, keyword, payload.limit)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"书源站内搜索失败：{exc}") from exc
+        raise HTTPException(status_code=400, detail=f"内置站点作品搜索失败：{exc}") from exc
 
 
 @app.post("/sources/import-url", response_model=BookSourceImportResult)
@@ -230,9 +273,9 @@ async def post_source_import_url(payload: BookSourceUrlImportPayload) -> BookSou
     except HTTPException:
         raise
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=400, detail=f"书源链接获取失败：{exc}") from exc
+        raise HTTPException(status_code=400, detail=f"Legado 书源链接获取失败：{exc}") from exc
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"书源链接导入失败：{exc}") from exc
+        raise HTTPException(status_code=400, detail=f"Legado 书源链接导入失败：{exc}") from exc
 
 
 @app.post("/sources/import-text", response_model=BookSourceImportResult)
@@ -242,7 +285,20 @@ async def post_source_import_text(payload: BookSourceTextImportPayload) -> BookS
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"书源内容导入失败：{exc}") from exc
+        raise HTTPException(status_code=400, detail=f"Legado 书源内容导入失败：{exc}") from exc
+
+
+@app.put("/sources/{source_id}", response_model=BookSourceRecord)
+async def put_source(source_id: str, payload: BookSourceRecord) -> BookSourceRecord:
+    current = _get_source_or_404(source_id)
+    if current.origin == "builtin":
+        raise HTTPException(status_code=400, detail="内置书源不支持手动修改")
+    updated = payload.model_copy(update={
+        "id": current.id,
+        "createdAt": current.createdAt,
+        "updatedAt": _now(),
+    })
+    return save_book_source(updated)
 
 
 @app.get("/books", response_model=list[BookRecord])
@@ -260,7 +316,7 @@ async def get_tasks() -> list[TaskRecord]:
 
 @app.get("/books/{book_id}", response_model=BookDetailResponse)
 async def get_book_detail(book_id: str) -> BookDetailResponse:
-    return _build_book_detail(await _hydrate_book_record_async(_get_book_or_404(book_id)))
+    return _build_book_detail(await _hydrate_book_record_async(_get_book_or_404(book_id), fetch_remote_metadata=True))
 
 
 @app.delete("/books/{book_id}")
@@ -640,16 +696,27 @@ def _get_source_or_404(source_id: str) -> BookSourceRecord:
 
 
 def _resolve_book_dir(book: BookRecord) -> Path:
-    book_dir = Path(book.localPath)
+    local_path = (book.localPath or "").strip()
+    if not local_path or _contains_invalid_windows_path_chars(local_path):
+        return LIBRARY_ROOT / f"{_sanitize_book_title(book.title)}-{book.id[:8]}"
+
+    book_dir = Path(local_path)
     if book_dir.is_absolute():
         return book_dir
 
-    candidate_paths = [DATA_DIR / book.localPath, LIBRARY_ROOT / book.localPath]
+    candidate_paths = [DATA_DIR / local_path, LIBRARY_ROOT / local_path]
     for candidate in candidate_paths:
         if candidate.exists():
             return candidate
 
     return candidate_paths[0]
+
+
+def _contains_invalid_windows_path_chars(path_value: str) -> bool:
+    if os.name != "nt":
+        return False
+    _, path_tail = os.path.splitdrive(path_value)
+    return bool(re.search(r'[<>:"|?*]', path_tail))
 
 
 def _validate_book_kind(value: str) -> str:
@@ -703,7 +770,7 @@ async def _fetch_book_source_import_payload_with_browser(url: str) -> str:
 """.strip(),
         headless=False,
         timeout_seconds=40.0,
-        blocked_message="浏览器会话仍然无法读取书源链接内容",
+        blocked_message="浏览器会话仍然无法读取 Legado 书源链接内容",
     )
     content = _extract_book_source_payload_from_html(snapshot.html)
     if not content:
@@ -740,8 +807,35 @@ def _import_book_sources(content: str, import_url: str | None = None) -> BookSou
             continue
 
         identity = _normalize_book_source_identity(candidate.baseUrl)
-        if identity in existing_by_base:
-            duplicate_name = candidate.name or existing_by_base[identity].name or candidate.baseUrl
+        existing = existing_by_base.get(identity)
+        if existing is not None:
+            if candidate.rulePayload:
+                merged = existing.model_copy(
+                    update={
+                        "name": candidate.name or existing.name,
+                        "baseUrl": candidate.baseUrl,
+                        "description": candidate.description or existing.description,
+                        "bookKind": candidate.bookKind or existing.bookKind,
+                        "language": candidate.language or existing.language,
+                        "enabled": existing.enabled,
+                        "supported": existing.supported,
+                        "sampleUrl": candidate.sampleUrl or existing.sampleUrl,
+                        "tags": candidate.tags or existing.tags,
+                        "origin": candidate.origin or existing.origin,
+                        "importUrl": candidate.importUrl or existing.importUrl,
+                        "status": candidate.status or existing.status,
+                        "statusMessage": candidate.statusMessage or existing.statusMessage,
+                        "lastCheckedAt": existing.lastCheckedAt,
+                        "rulePayload": copy.deepcopy(candidate.rulePayload),
+                        "updatedAt": _now(),
+                    }
+                )
+                saved = save_book_source(merged)
+                existing_by_base[identity] = saved
+                result.updated.append(saved)
+                continue
+
+            duplicate_name = candidate.name or existing.name or candidate.baseUrl
             result.duplicates.append(duplicate_name)
             continue
 
@@ -755,12 +849,12 @@ def _import_book_sources(content: str, import_url: str | None = None) -> BookSou
 def _parse_book_source_payload(content: str) -> list[object]:
     normalized = _normalize_form_text(content).lstrip("\ufeff").strip()
     if not normalized:
-        raise HTTPException(status_code=400, detail="书源内容不能为空")
+        raise HTTPException(status_code=400, detail="Legado 书源内容不能为空")
 
     try:
         payload = json.loads(normalized)
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"书源内容不是合法 JSON：{exc.msg}") from exc
+        raise HTTPException(status_code=400, detail=f"Legado 书源内容不是合法 JSON：{exc.msg}") from exc
 
     if isinstance(payload, list):
         return payload
@@ -771,7 +865,7 @@ def _parse_book_source_payload(content: str) -> list[object]:
                 return nested
         return [payload]
 
-    raise HTTPException(status_code=400, detail="书源内容必须是 JSON 对象或数组")
+    raise HTTPException(status_code=400, detail="Legado 书源内容必须是 JSON 对象或数组")
 
 
 def _build_imported_book_source(entry: dict[str, object], import_url: str | None = None) -> BookSourceRecord | None:
@@ -799,7 +893,8 @@ def _build_imported_book_source(entry: dict[str, object], import_url: str | None
         origin="remote" if import_url else "manual",
         importUrl=import_url,
         status="unsupported",
-        statusMessage="已导入书源配置，当前版本暂不执行此规则",
+        statusMessage="Legado 规则已保存",
+        rulePayload=copy.deepcopy(entry),
     )
 
 
@@ -838,7 +933,7 @@ def _normalize_source_rule_type(value: object) -> int | None:
 
 def _map_imported_source_book_kind(source_type: int | None) -> str | None:
     if source_type == 2:
-        return "婕敾"
+        return "漫画"
     return None
 
 
@@ -857,7 +952,7 @@ def _coerce_imported_source_enabled(value: object, *, default: bool) -> bool:
 
 
 def _build_imported_source_tags(group: str, source_type: int | None, entry: dict[str, object]) -> list[str]:
-    tags: list[str] = ["导入书源"]
+    tags: list[str] = ["Legado", "阅读书源"]
     if group:
         tags.append(group)
     if source_type == 0:
@@ -875,6 +970,8 @@ def _build_imported_source_tags(group: str, source_type: int | None, entry: dict
         tags.append("目录规则")
     if isinstance(entry.get("ruleContent"), dict):
         tags.append("正文规则")
+    if isinstance(entry.get("ruleBookInfo"), dict):
+        tags.append("详情规则")
 
     unique_tags: list[str] = []
     for tag in tags:
@@ -890,10 +987,200 @@ def _build_imported_source_description(group: str, comment: str, search_url: str
     if comment:
         segments.append(comment)
     elif _normalize_form_text(search_url).strip():
-        segments.append("包含搜索规则，可用于书源配置管理")
+        segments.append("包含搜索规则，已按 Legado/阅读书源格式保存")
     else:
-        segments.append("从外部链接导入的书源配置")
+        segments.append("从外部导入的 Legado/阅读书源配置")
     return " | ".join(segment for segment in segments if segment).strip()
+
+
+def _source_has_search_rule(source: BookSourceRecord) -> bool:
+    payload = source.rulePayload or {}
+    if not isinstance(payload, dict):
+        return False
+    search_url = str(payload.get("searchUrl") or "").strip()
+    rule_search = payload.get("ruleSearch")
+    return bool(search_url and isinstance(rule_search, dict))
+
+
+async def _search_legado_source(source: BookSourceRecord, keyword: str, limit: int) -> list[BookSourceSearchResult]:
+    payload = source.rulePayload or {}
+    if not isinstance(payload, dict):
+        raise ValueError("书源缺少原始规则")
+
+    search_url = str(payload.get("searchUrl") or "").strip()
+    rule_search = payload.get("ruleSearch")
+    if not search_url or not isinstance(rule_search, dict):
+        raise ValueError("书源缺少 searchUrl 或 ruleSearch")
+
+    search_target = _apply_legado_search_url(search_url, keyword, source.baseUrl)
+    if not search_target:
+        raise ValueError("无法解析书源搜索地址")
+    parsed_target = urlparse(search_target)
+    if parsed_target.scheme.lower() not in {"http", "https"} or not parsed_target.netloc:
+        raise ValueError("书源搜索地址不合法或缺少协议")
+
+    method = str(payload.get("searchMethod") or "GET").upper()
+    body = _build_legado_search_body(payload, keyword)
+    headers = _build_legado_headers(payload)
+    async with httpx.AsyncClient(follow_redirects=True, timeout=25.0, headers=headers) as client:
+        if method == "POST":
+            response = await client.post(search_target, data=body)
+        else:
+            response = await client.get(search_target, params=body if body else None)
+        response.raise_for_status()
+        html_text = response.text
+
+    return _parse_legado_search_results(source, html_text, str(response.url), rule_search, limit)
+
+
+def _apply_legado_search_url(search_url: str, keyword: str, base_url: str) -> str:
+    replaced = _replace_legado_placeholders(search_url.strip(), keyword)
+    if not replaced:
+        return ""
+    normalized_base = base_url.strip()
+    if not normalized_base:
+        return replaced
+    return urljoin(f"{normalized_base.rstrip('/')}/", replaced)
+
+
+def _build_legado_search_body(payload: dict[str, object], keyword: str) -> dict[str, str]:
+    body: dict[str, str] = {}
+    request_body = payload.get("searchBody")
+    if isinstance(request_body, dict):
+        for key, value in request_body.items():
+            body[str(key)] = _replace_legado_placeholders(str(value), keyword)
+    body.setdefault("key", keyword)
+    body.setdefault("keyword", keyword)
+    return body
+
+
+def _replace_legado_placeholders(value: str, keyword: str) -> str:
+    normalized = value.strip()
+    replacements = (
+        "{{key}}",
+        "{{searchKey}}",
+        "{{keyword}}",
+        "{{searchword}}",
+        "{key}",
+        "{keyword}",
+        "$key",
+        "$keyword",
+    )
+    for token in replacements:
+        normalized = normalized.replace(token, keyword)
+    return normalized
+
+
+def _build_legado_headers(payload: dict[str, object]) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    custom_headers = payload.get("headers")
+    if isinstance(custom_headers, dict):
+        for key, value in custom_headers.items():
+            headers[str(key)] = str(value)
+    return headers
+
+
+def _parse_legado_search_results(
+    source: BookSourceRecord,
+    html_text: str,
+    base_url: str,
+    rule_search: dict[str, object],
+    limit: int,
+) -> list[BookSourceSearchResult]:
+    soup = BeautifulSoup(html_text, "html.parser")
+    list_selector = _find_first_string(rule_search, ("bookList", "list", "searchList", "items"))
+    item_nodes = soup.select(list_selector) if list_selector else soup.select("a[href], article, li, .book, .item, .result")
+    if not item_nodes:
+        raise ValueError("未找到搜索结果列表")
+
+    title_selector = _find_first_string(rule_search, ("name", "title", "bookName")) or ""
+    author_selector = _find_first_string(rule_search, ("author", "bookAuthor")) or ""
+    intro_selector = _find_first_string(rule_search, ("intro", "desc", "description")) or ""
+    cover_selector = _find_first_string(rule_search, ("coverUrl", "cover", "image")) or ""
+    book_url_selector = _find_first_string(rule_search, ("bookUrl", "url", "detailUrl")) or "a[href]"
+
+    results: list[BookSourceSearchResult] = []
+    seen: set[str] = set()
+    for node in item_nodes:
+        if not isinstance(node, Tag):
+            continue
+        title = _pick_legado_node_text(node, title_selector) or node.get_text(" ", strip=True)
+        title = _normalize_form_text(title).strip()
+        if not title:
+            continue
+        source_url = _pick_legado_node_url(node, book_url_selector, base_url)
+        if not source_url:
+            continue
+        normalized_url = _normalize_source_url(source_url)
+        if normalized_url in seen:
+            continue
+        seen.add(normalized_url)
+        results.append(
+            BookSourceSearchResult(
+                title=title,
+                author=_pick_legado_node_text(node, author_selector) or None,
+                synopsis=_normalize_search_text(_pick_legado_node_text(node, intro_selector) or node.get_text(" ", strip=True)),
+                cover=_pick_legado_node_url(node, cover_selector, base_url),
+                sourceUrl=normalized_url,
+                bookKind=source.bookKind,
+                sourceId=source.id,
+                sourceName=source.name,
+                sourceLanguage=source.language,
+            )
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _find_first_string(payload: dict[str, object], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _pick_legado_node_text(node, selector: str) -> str:
+    if not selector:
+        return ""
+    try:
+        target = node.select_one(selector)
+    except Exception:
+        target = None
+    if target is None:
+        return ""
+    if target.has_attr("text"):
+        return str(target.get("text") or "").strip()
+    return target.get_text(" ", strip=True)
+
+
+def _pick_legado_node_url(node, selector: str, base_url: str) -> str:
+    if not selector:
+        return ""
+    try:
+        target = node.select_one(selector)
+    except Exception:
+        target = None
+    if target is None:
+        return ""
+    for attr in ("href", "src", "data-src", "data-original"):
+        value = str(target.get(attr) or "").strip()
+        if value:
+            return urljoin(base_url, value)
+    text = target.get_text(" ", strip=True)
+    return urljoin(base_url, text) if text.startswith("http") or text.startswith("/") else ""
+
+
+def _dedupe_source_search_results(results: list[BookSourceSearchResult]) -> list[BookSourceSearchResult]:
+    unique: list[BookSourceSearchResult] = []
+    seen: set[str] = set()
+    for result in results:
+        if result.sourceUrl in seen:
+            continue
+        seen.add(result.sourceUrl)
+        unique.append(result)
+    return unique
 
 
 def _header_safe_value(value: object, *, max_length: int = 96) -> str | None:
@@ -1185,7 +1472,7 @@ def _load_or_initialize_manifest(book: BookRecord, book_dir: Path) -> dict:
     manifest["cover_file"] = _read_optional_string(manifest, "cover_file")
     manifest["chapter_count"] = len(chapters)
 
-    if changed:
+    if changed and book_dir.exists():
         save_manifest(book_dir, manifest)
 
     return manifest
@@ -1199,28 +1486,32 @@ def _hydrate_book_record(book: BookRecord) -> BookRecord:
     return book.model_copy(update={"cover": cover})
 
 
-async def _hydrate_book_record_async(book: BookRecord) -> BookRecord:
+async def _hydrate_book_record_async(book: BookRecord, *, fetch_remote_metadata: bool = False) -> BookRecord:
     hydrated = _hydrate_book_record(book)
-    if hydrated.cover:
+    if hydrated.cover or not fetch_remote_metadata or not book.sourceUrl.strip():
         return hydrated
 
     try:
-        preview = await preview_from_url(
-            AddBookPayload(
-                sourceUrl=book.sourceUrl,
-                bookKind=book.bookKind,
-                language=book.language,
-                needTranslation=book.translated,
-                title=book.title,
-            )
+        preview = await asyncio.wait_for(
+            preview_from_url(
+                AddBookPayload(
+                    sourceUrl=book.sourceUrl,
+                    bookKind=book.bookKind,
+                    language=book.language,
+                    needTranslation=book.translated,
+                    title=book.title,
+                )
+            ),
+            timeout=8,
         )
-    except Exception:
+    except (asyncio.TimeoutError, Exception):
         return hydrated
 
     if not preview.cover and not preview.author:
         return hydrated
 
-    manifest = _load_or_initialize_manifest(book, _resolve_book_dir(book))
+    book_dir = _resolve_book_dir(book)
+    manifest = _load_or_initialize_manifest(book, book_dir)
     changed = False
     if preview.cover and not _read_optional_string(manifest, "cover_url"):
         manifest["cover_url"] = preview.cover
@@ -1228,8 +1519,8 @@ async def _hydrate_book_record_async(book: BookRecord) -> BookRecord:
     if preview.author and not _read_optional_string(manifest, "author"):
         manifest["author"] = preview.author
         changed = True
-    if changed:
-        save_manifest(_resolve_book_dir(book), manifest)
+    if changed and book_dir.exists():
+        save_manifest(book_dir, manifest)
 
     return hydrated.model_copy(update={"cover": preview.cover or hydrated.cover})
 

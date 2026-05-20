@@ -37,7 +37,7 @@ try:
     from .models import (
         AddBookPayload,
         BookSourceRecord,
-        BookSourceSearchResult,
+        BuiltinSiteSearchResult,
         ChapterPreview,
         MangaOcrPagePayload,
         MangaOcrRegion,
@@ -51,7 +51,7 @@ except ImportError:
     from app.models import (
         AddBookPayload,
         BookSourceRecord,
-        BookSourceSearchResult,
+        BuiltinSiteSearchResult,
         ChapterPreview,
         MangaOcrPagePayload,
         MangaOcrRegion,
@@ -397,7 +397,7 @@ async def _search_kakuyomu_works(
     source: BookSourceRecord,
     keyword: str,
     limit: int,
-) -> list[BookSourceSearchResult]:
+) -> list[BuiltinSiteSearchResult]:
     search_url = f"{_build_origin(source.baseUrl)}/search?q={quote(keyword)}"
     html, resolved_url = await _fetch_site_html(search_url)
     state = _kakuyomu_state_from_html(html)
@@ -415,7 +415,7 @@ async def _search_kakuyomu_works(
         return []
 
     origin = _build_origin(resolved_url)
-    results: list[BookSourceSearchResult] = []
+    results: list[BuiltinSiteSearchResult] = []
     seen: set[str] = set()
     for node in nodes:
         ref_key = node.get("__ref") if isinstance(node, dict) else None
@@ -434,7 +434,7 @@ async def _search_kakuyomu_works(
         seen.add(source_url)
 
         results.append(
-            BookSourceSearchResult(
+            BuiltinSiteSearchResult(
                 title=title,
                 author=_kakuyomu_author_from_state(state, work),
                 synopsis=_normalize_search_text(_kakuyomu_synopsis_from_work(work)),
@@ -453,12 +453,12 @@ async def _search_18comic_works(
     source: BookSourceRecord,
     keyword: str,
     limit: int,
-) -> list[BookSourceSearchResult]:
+) -> list[BuiltinSiteSearchResult]:
     origin = _build_origin(source.baseUrl)
     search_url = f"{origin}/search/photos?main_tag=0&search_query={quote(keyword)}"
     response = await asyncio.to_thread(_sync_fetch_18comic_html, search_url, origin)
     soup = BeautifulSoup(response.text, "html.parser")
-    results: list[BookSourceSearchResult] = []
+    results: list[BuiltinSiteSearchResult] = []
     seen: set[str] = set()
 
     for anchor in soup.select("a[href*='/album/'], a[href*='/photo/']"):
@@ -477,7 +477,7 @@ async def _search_18comic_works(
         card = anchor.find_parent(["li", "article", "div"])
         synopsis = _normalize_search_text(card.get_text(" ", strip=True) if card is not None else "")
         results.append(
-            BookSourceSearchResult(
+            BuiltinSiteSearchResult(
                 title=title,
                 author=None,
                 synopsis=synopsis if synopsis != title else "",
@@ -497,7 +497,7 @@ async def _search_bika_works(
     source: BookSourceRecord,
     keyword: str,
     limit: int,
-) -> list[BookSourceSearchResult]:
+) -> list[BuiltinSiteSearchResult]:
     runtime_settings = _load_runtime_settings()
     async with _create_async_http_client(timeout=40.0) as client:
         payload = await _bika_authed_request(
@@ -522,7 +522,7 @@ async def _search_bika_works(
         return []
 
     origin = _build_origin(source.baseUrl)
-    results: list[BookSourceSearchResult] = []
+    results: list[BuiltinSiteSearchResult] = []
     seen: set[str] = set()
     for item in docs:
         if not isinstance(item, dict):
@@ -539,7 +539,7 @@ async def _search_bika_works(
         seen.add(source_url)
 
         results.append(
-            BookSourceSearchResult(
+            BuiltinSiteSearchResult(
                 title=title,
                 author=str(item.get("author") or item.get("chineseTeam") or "").strip() or None,
                 synopsis=_normalize_search_text(item.get("description") or ""),
@@ -554,11 +554,11 @@ async def _search_bika_works(
     return results
 
 
-async def search_source_books(
+async def search_builtin_site_books(
     source: BookSourceRecord,
     keyword: str,
     limit: int = 8,
-) -> list[BookSourceSearchResult]:
+) -> list[BuiltinSiteSearchResult]:
     normalized_keyword = keyword.strip()
     if not normalized_keyword:
         return []
@@ -570,7 +570,7 @@ async def search_source_books(
     if _is_bikawebapp_url(source.baseUrl):
         return await _search_bika_works(source, normalized_keyword, limit)
 
-    raise ValueError("当前书源暂未实现站内搜索，请先粘贴作品链接")
+    raise ValueError("当前内置站点暂未实现作品搜索，请在书架页粘贴作品链接")
 
 
 def _18comic_album_id_from_url(url: str) -> str | None:

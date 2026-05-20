@@ -1,5 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import bookGlobeIcon from '@fluentui/svg-icons/icons/book_globe_20_regular.svg?raw';
+import bookAddIcon from '@fluentui/svg-icons/icons/book_add_20_regular.svg?raw';
+import bookOpenIcon from '@fluentui/svg-icons/icons/book_open_20_regular.svg?raw';
+import clipboardClockIcon from '@fluentui/svg-icons/icons/clipboard_clock_20_regular.svg?raw';
+import arrowUpIcon from '@fluentui/svg-icons/icons/arrow_up_20_regular.svg?raw';
+import searchIcon from '@fluentui/svg-icons/icons/search_20_regular.svg?raw';
+import settingsIcon from '@fluentui/svg-icons/icons/settings_20_regular.svg?raw';
 // QingJuan
 // Author: Tavre
 // License: GPL-3.0-only
@@ -21,15 +28,14 @@ import {
   importBookSourcesFromUrl,
   importLocalBook,
   previewBook,
-  searchBookSourceWorks,
   retryTask,
   saveReadingProgress,
   saveSettings,
+  searchBookSources,
   translateChapters,
   uploadBookCover,
 } from '../services/api';
-import { chooseExportPath, openExternalLink, startDesktopBackend } from '../services/desktop';
-import { getCurrentWindow, type ResizeDirection } from '@tauri-apps/api/window';
+import { openExternalLink, startDesktopBackend } from '../services/desktop';
 import brandIcon from '../../qj_icon2.png';
 import type {
   AddBookPayload,
@@ -49,12 +55,13 @@ import type {
   TranslationSettings,
 } from '../types';
 
-type ViewMode = 'library' | 'sources' | 'logs' | 'settings' | 'detail' | 'reader';
+type ViewMode = 'library' | 'search' | 'sources' | 'logs' | 'settings' | 'detail' | 'reader';
 type ReaderTheme = 'default' | 'care' | 'night';
 type ReaderFontSize = '小' | '中' | '大' | '特大';
+type LibraryDisplayMode = 'grid' | 'list';
 
 interface NavItem {
-  key: 'library' | 'sources' | 'logs' | 'settings';
+  key: 'library' | 'search' | 'sources' | 'logs' | 'settings';
   label: string;
   icon: string;
 }
@@ -117,10 +124,11 @@ interface OpenReaderOptions extends LoadReaderChapterOptions {
 }
 
 const navItems: NavItem[] = [
-  { key: 'library', label: '我的书架', icon: '▥' },
-  { key: 'sources', label: '书源管理', icon: '◎' },
-  { key: 'logs', label: '运行日志', icon: '◫' },
-  { key: 'settings', label: '设置', icon: '⚙' },
+  { key: 'library', label: '我的书架', icon: bookOpenIcon },
+  { key: 'search', label: '搜索', icon: searchIcon },
+  { key: 'sources', label: '书源管理', icon: bookGlobeIcon },
+  { key: 'logs', label: '运行日志', icon: clipboardClockIcon },
+  { key: 'settings', label: '设置', icon: settingsIcon },
 ];
 
 const providerOptions: ProviderOption[] = [
@@ -158,24 +166,21 @@ const addBookForm = reactive<AddBookPayload>({
   needTranslation: false,
 });
 
-const sourceBookForm = reactive<AddBookPayload>({
-  sourceUrl: '',
-  bookKind: '长小说',
-  title: '',
-  language: '中文',
-  needTranslation: false,
-});
-
 const books = ref<BookRecord[]>([]);
 const bookSources = ref<BookSourceRecord[]>([]);
 const preview = ref<PreviewResponse | null>(null);
-const sourcePreview = ref<PreviewResponse | null>(null);
 const sourceImportForm = reactive({
   url: '',
   content: '',
 });
 const sourceImportSummary = ref<BookSourceImportResult | null>(null);
 const sourceImporting = ref(false);
+const sourceSearchKeyword = ref('');
+const sourceSearchResults = ref<BookSourceSearchResult[]>([]);
+const sourceSearchLoading = ref(false);
+const sourceSearchError = ref('');
+const sourceSearchTouched = ref(false);
+const sourceSearchImporting = ref<string | null>(null);
 const settings = ref<TranslationSettings>(defaultSettings);
 const activeProvider = ref<TranslationProvider>('openai');
 const currentView = ref<ViewMode>('library');
@@ -183,19 +188,14 @@ const selectedBookId = ref<string | null>(null);
 const searchQuery = ref('');
 const sourceSearchQuery = ref('');
 const showImportPanel = ref(false);
-const desktopState = ref('正在准备桌面后端...');
+const desktopState = ref('正在连接后端服务...');
 const lastMessage = ref('等待输入小说链接');
 const loadingPreview = ref(false);
 const importing = ref(false);
 const sourceLoading = ref(false);
 const localBookFiles = ref<File[]>([]);
 const localFilePickerKey = ref(0);
-const selectedSourceId = ref<string | null>(null);
-const sourceWorkSearchKeyword = ref('');
-const sourceWorkSearchResults = ref<BookSourceSearchResult[]>([]);
-const sourceWorkSearching = ref(false);
-const sourceWorkSearched = ref(false);
-const sourceWorkSearchError = ref('');
+const localFileInput = ref<HTMLInputElement | null>(null);
 const coverUploadPickerKey = ref(0);
 const coverFileInput = ref<HTMLInputElement | null>(null);
 const savingSettings = ref(false);
@@ -209,6 +209,16 @@ const readerTheme = ref<ReaderTheme>(readStoredReaderTheme());
 type GlobalTheme = 'system' | 'light' | 'care' | 'dark';
 
 const globalTheme = ref<GlobalTheme>(readStoredGlobalTheme());
+const accentBaseColor = computed(() => {
+  const resolvedTheme = globalTheme.value === 'system' ? resolveSystemGlobalTheme() : globalTheme.value;
+  if (resolvedTheme === 'dark') {
+    return '#9fb8d8';
+  }
+  if (resolvedTheme === 'care') {
+    return '#dccdb1';
+  }
+  return '#c4d8ef';
+});
 
 function resolveSystemGlobalTheme(): Exclude<GlobalTheme, 'system'> {
   if (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches) {
@@ -272,7 +282,7 @@ function setupDragScroll() {
   const handleMouseDown = (e: MouseEvent) => {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
-    if (target.closest('button, input, select, textarea, a, .no-drag, [data-tauri-drag-region], .desktop-drag-strip')) return;
+    if (target.closest('button, input, select, textarea, a, fluent-button, fluent-search, fluent-select, fluent-text-field, fluent-text-area, .no-drag')) return;
     
     isDragging = true;
     startY = e.pageY - document.documentElement.offsetTop;
@@ -311,9 +321,20 @@ function setupDragScroll() {
 const readerFontSize = ref<ReaderFontSize>(readStoredReaderFontSize());
 const readerTextColor = ref(readStoredReaderColor(READER_TEXT_COLOR_STORAGE_KEY));
 const readerBackgroundColor = ref(readStoredReaderColor(READER_BACKGROUND_COLOR_STORAGE_KEY));
+const readerTextColorInput = ref<HTMLInputElement | null>(null);
+const readerBackgroundColorInput = ref<HTMLInputElement | null>(null);
 const showReaderPanel = ref(true);
 const readerChapterPickerOpen = ref(false);
-const sidebarCollapsed = ref(false);
+const libraryDisplayMode = ref<LibraryDisplayMode>(
+  typeof window !== 'undefined'
+    ? (window.localStorage.getItem('qingjuan.libraryDisplayMode') as LibraryDisplayMode) || 'grid'
+    : 'grid',
+);
+watch(libraryDisplayMode, (val) => {
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem('qingjuan.libraryDisplayMode', val);
+  }
+});
 const showBackToTopButton = ref(false);
 const bookDetail = ref<BookDetailResponse | null>(null);
 const selectedChapterIndexes = ref<number[]>([]);
@@ -390,30 +411,35 @@ const filteredSources = computed(() => {
   });
 });
 
+const searchableImportedSources = computed(() =>
+  bookSources.value.filter(
+    (source) =>
+      source.origin !== 'builtin' &&
+      source.enabled &&
+      source.tags.includes('可搜索'),
+  ),
+);
+
+const librarySourceUrlSet = computed(() => new Set(books.value.map((book) => book.sourceUrl.trim())));
+
 const sourceStats = computed(() => {
   const total = bookSources.value.length;
-  const builtin = bookSources.value.filter((source) => source.origin === 'builtin').length;
-  const online = bookSources.value.filter((source) => source.status === 'online' || source.status === 'slow').length;
-  return { total, builtin, online };
+  const enabled = bookSources.value.filter((source) => source.enabled).length;
+  const searchable = searchableImportedSources.value.length;
+  return { total, enabled, searchable };
 });
 
-const supportedSources = computed(() => filteredSources.value.filter((source) => source.supported));
-
-const selectedSourceForImport = computed(() => {
-  if (selectedSourceId.value) {
-    const selected = supportedSources.value.find((source) => source.id === selectedSourceId.value);
-    if (selected) {
-      return selected;
-    }
+const searchResultsEmptyState = computed(() => {
+  if (!sourceSearchTouched.value) {
+    return '输入关键词后，直接搜索全部已启用的可搜索书源。';
   }
-  return supportedSources.value[0] ?? bookSources.value.find((source) => source.supported) ?? null;
+  if (!sourceSearchLoading.value && !sourceSearchResults.value.length && !sourceSearchError.value) {
+    return searchableImportedSources.value.length
+      ? '暂时没有搜索结果。'
+      : '还没有可搜索的导入书源，请先到书源管理导入并启用 Legado 书源。';
+  }
+  return sourceSearchError.value;
 });
-
-const sourceWorkSearchPlaceholder = computed(() =>
-  selectedSourceForImport.value
-    ? `在 ${selectedSourceForImport.value.name} 里搜索书名或关键词`
-    : '先选择书源，再搜索作品',
-);
 
 const selectedBook = computed(() => {
   const detailBook = bookDetail.value?.book;
@@ -550,6 +576,7 @@ const readerCustomStyle = computed<Record<string, string>>(() => {
   if (readerBackgroundColor.value) {
     style['--reader-custom-paper-bg'] = readerBackgroundColor.value;
   }
+  style['--shell-accent'] = accentBaseColor.value;
   return style;
 });
 const readerColorSummary = computed(() => {
@@ -1028,9 +1055,19 @@ const appHeaderMeta = computed(() => {
 
   if (currentView.value === 'sources') {
     return {
-      kicker: '书源中枢',
+      kicker: 'Legado 书源',
       title: '书源管理',
-      subtitle: `已登记 ${sourceStats.value.total} 个书源，其中在线 ${sourceStats.value.online} 个，内置 ${sourceStats.value.builtin} 个。`,
+      subtitle: `已导入 ${sourceStats.value.total} 个 Legado/阅读书源规则，启用 ${sourceStats.value.enabled} 个。`,
+    };
+  }
+
+  if (currentView.value === 'search') {
+    return {
+      kicker: '书源搜索',
+      title: '搜索',
+      subtitle: sourceStats.value.searchable
+        ? `默认搜索已导入的 ${sourceStats.value.searchable} 个可搜索书源。`
+        : '请先在书源管理导入并启用 Legado 书源，然后再搜索作品。',
     };
   }
 
@@ -1226,7 +1263,7 @@ function clearActivityLogs() {
 function logCardDescription(type: keyof typeof logSummary.value) {
   const labels = {
     total: '累计写入的全部日志',
-    system: '桌面后端与运行状态',
+    system: '后端服务与运行状态',
     action: '导入、阅读与外链操作',
     task: '下载和翻译任务进度',
     error: '需要关注的失败与异常',
@@ -1240,16 +1277,15 @@ async function bootstrap() {
   try {
     const backend = await startDesktopBackend();
     desktopState.value = backend
-      ? `桌面后端已连接 ${backend.host}:${backend.port}`
-      : '浏览器预览模式，未启动 Tauri sidecar';
+      ? `后端服务已连接 ${backend.host}:${backend.port}`
+      : '后端服务未返回连接信息';
     backendReady = true;
   } catch (error) {
-    desktopState.value = `桌面后端启动失败：${toErrorMessage(error)}`;
+    desktopState.value = `后端服务连接失败：${toErrorMessage(error)}`;
   }
 
-  const isTauriWindow = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-  if (isTauriWindow && !backendReady) {
-    lastMessage.value = '桌面后端未就绪，已跳过书架初始化';
+  if (!backendReady) {
+    lastMessage.value = '后端服务未就绪，已跳过书架初始化';
     return;
   }
 
@@ -1295,11 +1331,77 @@ async function refreshBookSources() {
   sourceLoading.value = true;
   try {
     bookSources.value = await fetchBookSources();
-    if (!selectedSourceId.value || !bookSources.value.some((item) => item.id === selectedSourceId.value)) {
-      selectedSourceId.value = bookSources.value[0]?.id ?? null;
-    }
   } finally {
     sourceLoading.value = false;
+  }
+}
+
+async function handleSourceSearch() {
+  const keyword = sourceSearchKeyword.value.trim();
+  sourceSearchTouched.value = true;
+  sourceSearchError.value = '';
+
+  if (!keyword) {
+    sourceSearchResults.value = [];
+    sourceSearchError.value = '请输入书名、作者或关键词后再搜索';
+    return;
+  }
+
+  if (!searchableImportedSources.value.length) {
+    sourceSearchResults.value = [];
+    sourceSearchError.value = '当前没有已启用且可搜索的导入书源，请先到书源管理导入 Legado 书源';
+    return;
+  }
+
+  sourceSearchLoading.value = true;
+  try {
+    sourceSearchResults.value = await searchBookSources({ keyword, limit: 24 });
+    if (!sourceSearchResults.value.length) {
+      sourceSearchError.value = `没有找到“${keyword}”相关结果`;
+    }
+  } catch (error) {
+    sourceSearchResults.value = [];
+    sourceSearchError.value = toErrorMessage(error);
+  } finally {
+    sourceSearchLoading.value = false;
+  }
+}
+
+function clearSourceSearch() {
+  sourceSearchKeyword.value = '';
+  sourceSearchResults.value = [];
+  sourceSearchError.value = '';
+  sourceSearchTouched.value = false;
+}
+
+function resultImportKind(result: BookSourceSearchResult): AddBookPayload['bookKind'] {
+  return result.bookKind ?? '长小说';
+}
+
+function resultImportLanguage(result: BookSourceSearchResult): AddBookPayload['language'] {
+  return result.sourceLanguage ?? '中文';
+}
+
+async function handleImportSearchResult(result: BookSourceSearchResult) {
+  sourceSearchImporting.value = result.sourceUrl;
+  lastMessage.value = `正在加入《${result.title}》到书库...`;
+  try {
+    const book = await importBook({
+      sourceUrl: result.sourceUrl,
+      bookKind: resultImportKind(result),
+      language: resultImportLanguage(result),
+      needTranslation: false,
+      title: result.title.trim() || undefined,
+    });
+    updateBookCache(book);
+    selectedBookId.value = book.id;
+    await loadBookDetail(book.id);
+    currentView.value = 'detail';
+    lastMessage.value = `《${book.title}》已加入书库`;
+  } catch (error) {
+    lastMessage.value = `加入书库失败：${toErrorMessage(error)}`;
+  } finally {
+    sourceSearchImporting.value = null;
   }
 }
 
@@ -1514,6 +1616,18 @@ function triggerCoverUpload() {
   coverFileInput.value?.click();
 }
 
+function triggerLocalFilePicker() {
+  localFileInput.value?.click();
+}
+
+function triggerReaderTextColorPicker() {
+  readerTextColorInput.value?.click();
+}
+
+function triggerReaderBackgroundColorPicker() {
+  readerBackgroundColorInput.value?.click();
+}
+
 function resetAddBookForm() {
   addBookForm.title = '';
   addBookForm.sourceUrl = '';
@@ -1524,14 +1638,8 @@ function resetAddBookForm() {
   localFilePickerKey.value += 1;
 }
 
-function clearSourceWorkSearchState() {
-  sourceWorkSearchResults.value = [];
-  sourceWorkSearched.value = false;
-  sourceWorkSearchError.value = '';
-}
-
 function buildSourceImportSummaryMessage(result: BookSourceImportResult) {
-  return `新增 ${result.imported.length} 个，重复 ${result.duplicates.length} 个，忽略 ${result.ignored.length} 个`;
+  return `新增 ${result.imported.length} 个，更新 ${result.updated.length} 个，重复 ${result.duplicates.length} 个，忽略 ${result.ignored.length} 个`;
 }
 
 function formatImportedSourceNames(sources: BookSourceRecord[]) {
@@ -1542,32 +1650,7 @@ async function applyImportedBookSourceResult(result: BookSourceImportResult) {
   sourceImportSummary.value = result;
   await refreshBookSources();
 
-  const importedSupportedSource = result.imported.find((item) => item.supported);
-  if (importedSupportedSource) {
-    selectedSourceId.value = importedSupportedSource.id;
-  }
-
   lastMessage.value = `书源导入完成：${buildSourceImportSummaryMessage(result)}`;
-}
-
-function useSourceForImport(source: BookSourceRecord) {
-  selectedSourceId.value = source.id;
-  if (!source.supported) {
-    sourcePreview.value = null;
-    clearSourceWorkSearchState();
-    currentView.value = 'sources';
-    lastMessage.value = `《${source.name}》已作为书源配置导入，当前版本暂不直接执行这类规则`;
-    return;
-  }
-  if (!sourceBookForm.sourceUrl.trim() || sourceBookForm.sourceUrl.startsWith(source.baseUrl)) {
-    sourceBookForm.sourceUrl = source.sampleUrl || source.baseUrl;
-  }
-  sourceBookForm.bookKind = source.bookKind ?? sourceBookForm.bookKind;
-  sourceBookForm.language = source.language ?? sourceBookForm.language;
-  sourcePreview.value = null;
-  clearSourceWorkSearchState();
-  currentView.value = 'sources';
-  lastMessage.value = `已切换到书源《${source.name}》，可先站内搜索作品，或直接粘贴作品链接`;
 }
 
 async function handleSourceImportByUrl() {
@@ -1578,13 +1661,13 @@ async function handleSourceImportByUrl() {
   }
 
   sourceImporting.value = true;
-  lastMessage.value = '正在导入远程书源配置...';
+  lastMessage.value = '正在导入远程 Legado 书源规则...';
   try {
     const result = await importBookSourcesFromUrl({ url });
     await applyImportedBookSourceResult(result);
     sourceImportForm.url = '';
   } catch (error) {
-    lastMessage.value = `书源链接导入失败：${toErrorMessage(error)}`;
+    lastMessage.value = `Legado 书源链接导入失败：${toErrorMessage(error)}`;
   } finally {
     sourceImporting.value = false;
   }
@@ -1598,110 +1681,15 @@ async function handleSourceImportByText() {
   }
 
   sourceImporting.value = true;
-  lastMessage.value = '正在导入粘贴的书源配置...';
+  lastMessage.value = '正在导入粘贴的 Legado 书源规则...';
   try {
     const result = await importBookSourcesFromText({ content });
     await applyImportedBookSourceResult(result);
   } catch (error) {
-    lastMessage.value = `书源内容导入失败：${toErrorMessage(error)}`;
+    lastMessage.value = `Legado 书源内容导入失败：${toErrorMessage(error)}`;
   } finally {
     sourceImporting.value = false;
   }
-}
-
-async function handleSourceWorkSearch() {
-  const source = selectedSourceForImport.value;
-  const keyword = sourceWorkSearchKeyword.value.trim();
-  if (!source) {
-    lastMessage.value = '请先选择书源';
-    return;
-  }
-  if (!keyword) {
-    lastMessage.value = '请先输入要搜索的作品名';
-    return;
-  }
-
-  sourceWorkSearching.value = true;
-  sourceWorkSearched.value = false;
-  sourceWorkSearchError.value = '';
-  sourceWorkSearchResults.value = [];
-  lastMessage.value = `正在搜索《${source.name}》站内作品...`;
-  try {
-    sourceWorkSearchResults.value = await searchBookSourceWorks({
-      sourceId: source.id,
-      keyword,
-      limit: 8,
-    });
-    sourceWorkSearched.value = true;
-    lastMessage.value = sourceWorkSearchResults.value.length
-      ? `在《${source.name}》中找到 ${sourceWorkSearchResults.value.length} 个候选作品`
-      : `《${source.name}》站内未找到“${keyword}”`;
-  } catch (error) {
-    sourceWorkSearchError.value = toErrorMessage(error);
-    lastMessage.value = `书源搜索失败：${sourceWorkSearchError.value}`;
-  } finally {
-    sourceWorkSearching.value = false;
-  }
-}
-
-function applySourceSearchResult(result: BookSourceSearchResult) {
-  sourceBookForm.sourceUrl = result.sourceUrl;
-  sourceBookForm.title = result.title;
-  sourceBookForm.bookKind = result.bookKind ?? sourceBookForm.bookKind;
-  sourcePreview.value = null;
-  lastMessage.value = `已带入《${result.title}》的作品链接，可继续预览或导入`;
-}
-
-async function handleSourcePreview() {
-  if (!sourceBookForm.sourceUrl.trim()) {
-    lastMessage.value = '请先输入作品链接';
-    return;
-  }
-
-  loadingPreview.value = true;
-  lastMessage.value = '正在解析书源作品链接...';
-  try {
-    sourcePreview.value = await previewBook(sourceBookForm);
-    sourceBookForm.bookKind = sourcePreview.value.bookKind;
-    lastMessage.value = `已获取 ${sourcePreview.value.chapterCount} 个章节候选`;
-  } catch (error) {
-    sourcePreview.value = null;
-    lastMessage.value = `书源预览失败：${toErrorMessage(error)}`;
-  } finally {
-    loadingPreview.value = false;
-  }
-}
-
-async function handleSourceImportBook() {
-  if (!sourceBookForm.sourceUrl.trim()) {
-    lastMessage.value = '请先填写作品链接';
-    return;
-  }
-
-  importing.value = true;
-  lastMessage.value = '正在从书源添加到本地书架...';
-  try {
-    const book = await importBook(sourceBookForm);
-    updateBookCache(book);
-    selectedBookId.value = book.id;
-    await loadBookDetail(book.id);
-    currentView.value = 'detail';
-    lastMessage.value = `《${book.title}》已加入本地书架`;
-    sourcePreview.value = null;
-  } catch (error) {
-    lastMessage.value = `添加到书架失败：${toErrorMessage(error)}`;
-  } finally {
-    importing.value = false;
-  }
-}
-
-function resetSourceBookForm() {
-  sourceBookForm.title = '';
-  sourceBookForm.sourceUrl = '';
-  sourceBookForm.bookKind = '长小说';
-  sourceBookForm.language = '中文';
-  sourceBookForm.needTranslation = false;
-  sourcePreview.value = null;
 }
 
 async function handleSaveSettings() {
@@ -1805,6 +1793,11 @@ async function navigate(view: ViewMode) {
     showImportPanel.value = false;
   }
   if (view === 'library' || view === 'logs') {
+    stopTaskPolling();
+    void refreshGlobalTasks();
+    return;
+  }
+  if (view === 'search') {
     stopTaskPolling();
     void refreshGlobalTasks();
     return;
@@ -1942,10 +1935,6 @@ async function backToDetail() {
   currentView.value = 'detail';
 }
 
-function toggleSidebar() {
-  sidebarCollapsed.value = !sidebarCollapsed.value;
-}
-
 async function handleOpenExternal(url: string | null | undefined, label = '链接') {
   const target = url?.trim() ?? '';
   if (!target) {
@@ -1959,10 +1948,6 @@ async function handleOpenExternal(url: string | null | undefined, label = '链�
   } catch (error) {
     lastMessage.value = `打开${label}失败：${toErrorMessage(error)}`;
   }
-}
-
-function isTauriRuntime() {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
 function triggerBrowserDownload(url: string, fileName: string) {
@@ -1993,26 +1978,9 @@ async function handleExportBook(format: BookExportFormat) {
     return;
   }
 
-  const tauriRuntime = isTauriRuntime();
-
   try {
-    let targetPath: string | undefined;
-    if (tauriRuntime) {
-      const selectedPath = await chooseExportPath(buildDefaultExportFileName(selectedBook.value.title, format), format);
-      if (!selectedPath) {
-        lastMessage.value = '已取消导出';
-        return;
-      }
-      targetPath = selectedPath;
-    }
-
     exportingFormat.value = format;
-    const result = await exportBook(selectedBookId.value, format, targetPath);
-    if (tauriRuntime) {
-      lastMessage.value = `已导出 ${format.toUpperCase()}：${result.filePath}`;
-      return;
-    }
-
+    const result = await exportBook(selectedBookId.value, format);
     triggerBrowserDownload(result.downloadUrl, result.fileName);
     lastMessage.value = `已生成 ${format.toUpperCase()} 导出文件：${result.fileName}`;
   } catch (error) {
@@ -2292,6 +2260,30 @@ function toErrorMessage(error: unknown): string {
   }
 
   return String(error);
+}
+
+function eventValue(event: Event): string {
+  const target = event.target as { value?: unknown } | null;
+  return typeof target?.value === 'string' ? target.value : '';
+}
+
+function eventChecked(event: Event): boolean {
+  const target = event.target as { checked?: unknown } | null;
+  return target?.checked === true;
+}
+
+function eventNumber(event: Event, fallback = 0): number {
+  const value = Number(eventValue(event));
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function toggleChapterSelection(chapterIndex: number, checked: boolean) {
+  if (checked) {
+    selectedChapterIndexes.value = [...new Set([...selectedChapterIndexes.value, chapterIndex])].sort((a, b) => a - b);
+    return;
+  }
+
+  selectedChapterIndexes.value = selectedChapterIndexes.value.filter((index) => index !== chapterIndex);
 }
 
 function applyBookDetail(detail: BookDetailResponse) {
@@ -2585,7 +2577,7 @@ watch(desktopState, (value, previous) => {
   if (!value || value === previous) {
     return;
   }
-  appendActivityLog(value.includes('失败') ? 'error' : 'system', '桌面状态', value);
+  appendActivityLog(value.includes('失败') ? 'error' : 'system', '后端状态', value);
 }, { immediate: true });
 
 watch(lastMessage, (value, previous) => {
@@ -2631,131 +2623,32 @@ watch(currentView, (value, previous) => {
   if (previous === 'reader' && value !== 'reader') {
     clearPendingReaderRestore();
   }
+  if (value !== 'library' && value !== 'logs' && value !== 'search') {
+    stopGlobalTaskPolling();
+  }
   updateScrollAffordances();
 });
 
-const isTauriDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-const appWindow = isTauriDesktop ? getCurrentWindow() : null;
-const windowMaximized = ref(false);
-let removeWindowResizeListener: (() => void) | null = null;
-const desktopResizeHandles: Array<{ direction: ResizeDirection; className: string }> = [
-  { direction: 'North', className: 'desktop-resize-handle--n' },
-  { direction: 'South', className: 'desktop-resize-handle--s' },
-  { direction: 'West', className: 'desktop-resize-handle--w' },
-  { direction: 'East', className: 'desktop-resize-handle--e' },
-  { direction: 'NorthWest', className: 'desktop-resize-handle--nw' },
-  { direction: 'NorthEast', className: 'desktop-resize-handle--ne' },
-  { direction: 'SouthWest', className: 'desktop-resize-handle--sw' },
-  { direction: 'SouthEast', className: 'desktop-resize-handle--se' },
-];
-
-async function syncWindowMaximizedState() {
-  if (!appWindow) {
-    return;
-  }
-
-  try {
-    windowMaximized.value = await appWindow.isMaximized();
-  } catch (error) {
-    console.error('同步窗口最大化状态失败', error);
-  }
-}
-
-async function syncWindowTitle() {
+function syncWindowTitle() {
   if (typeof document !== 'undefined') {
     document.title = windowTitle.value;
-  }
-
-  if (!appWindow) {
-    return;
-  }
-
-  try {
-    await appWindow.setTitle(windowTitle.value);
-  } catch (error) {
-    console.error('同步窗口标题失败', error);
-  }
-}
-
-async function runWindowControl(action: () => Promise<void>, actionLabel: string) {
-  if (!appWindow) {
-    return;
-  }
-
-  try {
-    await action();
-    await syncWindowMaximizedState();
-  } catch (error) {
-    const detail = `窗口${actionLabel}失败：${toErrorMessage(error)}`;
-    lastMessage.value = detail;
-    appendActivityLog('error', '窗口控制', detail);
-  }
-}
-
-async function minimizeWindow() {
-  await runWindowControl(() => appWindow!.minimize(), '最小化');
-}
-async function maximizeWindow() {
-  await runWindowControl(() => appWindow!.toggleMaximize(), windowMaximized.value ? '还原' : '最大化');
-}
-async function closeWindow() {
-  await runWindowControl(() => appWindow!.close(), '关闭');
-}
-
-async function startWindowDragging() {
-  if (!appWindow) {
-    return;
-  }
-
-  try {
-    await appWindow.startDragging();
-  } catch (error) {
-    const detail = `窗口拖动失败：${toErrorMessage(error)}`;
-    lastMessage.value = detail;
-    appendActivityLog('error', '窗口拖动', detail);
-  }
-}
-
-async function startWindowResizeDragging(direction: ResizeDirection) {
-  if (!appWindow || windowMaximized.value) {
-    return;
-  }
-
-  try {
-    await appWindow.startResizeDragging(direction);
-  } catch (error) {
-    const detail = `窗口边缘缩放失败：${toErrorMessage(error)}`;
-    lastMessage.value = detail;
-    appendActivityLog('error', '窗口缩放', detail);
   }
 }
 
 watch(windowTitle, () => {
-  void syncWindowTitle();
+  syncWindowTitle();
 }, { immediate: true });
 
 onMounted(() => {
   window.addEventListener('scroll', handleWindowScroll, { passive: true });
   updateScrollAffordances();
   setupDragScroll();
-  void syncWindowMaximizedState();
-  if (appWindow) {
-    void appWindow.onResized(() => {
-      void syncWindowMaximizedState();
-    }).then((unlisten) => {
-      removeWindowResizeListener = unlisten;
-    }).catch((error) => {
-      console.error('监听窗口尺寸变化失败', error);
-    });
-  }
   void bootstrap();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener('scroll', handleWindowScroll);
   dragScrollCleanup?.();
-  removeWindowResizeListener?.();
-  removeWindowResizeListener = null;
   void flushReaderProgressSave({ silent: true });
   clearReaderScrollSaveTimer();
   clearReaderScrollReleaseTimer();
@@ -2766,32 +2659,19 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div
+  <fluent-design-system-provider
     class="shell"
     :class="{
-      'shell--sidebar-collapsed': sidebarCollapsed,
       'shell--reader-mode': currentView === 'reader',
     }"
+    :accent-base-color="accentBaseColor"
+    neutral-base-color="#8f8c86"
+    control-corner-radius="4"
+    layer-corner-radius="8"
     :data-reader-theme="readerTheme"
     :data-font-size="readerFontSize"
     :style="readerCustomStyle"
   >
-    <div
-      v-if="isTauriDesktop"
-      class="desktop-drag-strip"
-      data-tauri-drag-region
-      @mousedown.prevent.stop="startWindowDragging"
-    ></div>
-
-    <div
-      v-for="handle in desktopResizeHandles"
-      v-if="isTauriDesktop"
-      :key="handle.direction"
-      class="desktop-resize-handle no-drag"
-      :class="handle.className"
-      @mousedown.prevent.stop="startWindowResizeDragging(handle.direction)"
-    ></div>
-
     <aside class="sidebar">
       <div class="brand-row">
         <div class="brand">
@@ -2800,6 +2680,9 @@ onBeforeUnmount(() => {
             alt="青卷图标"
             class="brand-mark"
           />
+          <div class="brand-copy">
+            <h1>青卷</h1>
+          </div>
         </div>
       </div>
 
@@ -2808,12 +2691,13 @@ onBeforeUnmount(() => {
           v-for="item in navItems"
           :key="item.key"
           class="nav-item"
+          type="button"
           :class="{ active: currentView === item.key }"
           :title="item.label"
+          :aria-label="item.label"
           @click="navigate(item.key)"
         >
-          <span class="nav-icon">{{ item.icon }}</span>
-          <span class="nav-label">{{ item.label }}</span>
+          <span class="nav-icon" aria-hidden="true" v-html="item.icon"></span>
         </button>
       </nav>
 
@@ -2822,48 +2706,17 @@ onBeforeUnmount(() => {
       </div>
     </aside>
 
-    <div v-if="isTauriDesktop" class="desktop-window-controls no-drag">
-      <button
-        class="window-control"
-        type="button"
-        aria-label="最小化窗口"
-        @mousedown.stop
-        @click.stop="minimizeWindow"
-      >
-        <span class="window-control-glyph">－</span>
-      </button>
-      <button
-        class="window-control"
-        type="button"
-        :aria-label="windowMaximized ? '还原窗口' : '最大化窗口'"
-        :title="windowMaximized ? '还原窗口' : '最大化窗口'"
-        @mousedown.stop
-        @click.stop="maximizeWindow"
-      >
-        <span class="window-control-glyph">{{ windowMaximized ? '❐' : '□' }}</span>
-      </button>
-      <button
-        class="window-control window-control--close"
-        type="button"
-        aria-label="关闭窗口"
-        @mousedown.stop
-        @click.stop="closeWindow"
-      >
-        <span class="window-control-glyph">✕</span>
-      </button>
-    </div>
-
     <section class="main-area">
       <header v-if="currentView !== 'reader'" class="app-header" :data-view="currentView">
-        <div class="app-header-drag" data-tauri-drag-region>
-          <button
+        <div class="app-header-drag">
+          <fluent-button
             v-if="currentView === 'detail'"
             class="text-btn app-header-back no-drag"
             type="button"
             @click="backToLibrary"
           >
             ‹ 返回书架
-          </button>
+          </fluent-button>
           <p v-if="appHeaderMeta.kicker" class="page-kicker">{{ appHeaderMeta.kicker }}</p>
           <div class="app-header-title-row">
             <h1 class="main-title" v-if="currentView === 'library'">青卷</h1>
@@ -2884,7 +2737,7 @@ onBeforeUnmount(() => {
               v-else-if="currentView === 'sources'"
               class="book-state-pill"
             >
-              {{ sourceStats.total }} 个书源
+              {{ sourceStats.total }} 个规则
             </span>
             <span
               v-else-if="currentView === 'settings'"
@@ -2904,51 +2757,72 @@ onBeforeUnmount(() => {
 
         <div class="app-header-actions no-drag">
           <template v-if="currentView === 'library'">
-            <label class="search-field library-search-field app-header-search">
-              <span>⌕</span>
-              <input
-                v-model="searchQuery"
-                placeholder="搜索书名或作者..."
-                type="text"
-              />
-            </label>
-            <button
+            <fluent-search
+              class="library-search-field app-header-search"
+              :value="searchQuery"
+              placeholder="搜索书名或作者..."
+              appearance="outline"
+              @input="searchQuery = eventValue($event)"
+            ></fluent-search>
+            <fluent-button
               class="primary-btn"
+              appearance="accent"
               type="button"
               @click="showImportPanel = true"
             >
               添加书籍
-            </button>
+            </fluent-button>
+          </template>
+
+          <template v-else-if="currentView === 'search'">
+            <fluent-search
+              class="library-search-field app-header-search"
+              :value="sourceSearchKeyword"
+              placeholder="搜索书名、作者或关键词..."
+              appearance="outline"
+              @input="sourceSearchKeyword = eventValue($event)"
+              @keydown.enter.prevent="handleSourceSearch"
+            ></fluent-search>
+            <fluent-button
+              class="primary-btn"
+              appearance="accent"
+              type="button"
+              :disabled="sourceSearchLoading"
+              @click="handleSourceSearch"
+            >
+              {{ sourceSearchLoading ? '搜索中...' : '搜索' }}
+            </fluent-button>
           </template>
 
           <template v-else-if="currentView === 'sources'">
-            <label class="search-field library-search-field app-header-search">
-              <span>⌕</span>
-              <input
-                v-model="sourceSearchQuery"
-                placeholder="搜索书源名称、域名或标签..."
-                type="text"
-              />
-            </label>
+            <fluent-search
+              class="library-search-field app-header-search"
+              :value="sourceSearchQuery"
+              placeholder="搜索书源名称、域名或标签..."
+              appearance="outline"
+              @input="sourceSearchQuery = eventValue($event)"
+            ></fluent-search>
           </template>
 
-          <button
+          <fluent-button
             v-if="currentView === 'logs'"
             class="text-btn compact"
+            appearance="stealth"
             type="button"
             @click="clearActivityLogs"
           >
             清空日志
-          </button>
-          <button
+          </fluent-button>
+          <fluent-button
             v-if="currentView === 'settings'"
             class="primary-btn"
+            appearance="accent"
             :disabled="savingSettings"
             type="button"
             @click="handleSaveSettings"
           >
             {{ savingSettings ? '保存中...' : '保存设置' }}
-          </button>
+          </fluent-button>
         </div>
       </header>
 
@@ -2963,13 +2837,32 @@ onBeforeUnmount(() => {
               &nbsp;&nbsp;|&nbsp;&nbsp;
               进行中任务 <strong>{{ globalActiveTasks.length }}</strong>
             </p>
-            <button
-              class="text-btn task-insight-btn"
-              type="button"
-              @click="toggleTasksOverview"
-            >
-              视图详情 ›
-            </button>
+            <div class="library-summary-actions">
+              <div class="library-display-toggle">
+                <fluent-button
+                  type="button"
+                  appearance="stealth"
+                  :class="{ active: libraryDisplayMode === 'grid' }"
+                  title="网格视图"
+                  @click="libraryDisplayMode = 'grid'"
+                >⊞</fluent-button>
+                <fluent-button
+                  type="button"
+                  appearance="stealth"
+                  :class="{ active: libraryDisplayMode === 'list' }"
+                  title="列表视图"
+                  @click="libraryDisplayMode = 'list'"
+                >☰</fluent-button>
+              </div>
+              <fluent-button
+                class="text-btn task-insight-btn"
+                appearance="stealth"
+                type="button"
+                @click="toggleTasksOverview"
+              >
+                视图详情 ›
+              </fluent-button>
+            </div>
           </section>
 
           <transition name="panel-fade">
@@ -2983,13 +2876,13 @@ onBeforeUnmount(() => {
                   <p v-if="globalTasksLoading">正在同步所有书籍的任务状态...</p>
                   <p v-else>运行中 {{ globalActiveTasks.length }} 个，失败 {{ globalFailedTasks.length }} 个</p>
                 </div>
-                <button
+                <fluent-button
                   class="ghost-btn compact"
                   type="button"
                   @click="tasksOverviewOpen = false"
                 >
                   收起
-                </button>
+                </fluent-button>
               </div>
 
               <div
@@ -3029,14 +2922,14 @@ onBeforeUnmount(() => {
                     </div>
 
                     <div class="task-actions">
-                      <button
+                      <fluent-button
                         class="ghost-btn compact"
                         type="button"
                         @click="openTaskBook(task)"
                       >
                         查看书籍
-                      </button>
-                      <button
+                      </fluent-button>
+                      <fluent-button
                         v-if="task.status === 'failed'"
                         class="ghost-btn compact"
                         :disabled="taskRetryingId === task.id"
@@ -3044,7 +2937,7 @@ onBeforeUnmount(() => {
                         @click="handleRetryTask(task.id)"
                       >
                         {{ taskRetryingId === task.id ? '重试中...' : '失败重试' }}
-                      </button>
+                      </fluent-button>
                     </div>
                   </div>
                 </article>
@@ -3052,67 +2945,115 @@ onBeforeUnmount(() => {
             </section>
           </transition>
 
-          <section class="books-grid books-grid--atelier">
-            <article
-              v-for="book in filteredBooks"
-              :key="book.id"
-              class="shelf-card"
-              @click="openBook(book.id)"
-            >
-              <div
-                class="cover-art"
-                :class="getCoverClass(book)"
+          <section :class="['books-container', `books-container--${libraryDisplayMode}`]">
+            <template v-if="libraryDisplayMode === 'grid'">
+              <article
+                v-for="book in filteredBooks"
+                :key="book.id"
+                class="shelf-card"
+                @click="openBook(book.id)"
               >
-                <img
-                  v-if="book.cover"
-                  :src="book.cover"
-                  :alt="`${book.title} 封面`"
-                  class="cover-image"
-                  loading="lazy"
-                />
                 <div
-                  v-if="book.cover"
-                  class="cover-filter"
-                ></div>
-                <div
-                  v-else
-                  class="cover-glow"
-                ></div>
-                <div class="cover-caption">
-                  <span>{{ book.language }}</span>
-                  <strong>{{ book.title }}</strong>
-                </div>
-              </div>
-
-              <div class="card-body">
-                <h3>{{ book.title }}</h3>
-                <p class="author-line">{{ getPresentation(book).author }}</p>
-
-                <div class="book-tags">
-                  <span>{{ book.bookKind }}</span>
-                  <span>{{ book.language }}</span>
-                  <span v-if="book.translated">翻译中</span>
-                </div>
-
-                <p
-                  v-if="book.lastReadChapterIndex > 0"
-                  class="card-reading"
+                  class="cover-art"
+                  :class="getCoverClass(book)"
                 >
-                  上次读到第 {{ book.lastReadChapterIndex }} 章
-                </p>
-
-                <div class="progress-meta">
-                  <span>{{ book.lastReadChapterIndex > 0 ? '阅读进度' : '进度' }}</span>
-                  <strong>
-                    {{
-                      book.lastReadChapterIndex > 0
-                        ? `${book.lastReadChapterIndex} / ${book.chapterCount}`
-                        : `${book.chapterCount} / ${book.chapterCount}`
-                    }}
-                  </strong>
+                  <img
+                    v-if="book.cover"
+                    :src="book.cover"
+                    :alt="`${book.title} 封面`"
+                    class="cover-image"
+                    loading="lazy"
+                  />
+                  <div
+                    v-if="book.cover"
+                    class="cover-filter"
+                  ></div>
+                  <div
+                    v-else
+                    class="cover-glow"
+                  ></div>
+                  <div class="cover-caption">
+                    <span>{{ book.language }}</span>
+                    <strong>{{ book.title }}</strong>
+                  </div>
                 </div>
-              </div>
-            </article>
+
+                <div class="card-body">
+                  <h3>{{ book.title }}</h3>
+                  <p class="author-line">{{ getPresentation(book).author }}</p>
+
+                  <div class="book-tags">
+                    <span>{{ book.bookKind }}</span>
+                    <span>{{ book.language }}</span>
+                    <span v-if="book.translated">翻译中</span>
+                  </div>
+
+                  <p
+                    v-if="book.lastReadChapterIndex > 0"
+                    class="card-reading"
+                  >
+                    上次读到第 {{ book.lastReadChapterIndex }} 章
+                  </p>
+
+                  <div class="progress-meta">
+                    <span>{{ book.lastReadChapterIndex > 0 ? '阅读进度' : '进度' }}</span>
+                    <strong>
+                      {{
+                        book.lastReadChapterIndex > 0
+                          ? `${book.lastReadChapterIndex} / ${book.chapterCount}`
+                          : `${book.chapterCount} / ${book.chapterCount}`
+                      }}
+                    </strong>
+                  </div>
+                </div>
+              </article>
+            </template>
+
+            <template v-else>
+              <article
+                v-for="book in filteredBooks"
+                :key="book.id"
+                class="shelf-card"
+                @click="openBook(book.id)"
+              >
+                <div
+                  class="cover-art"
+                  :class="getCoverClass(book)"
+                >
+                  <img
+                    v-if="book.cover"
+                    :src="book.cover"
+                    :alt="`${book.title} 封面`"
+                    class="cover-image"
+                    loading="lazy"
+                  />
+                  <div v-if="book.cover" class="cover-filter"></div>
+                  <div v-else class="cover-glow"></div>
+                </div>
+
+                <div class="card-body">
+                  <h3>{{ book.title }}</h3>
+                  <p class="author-line">{{ getPresentation(book).author }}</p>
+                  <div class="book-tags">
+                    <span>{{ book.bookKind }}</span>
+                    <span>{{ book.language }}</span>
+                    <span v-if="book.translated">翻译中</span>
+                  </div>
+                </div>
+
+                <div class="list-meta">
+                  <span class="progress-text">
+                    {{ book.lastReadChapterIndex > 0 ? `${book.lastReadChapterIndex}/${book.chapterCount}` : `${book.chapterCount}章` }}
+                  </span>
+                  <div class="progress-track">
+                    <div
+                      class="progress-bar"
+                      :style="{ width: `${book.chapterCount ? Math.round((book.lastReadChapterIndex / book.chapterCount) * 100) : 0}%` }"
+                    ></div>
+                  </div>
+                </div>
+              </article>
+            </template>
           </section>
 
           <transition name="panel-fade">
@@ -3127,21 +3068,23 @@ onBeforeUnmount(() => {
                     <p class="page-kicker">添加书籍</p>
                     <h3>导入新内容</h3>
                   </div>
-                  <button
+                  <fluent-button
                     class="icon-btn"
                     @click="showImportPanel = false"
                   >
                     ×
-                  </button>
+                  </fluent-button>
                 </div>
 
                 <label class="form-field">
                   <span>内容链接</span>
-                  <input
-                    v-model="addBookForm.sourceUrl"
+                  <fluent-text-field
+                    :value="addBookForm.sourceUrl"
                     placeholder="https://example.com/novel/123 或漫画详情页链接"
                     type="url"
-                  />
+                    appearance="outline"
+                    @input="addBookForm.sourceUrl = eventValue($event)"
+                  ></fluent-text-field>
                   <small class="field-hint">
                     已支持自动识别小说 / 漫画；漫画目前支持 18comic.vip 与 bikawebapp.com。
                   </small>
@@ -3151,17 +3094,35 @@ onBeforeUnmount(() => {
                   <span>本地小说文件</span>
                   <input
                     :key="localFilePickerKey"
+                    ref="localFileInput"
+                    class="native-file-input"
                     accept=".txt,.text"
                     multiple
                     type="file"
                     @change="handleLocalFileChange"
                   />
+                  <div class="file-picker-row">
+                    <fluent-button
+                      class="secondary-btn"
+                      type="button"
+                      :disabled="importing"
+                      @click="triggerLocalFilePicker"
+                    >
+                      选择 TXT 文件
+                    </fluent-button>
+                    <span
+                      class="file-picked"
+                      :class="{ 'file-picked--empty': !localBookFiles.length }"
+                    >
+                      {{ localBookFiles.length ? '已选择 ' + localBookFiles.length + ' 个文件' : '尚未选择文件' }}
+                    </span>
+                  </div>
                   <small class="field-hint">
                     支持多选并批量导入本地 TXT / TEXT 文本，系统会自动尝试拆分章节。
                   </small>
                   <strong
                     v-if="localBookFiles.length"
-                    class="file-picked"
+                    class="file-picked file-picked--list"
                   >
                     已选择 {{ localBookFiles.length }} 个文件：{{ localBookFiles.slice(0, 3).map((file) => file.name).join('、') }}<template v-if="localBookFiles.length > 3"> 等 {{ localBookFiles.length }} 个</template>
                   </strong>
@@ -3176,66 +3137,75 @@ onBeforeUnmount(() => {
                 <div class="field-grid">
                   <label class="form-field">
                     <span>内容类型</span>
-                    <select v-model="addBookForm.bookKind">
-                      <option value="长小说">长小说</option>
-                      <option value="轻小说">轻小说</option>
-                      <option value="漫画">漫画</option>
-                    </select>
+                    <fluent-select
+                      :value="addBookForm.bookKind"
+                      appearance="outline"
+                      @change="addBookForm.bookKind = eventValue($event) as AddBookPayload['bookKind']"
+                    >
+                      <fluent-option value="长小说">长小说</fluent-option>
+                      <fluent-option value="轻小说">轻小说</fluent-option>
+                      <fluent-option value="漫画">漫画</fluent-option>
+                    </fluent-select>
                     <small class="field-hint">远程链接会自动识别，手动选择主要用于本地导入。</small>
                   </label>
 
                   <label class="form-field">
                     <span>语言</span>
-                    <select v-model="addBookForm.language">
-                      <option value="中文">中文</option>
-                      <option value="英文">英文</option>
-                      <option value="日文">日文</option>
-                    </select>
+                    <fluent-select
+                      :value="addBookForm.language"
+                      appearance="outline"
+                      @change="addBookForm.language = eventValue($event) as AddBookPayload['language']"
+                    >
+                      <fluent-option value="中文">中文</fluent-option>
+                      <fluent-option value="英文">英文</fluent-option>
+                      <fluent-option value="日文">日文</fluent-option>
+                    </fluent-select>
                   </label>
                 </div>
 
                 <label class="form-field">
                   <span>书名（可选）</span>
-                  <input
-                    v-model="addBookForm.title"
+                  <fluent-text-field
+                    :value="addBookForm.title"
                     placeholder="允许留空，抓取后自动识别"
                     type="text"
-                  />
+                    appearance="outline"
+                    @input="addBookForm.title = eventValue($event)"
+                  ></fluent-text-field>
                 </label>
 
                 <label class="check-line">
-                  <input
-                    v-model="addBookForm.needTranslation"
-                    type="checkbox"
-                  />
-                  <span>抓取完成后自动进入 AI 翻译流程</span>
+                  <fluent-switch
+                    :checked="addBookForm.needTranslation"
+                    @change="addBookForm.needTranslation = eventChecked($event)"
+                  >抓取完成后自动进入 AI 翻译流程</fluent-switch>
                 </label>
 
                 <div class="drawer-actions">
-                  <button
+                  <fluent-button
                     class="ghost-btn"
                     :disabled="loadingPreview"
                     @click="handlePreview"
                   >
                     {{ loadingPreview ? '解析中...' : '预览章节' }}
-                  </button>
-                  <button
+                  </fluent-button>
+                  <fluent-button
                     class="primary-btn"
                     :disabled="importing"
                     @click="handleImport"
                   >
                     {{ importing ? '导入中...' : '加入书架' }}
-                  </button>
+                  </fluent-button>
                 </div>
 
                 <div class="drawer-actions drawer-actions--local">
-                  <button
+                  <fluent-button
                     class="secondary-btn"
                     :disabled="importing || !localBookFiles.length"
                     @click="handleImportLocal"
                   >
                     {{ importing ? '导入中...' : `导入本地文件${localBookFiles.length > 1 ? `（${localBookFiles.length}）` : ''}` }}
-                  </button>
+                  </fluent-button>
                 </div>
 
                 <div class="status-note">
@@ -3272,15 +3242,166 @@ onBeforeUnmount(() => {
         </section>
       </template>
 
+      <template v-else-if="currentView === 'search'">
+        <section class="search-view">
+          <section class="search-hero">
+            <div class="search-hero-copy">
+              <p class="page-kicker">全量搜索</p>
+              <h2>搜索已导入书源</h2>
+              <p>
+                默认搜索全部已启用且可搜索的 Legado 书源，找到后可直接加入书库继续阅读。
+              </p>
+            </div>
+
+            <div class="search-hero-bar">
+              <fluent-search
+                class="search-input search-input-large"
+                :value="sourceSearchKeyword"
+                placeholder="输入书名、作者或关键词"
+                appearance="outline"
+                @input="sourceSearchKeyword = eventValue($event)"
+                @keydown.enter.prevent="handleSourceSearch"
+              ></fluent-search>
+              <div class="search-hero-actions">
+                <fluent-button
+                  class="primary-btn"
+                  appearance="accent"
+                  type="button"
+                  :disabled="sourceSearchLoading"
+                  @click="handleSourceSearch"
+                >
+                  {{ sourceSearchLoading ? '搜索中...' : '搜索' }}
+                </fluent-button>
+                <fluent-button
+                  class="ghost-btn"
+                  type="button"
+                  :disabled="!sourceSearchKeyword && !sourceSearchResults.length && !sourceSearchTouched"
+                  @click="clearSourceSearch"
+                >
+                  清空
+                </fluent-button>
+                <fluent-button
+                  class="text-btn"
+                  type="button"
+                  @click="navigate('sources')"
+                >
+                  去书源管理
+                </fluent-button>
+              </div>
+              <p class="search-hero-hint">
+                {{ searchableImportedSources.length ? `当前可搜索书源 ${searchableImportedSources.length} 个` : '还没有可搜索书源，请先导入并启用 Legado 书源' }}
+              </p>
+            </div>
+          </section>
+
+          <section class="settings-card search-result-panel">
+            <div class="settings-card-head">
+              <div>
+                <p class="page-kicker">搜索结果</p>
+                <h3>从导入书源中查找作品</h3>
+                <p>找到后可以直接加入书库，继续走原有的导入、阅读和翻译流程。</p>
+              </div>
+              <span class="search-result-count">
+                {{ sourceSearchResults.length ? `${sourceSearchResults.length} 条结果` : '等待搜索' }}
+              </span>
+            </div>
+
+            <div
+              v-if="sourceSearchLoading"
+              class="status-note flush"
+            >
+              <strong>正在搜索</strong>
+              <p>正在按全部可搜索书源检索作品，请稍等片刻。</p>
+            </div>
+
+            <div
+              v-else-if="!sourceSearchTouched"
+              class="status-note flush"
+            >
+              <strong>开始搜索</strong>
+              <p>输入关键词并点击搜索，结果会显示在这里。</p>
+            </div>
+
+            <div
+              v-else-if="searchResultsEmptyState"
+              class="status-note flush"
+            >
+              <strong>{{ sourceSearchResults.length ? '搜索失败' : '没有结果' }}</strong>
+              <p>{{ searchResultsEmptyState }}</p>
+            </div>
+
+            <div
+              v-else
+              class="search-result-list"
+            >
+              <article
+                v-for="result in sourceSearchResults"
+                :key="`${result.sourceId}:${result.sourceUrl}`"
+                class="source-card search-result-card"
+              >
+                <div class="source-search-result-head">
+                  <div
+                    v-if="result.cover"
+                    class="source-search-result-cover"
+                  >
+                    <img
+                      :src="result.cover"
+                      :alt="`${result.title} 封面`"
+                      loading="lazy"
+                    />
+                  </div>
+                  <div class="source-search-result-copy">
+                    <h4>{{ result.title }}</h4>
+                    <p>{{ result.author || '作者未知' }}</p>
+                    <small>{{ result.sourceName }} · {{ result.sourceUrl }}</small>
+                  </div>
+                </div>
+
+                <p class="source-description">{{ result.synopsis || '暂无简介' }}</p>
+                <p class="source-meta-line">
+                  {{ result.bookKind || '未知类型' }}
+                  <template v-if="result.sourceLanguage"> · {{ result.sourceLanguage }}</template>
+                </p>
+
+                <div class="source-card-actions search-result-actions">
+                  <fluent-button
+                    class="ghost-btn compact"
+                    type="button"
+                    :disabled="librarySourceUrlSet.has(result.sourceUrl)"
+                    @click="handleOpenExternal(result.sourceUrl, '作品链接')"
+                  >
+                    打开链接
+                  </fluent-button>
+                  <fluent-button
+                    class="primary-btn compact"
+                    type="button"
+                    :disabled="librarySourceUrlSet.has(result.sourceUrl) || sourceSearchImporting === result.sourceUrl"
+                    @click="handleImportSearchResult(result)"
+                  >
+                    {{
+                      librarySourceUrlSet.has(result.sourceUrl)
+                        ? '已在书库'
+                        : sourceSearchImporting === result.sourceUrl
+                          ? '加入中...'
+                          : '加入书库'
+                    }}
+                  </fluent-button>
+                </div>
+              </article>
+            </div>
+          </section>
+        </section>
+      </template>
+
       <template v-else-if="currentView === 'sources'">
         <section class="source-view">
           <section class="library-summary-strip source-summary-strip">
             <p class="library-summary-inline">
-              已登记 <strong>{{ sourceStats.total }}</strong> 个书源
+              已导入 <strong>{{ sourceStats.total }}</strong> 个 Legado 书源
               &nbsp;&nbsp;|&nbsp;&nbsp;
-              内置 <strong>{{ sourceStats.builtin }}</strong> 个
+              启用 <strong>{{ sourceStats.enabled }}</strong> 个
               &nbsp;&nbsp;|&nbsp;&nbsp;
-              在线 <strong>{{ sourceStats.online }}</strong> 个
+              含搜索规则 <strong>{{ sourceStats.searchable }}</strong> 个
             </p>
           </section>
 
@@ -3288,56 +3409,60 @@ onBeforeUnmount(() => {
             <section class="settings-card source-panel">
               <div class="settings-card-head">
                 <div>
-                  <p class="page-kicker">书源搜索作品</p>
-                  <h3>添加到本地书架</h3>
-                  <p>先选书源做站内搜索，或直接粘贴作品链接，再复用现有抓取与导入流程。</p>
+                  <p class="page-kicker">Legado / 阅读</p>
+                  <h3>导入自定义书源规则</h3>
+                  <p>这里保存的是 gedoor/legado 支持的书源 JSON 规则，用于管理 `bookSourceName`、`bookSourceUrl` 与各类解析规则。</p>
                 </div>
               </div>
 
               <label class="form-field">
                 <span>书源导入链接</span>
-                <input
-                  v-model="sourceImportForm.url"
+                <fluent-text-field
+                  :value="sourceImportForm.url"
                   placeholder="https://shuyuan-api.yiove.com/import/book-source/..."
                   type="url"
-                />
+                  appearance="outline"
+                  @input="sourceImportForm.url = eventValue($event)"
+                ></fluent-text-field>
                 <small class="field-hint">
-                  支持直接导入返回 JSON 书源数组的链接，例如 `import/book-source/...`。
+                  支持 Legado/阅读 的远程书源 JSON 链接，内容可以是单个对象、数组，或包装在 `data` / `bookSources` 中的数组。
                 </small>
               </label>
 
               <div class="drawer-actions source-actions">
-                <button
+                <fluent-button
                   class="ghost-btn"
                   :disabled="sourceImporting"
                   type="button"
                   @click="handleSourceImportByUrl"
                 >
                   {{ sourceImporting ? '导入中...' : '导入链接' }}
-                </button>
+                </fluent-button>
               </div>
 
               <label class="form-field">
                 <span>书源内容</span>
-                <textarea
-                  v-model="sourceImportForm.content"
-                  placeholder="直接粘贴书源 JSON 数组或单个书源对象"
+                <fluent-text-area
+                  :value="sourceImportForm.content"
+                  placeholder='[{"bookSourceName":"示例书源","bookSourceUrl":"https://example.com","ruleSearch":{},"ruleBookInfo":{},"ruleToc":{},"ruleContent":{}}]'
                   rows="6"
-                ></textarea>
+                  appearance="outline"
+                  @input="sourceImportForm.content = eventValue($event)"
+                ></fluent-text-area>
                 <small class="field-hint">
-                  支持粘贴 `bookSourceName`、`bookSourceUrl`、`ruleSearch`、`ruleToc`、`ruleContent` 这一类 Legado/阅读书源结构。
+                  支持 `bookSourceName`、`bookSourceUrl`、`bookSourceGroup`、`bookSourceType`、`ruleSearch`、`ruleBookInfo`、`ruleToc`、`ruleContent` 等 Legado 字段。
                 </small>
               </label>
 
               <div class="drawer-actions source-actions">
-                <button
+                <fluent-button
                   class="ghost-btn"
                   :disabled="sourceImporting"
                   type="button"
                   @click="handleSourceImportByText"
                 >
                   {{ sourceImporting ? '导入中...' : '导入内容' }}
-                </button>
+                </fluent-button>
               </div>
 
               <div
@@ -3358,198 +3483,11 @@ onBeforeUnmount(() => {
               </div>
 
               <div
-                v-if="!supportedSources.length"
+                v-if="!bookSources.length"
                 class="status-note flush"
               >
-                <strong>当前没有可直接抓取的站点</strong>
-                <p>导入的书源配置会先登记到本地书源库；只有当前版本已适配的站点，才会出现在下面的作品搜索与抓取流程里。</p>
-              </div>
-
-              <div class="source-quick-grid">
-                <button
-                  v-for="source in supportedSources.slice(0, 8)"
-                  :key="`${source.id}-quick`"
-                  :class="['ghost-btn compact source-chip', { active: selectedSourceForImport?.id === source.id }]"
-                  type="button"
-                  @click="useSourceForImport(source)"
-                >
-                  {{ source.name }}
-                </button>
-              </div>
-
-              <label class="form-field">
-                <span>书源搜索作品</span>
-                <input
-                  v-model="sourceWorkSearchKeyword"
-                  :placeholder="sourceWorkSearchPlaceholder"
-                  type="text"
-                  @keydown.enter.prevent="handleSourceWorkSearch"
-                />
-                <small class="field-hint">
-                  {{ selectedSourceForImport ? `当前书源：${selectedSourceForImport.name}` : '请先选择一个书源' }}
-                </small>
-              </label>
-
-              <div class="drawer-actions source-actions">
-                <button
-                  class="ghost-btn"
-                  :disabled="sourceWorkSearching"
-                  type="button"
-                  @click="handleSourceWorkSearch"
-                >
-                  {{ sourceWorkSearching ? '搜索中...' : '站内搜索' }}
-                </button>
-              </div>
-
-              <div
-                v-if="sourceWorkSearchError"
-                class="status-note flush"
-              >
-                <strong>站内搜索不可用</strong>
-                <p>{{ sourceWorkSearchError }}</p>
-              </div>
-
-              <div
-                v-else-if="sourceWorkSearchResults.length"
-                class="source-grid source-search-results"
-              >
-                <article
-                  v-for="result in sourceWorkSearchResults"
-                  :key="result.sourceUrl"
-                  class="source-card source-search-result-card"
-                >
-                  <div class="source-search-result-head">
-                    <div
-                      v-if="result.cover"
-                      class="source-search-result-cover"
-                    >
-                      <img
-                        :src="result.cover"
-                        alt=""
-                      />
-                    </div>
-                    <div class="source-search-result-copy">
-                      <div class="source-card-head">
-                        <div>
-                          <h4>{{ result.title }}</h4>
-                          <p v-if="result.author">{{ result.author }}</p>
-                        </div>
-                        <span
-                          v-if="result.bookKind"
-                          class="source-status-pill"
-                        >
-                          {{ result.bookKind }}
-                        </span>
-                      </div>
-                      <p class="source-description">{{ result.synopsis || '该结果未返回简介，可直接带入作品链接预览。' }}</p>
-                    </div>
-                  </div>
-
-                  <div class="source-card-actions">
-                    <p class="source-meta-line">{{ result.sourceUrl }}</p>
-                    <button
-                      class="ghost-btn compact"
-                      type="button"
-                      @click="applySourceSearchResult(result)"
-                    >
-                      带入链接
-                    </button>
-                  </div>
-                </article>
-              </div>
-
-              <div
-                v-else-if="sourceWorkSearched"
-                class="status-note flush"
-              >
-                <strong>未找到匹配作品</strong>
-                <p>可以换关键词重试，或者直接粘贴作品详情页链接。</p>
-              </div>
-
-              <label class="form-field">
-                <span>作品链接</span>
-                <input
-                  v-model="sourceBookForm.sourceUrl"
-                  placeholder="粘贴作品详情页链接"
-                  type="url"
-                />
-              </label>
-
-              <div class="field-grid">
-                <label class="form-field">
-                  <span>内容类型</span>
-                  <select v-model="sourceBookForm.bookKind">
-                    <option value="长小说">长小说</option>
-                    <option value="轻小说">轻小说</option>
-                    <option value="漫画">漫画</option>
-                  </select>
-                </label>
-
-                <label class="form-field">
-                  <span>语言</span>
-                  <select v-model="sourceBookForm.language">
-                    <option value="中文">中文</option>
-                    <option value="英文">英文</option>
-                    <option value="日文">日文</option>
-                  </select>
-                </label>
-              </div>
-
-              <label class="form-field">
-                <span>书名（可选）</span>
-                <input
-                  v-model="sourceBookForm.title"
-                  placeholder="留空则自动识别"
-                  type="text"
-                />
-              </label>
-
-              <label class="check-line">
-                <input
-                  v-model="sourceBookForm.needTranslation"
-                  type="checkbox"
-                />
-                <span>抓取完成后自动进入 AI 翻译流程</span>
-              </label>
-
-              <div class="drawer-actions source-actions">
-                <button
-                  class="ghost-btn"
-                  :disabled="loadingPreview"
-                  type="button"
-                  @click="handleSourcePreview"
-                >
-                  {{ loadingPreview ? '解析中...' : '预览章节' }}
-                </button>
-                <button
-                  class="primary-btn"
-                  :disabled="importing"
-                  type="button"
-                  @click="handleSourceImportBook"
-                >
-                  {{ importing ? '加入中...' : '添加到本地书架' }}
-                </button>
-                <button
-                  class="text-btn compact"
-                  type="button"
-                  @click="resetSourceBookForm"
-                >
-                  清空
-                </button>
-              </div>
-
-              <div
-                v-if="sourcePreview"
-                class="preview-panel source-preview-panel"
-              >
-                <div class="preview-top">
-                  <div>
-                    <span class="page-kicker">抓取预览</span>
-                    <h4>{{ sourcePreview.title }}</h4>
-                  </div>
-                  <strong>{{ sourcePreview.bookKind }} · {{ formatChapterCount(sourcePreview.chapterCount, sourcePreview.bookKind) }}</strong>
-                </div>
-                <p>{{ sourcePreview.synopsis }}</p>
+                <strong>尚未导入 Legado 书源</strong>
+                <p>粘贴阅读 App 导出的书源 JSON，或填写远程书源链接后导入。</p>
               </div>
             </section>
 
@@ -3557,8 +3495,8 @@ onBeforeUnmount(() => {
               <div class="settings-card-head">
                 <div>
                   <p class="page-kicker">书源列表</p>
-                  <h3>已登记书源与导入记录</h3>
-                  <p>这里会同时显示内置已适配站点，以及你导入的外部书源配置记录。</p>
+                  <h3>已导入的 Legado 规则</h3>
+                  <p>这里仅显示从阅读/Legado JSON 导入的自定义书源，不再混入内置抓取站点。</p>
                 </div>
               </div>
 
@@ -3602,23 +3540,15 @@ onBeforeUnmount(() => {
                   <p class="source-description">{{ source.description }}</p>
                   <p class="source-meta-line">{{ source.tags.join(' · ') || '暂无标签' }}</p>
                   <div class="source-card-actions">
-                    <button
-                      v-if="source.supported"
-                      class="ghost-btn compact"
-                      type="button"
-                      @click="useSourceForImport(source)"
-                    >
-                      选择此源
-                    </button>
-                    <button
-                      v-else-if="source.importUrl"
+                    <fluent-button
+                      v-if="source.importUrl"
                       class="ghost-btn compact"
                       type="button"
                       @click="handleOpenExternal(source.importUrl, '书源导入链接')"
                     >
                       打开导入链接
-                    </button>
-                    <span v-else class="source-meta-line">当前仅保存为书源配置</span>
+                    </fluent-button>
+                    <span v-else class="source-meta-line">已保存为 Legado 书源规则</span>
                   </div>
                 </article>
               </div>
@@ -3681,7 +3611,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div class="theme-stack">
-              <button
+              <fluent-button
                 v-for="opt in [{key:'light',label:'清亮'}, {key:'care',label:'护眼模式'}, {key:'dark',label:'深邃沉浸'}, {key:'system',label:'跟随系统'}]"
                 :key="opt.key"
                 class="ghost-btn compact"
@@ -3690,7 +3620,7 @@ onBeforeUnmount(() => {
                 @click="applyGlobalTheme(opt.key as GlobalTheme)"
               >
                 {{ opt.label }}
-              </button>
+              </fluent-button>
             </div>
           </section>
 
@@ -3704,7 +3634,7 @@ onBeforeUnmount(() => {
 
             <div class="settings-provider-layout">
               <div class="provider-list">
-                <button
+                <fluent-button
                   v-for="provider in providerOptions"
                   :key="provider.key"
                   :class="[providerCardClass(provider.key), 'provider-option--row']"
@@ -3712,37 +3642,43 @@ onBeforeUnmount(() => {
                 >
                   <strong>{{ provider.label }}</strong>
                   <span>{{ provider.description }}</span>
-                </button>
+                </fluent-button>
               </div>
 
               <div class="settings-provider-form">
                 <label class="form-field">
                   <span>API 密钥</span>
-                  <input
-                    v-model="settings.providers[activeProvider].apiKey"
+                  <fluent-text-field
+                    :value="settings.providers[activeProvider].apiKey"
                     placeholder="sk-..."
                     type="password"
-                  />
+                    appearance="outline"
+                    @input="settings.providers[activeProvider].apiKey = eventValue($event)"
+                  ></fluent-text-field>
                   <small>您的 API 密钥将加密保存在本地，不会上传到服务器。</small>
                 </label>
 
                 <label class="form-field">
                   <span>API 地址</span>
-                  <input
-                    v-model="settings.providers[activeProvider].baseUrl"
+                  <fluent-text-field
+                    :value="settings.providers[activeProvider].baseUrl"
                     placeholder="https://api.openai.com/v1"
                     type="text"
-                  />
+                    appearance="outline"
+                    @input="settings.providers[activeProvider].baseUrl = eventValue($event)"
+                  ></fluent-text-field>
                 </label>
 
                 <label class="form-field">
                   <span>翻译模型</span>
-                  <input
-                    v-model="settings.providers[activeProvider].model"
+                  <fluent-text-field
+                    :value="settings.providers[activeProvider].model"
                     :list="`${activeProvider}-model-options`"
                     placeholder="输入模型名，例如 gpt-5.4"
                     type="text"
-                  />
+                    appearance="outline"
+                    @input="settings.providers[activeProvider].model = eventValue($event)"
+                  ></fluent-text-field>
                   <datalist :id="`${activeProvider}-model-options`">
                     <option
                       v-for="option in providerModelOptions"
@@ -3754,11 +3690,10 @@ onBeforeUnmount(() => {
                 </label>
 
                 <label class="check-line">
-                  <input
-                    v-model="settings.providers[activeProvider].enabled"
-                    type="checkbox"
-                  />
-                  <span>启用当前提供商</span>
+                  <fluent-switch
+                    :checked="settings.providers[activeProvider].enabled"
+                    @change="settings.providers[activeProvider].enabled = eventChecked($event)"
+                  >启用当前提供商</fluent-switch>
                 </label>
 
                 <div class="status-note flush">
@@ -3767,38 +3702,42 @@ onBeforeUnmount(() => {
                 </div>
 
                 <label class="check-line">
-                  <input
-                    v-model="settings.mangaOcr.enabled"
-                    type="checkbox"
-                  />
-                  <span>启用漫画 OCR 定位与修复管线</span>
+                  <fluent-switch
+                    :checked="settings.mangaOcr.enabled"
+                    @change="settings.mangaOcr.enabled = eventChecked($event)"
+                  >启用漫画 OCR 定位与修复管线</fluent-switch>
                 </label>
 
                 <label class="form-field">
                   <span>OCR API 地址</span>
-                  <input
-                    v-model="settings.mangaOcr.baseUrl"
+                  <fluent-text-field
+                    :value="settings.mangaOcr.baseUrl"
                     placeholder="http://114.66.46.74:8080"
                     type="text"
-                  />
+                    appearance="outline"
+                    @input="settings.mangaOcr.baseUrl = eventValue($event)"
+                  ></fluent-text-field>
                 </label>
 
                 <label class="form-field">
                   <span>OCR API 密钥</span>
-                  <input
-                    v-model="settings.mangaOcr.apiKey"
+                  <fluent-text-field
+                    :value="settings.mangaOcr.apiKey"
                     placeholder="可选：仅当 OCR 服务本身需要鉴权时填写"
                     type="password"
-                  />
+                    appearance="outline"
+                    @input="settings.mangaOcr.apiKey = eventValue($event)"
+                  ></fluent-text-field>
                 </label>
 
                 <label class="form-field">
                   <span>OCR 服务说明</span>
-                  <input
+                  <fluent-text-field
                     value="当前 OCR 服务按文档直接调用 /ocr，无需再配置模型名称"
                     readonly
                     type="text"
-                  />
+                    appearance="outline"
+                  ></fluent-text-field>
                   <small>通常只需要填写 OCR API 地址；只有 OCR 服务本身要求鉴权时，才需要额外填写上面的 OCR API 密钥。</small>
                 </label>
               </div>
@@ -3816,40 +3755,49 @@ onBeforeUnmount(() => {
             <div class="settings-application-grid">
               <label class="form-field">
                 <span>默认翻译服务</span>
-                <select v-model="settings.defaultProvider">
-                  <option
+                <fluent-select
+                  :value="settings.defaultProvider"
+                  appearance="outline"
+                  @change="settings.defaultProvider = eventValue($event) as TranslationProvider"
+                >
+                  <fluent-option
                     v-for="provider in providerOptions"
                     :key="provider.key"
                     :value="provider.key"
                   >
                     {{ provider.label }}
-                  </option>
-                </select>
+                  </fluent-option>
+                </fluent-select>
               </label>
 
               <label class="form-field">
                 <span>阅读时预翻译后续章节</span>
-                <select v-model.number="settings.autoTranslateNextChapters">
-                  <option
+                <fluent-select
+                  :value="String(settings.autoTranslateNextChapters)"
+                  appearance="outline"
+                  @change="settings.autoTranslateNextChapters = eventNumber($event, settings.autoTranslateNextChapters)"
+                >
+                  <fluent-option
                     v-for="option in autoTranslateOptions"
                     :key="option.value"
-                    :value="option.value"
+                    :value="String(option.value)"
                   >
                     {{ option.label }}
-                  </option>
-                </select>
+                  </fluent-option>
+                </fluent-select>
                 <small>会自动把当前章和后续设定章数加入翻译队列。</small>
               </label>
 
               <label class="form-field">
                 <span>下载线程数</span>
-                <input
-                  v-model.number="settings.downloadConcurrency"
+                <fluent-number-field
+                  :value="String(settings.downloadConcurrency)"
                   min="1"
                   max="8"
                   step="1"
-                  type="number"
-                />
+                  appearance="outline"
+                  @input="settings.downloadConcurrency = eventNumber($event, settings.downloadConcurrency)"
+                ></fluent-number-field>
                 <small>建议设置 2-5；过高并发可能触发目标站点限流。</small>
               </label>
 
@@ -3860,44 +3808,50 @@ onBeforeUnmount(() => {
 
               <label class="form-field">
                 <span>Bika 账号</span>
-                <input
-                  v-model="settings.bika.email"
+                <fluent-text-field
+                  :value="settings.bika.email"
                   placeholder="留空则自动创建，或输入已有邮箱/用户名"
                   type="text"
-                />
+                  appearance="outline"
+                  @input="settings.bika.email = eventValue($event)"
+                ></fluent-text-field>
               </label>
 
               <label class="form-field">
                 <span>Bika 密码</span>
-                <input
-                  v-model="settings.bika.password"
+                <fluent-text-field
+                  :value="settings.bika.password"
                   placeholder="留空则自动创建，或输入已有账户密码"
                   type="password"
-                />
+                  appearance="outline"
+                  @input="settings.bika.password = eventValue($event)"
+                ></fluent-text-field>
               </label>
 
               <label class="form-field settings-system-prompt">
                 <span>系统提示词</span>
-                <textarea
-                  v-model="settings.systemPrompt"
+                <fluent-text-area
+                  :value="settings.systemPrompt"
                   rows="6"
-                ></textarea>
+                  appearance="outline"
+                  @input="settings.systemPrompt = eventValue($event)"
+                ></fluent-text-area>
               </label>
             </div>
 
             <div class="settings-footer">
               <div class="status-note flush">
-                <strong>桌面状态</strong>
+                <strong>后端状态</strong>
                 <p>{{ desktopState }}</p>
               </div>
 
-              <button
+              <fluent-button
                 class="primary-btn"
                 :disabled="savingSettings"
                 @click="handleSaveSettings"
               >
                 {{ savingSettings ? '保存中...' : '保存设置' }}
-              </button>
+              </fluent-button>
             </div>
           </section>
         </section>
@@ -3936,14 +3890,14 @@ onBeforeUnmount(() => {
                 type="file"
                 @change="handleCoverFileChange"
               />
-              <button
+              <fluent-button
                 class="cover-upload-trigger"
                 type="button"
                 :disabled="coverUploading"
                 @click="triggerCoverUpload"
               >
                 {{ coverUploading ? '上传中...' : '更换封面' }}
-              </button>
+              </fluent-button>
             </div>
 
             <div class="detail-copy">
@@ -3988,65 +3942,65 @@ onBeforeUnmount(() => {
 
               <div class="detail-actions">
                 <div class="detail-continue">
-                  <button
+                  <fluent-button
                     class="primary-btn"
                     :disabled="!chapters.length"
                     @click="handleContinueReading"
                   >
                     ▶ {{ continueReadingLabel }}
-                  </button>
+                  </fluent-button>
                   <small>{{ continueReadingDescription }}</small>
                 </div>
-                <button
+                <fluent-button
                   class="ghost-btn anchor-btn"
                   :disabled="!selectedBook.sourceUrl"
                   @click="handleOpenExternal(selectedBook.sourceUrl, '原帖')"
                 >
                   ↗ 访问原帖
-                </button>
+                </fluent-button>
                 <div class="export-menu">
-                  <button
+                  <fluent-button
                     class="ghost-btn"
                     :disabled="!chapters.length || exportingFormat !== null"
                     @click="toggleExportMenu"
                   >
                     {{ exportingFormat ? `${exportingFormat.toUpperCase()} 导出中...` : exportMenuOpen ? '收起导出' : '导出' }}
-                  </button>
+                  </fluent-button>
                   <div
                     v-if="exportMenuOpen"
                     class="export-submenu"
                   >
-                    <button
+                    <fluent-button
                       class="ghost-btn compact"
                       :disabled="exportingFormat !== null"
                       @click="handleExportBook('txt')"
                     >
                       TXT 文本
-                    </button>
-                    <button
+                    </fluent-button>
+                    <fluent-button
                       class="ghost-btn compact"
                       :disabled="exportingFormat !== null"
                       @click="handleExportBook('epub')"
                     >
                       EPUB 电子书
-                    </button>
+                    </fluent-button>
                     <span class="export-hint">导出时可自由选择保存位置</span>
                   </div>
                 </div>
-                <button
+                <fluent-button
                   class="ghost-btn"
                   :disabled="coverUploading || exportingFormat !== null"
                   @click="triggerCoverUpload"
                 >
                   {{ coverUploading ? '封面上传中...' : '自定义封面' }}
-                </button>
-                <button
+                </fluent-button>
+                <fluent-button
                   class="danger-btn"
                   :disabled="deletingBook || exportingFormat !== null"
                   @click="handleDeleteSelectedBook"
                 >
                   {{ deletingBook ? '删除中...' : '删除书籍' }}
-                </button>
+                </fluent-button>
               </div>
             </div>
           </section>
@@ -4065,33 +4019,33 @@ onBeforeUnmount(() => {
                 v-if="chapters.length"
                 class="chapter-tools"
               >
-                <button
+                <fluent-button
                   class="text-btn"
                   @click="toggleAllChapters"
                 >
                   {{ allChaptersSelected ? '取消全选' : '全选' }}
-                </button>
-                <button
+                </fluent-button>
+                <fluent-button
                   class="primary-btn soft"
                   :disabled="!chapters.length"
                   @click="handleReadSelectedChapter"
                 >
                   阅读当前章
-                </button>
-                <button
+                </fluent-button>
+                <fluent-button
                   class="ghost-btn compact"
                   :disabled="chapterActionLoading === 'translate' || selectedChapterCount === 0"
                   @click="handleDownloadSelected"
                 >
                   {{ chapterActionLoading === 'download' ? '下载中...' : `下载选中 (${selectedChapterCount})` }}
-                </button>
-                <button
+                </fluent-button>
+                <fluent-button
                   class="ghost-btn compact"
                   :disabled="chapterActionLoading === 'download' || selectedChapterCount === 0"
                   @click="handleTranslateSelected"
                 >
                   {{ chapterActionLoading === 'translate' ? '翻译中...' : `翻译选中 (${selectedChapterCount})` }}
-                </button>
+                </fluent-button>
                 <span class="chapter-inline-note">当前下载线程：{{ settings.downloadConcurrency }}</span>
               </div>
             </div>
@@ -4110,12 +4064,12 @@ onBeforeUnmount(() => {
             >
               <strong>加载失败</strong>
               <p>{{ detailError }}</p>
-              <button
+              <fluent-button
                 class="ghost-btn"
                 @click="selectedBookId && openBook(selectedBookId)"
               >
                 重新读取
-              </button>
+              </fluent-button>
             </div>
 
             <div
@@ -4137,12 +4091,11 @@ onBeforeUnmount(() => {
                 :class="{ active: chapter.index === activeChapterIndex }"
                 @click="setActiveChapter(chapter.index)"
               >
-                <input
-                  v-model="selectedChapterIndexes"
-                  :value="chapter.index"
-                  type="checkbox"
+                <fluent-checkbox
+                  :checked="selectedChapterIndexes.includes(chapter.index)"
                   @click.stop
-                />
+                  @change="toggleChapterSelection(chapter.index, eventChecked($event))"
+                ></fluent-checkbox>
                 <div class="chapter-copy">
                   <strong>{{ chapter.title }}</strong>
                   <span>{{ formatChapterMeta(chapter, selectedBook.bookKind) }}</span>
@@ -4200,14 +4153,14 @@ onBeforeUnmount(() => {
                       :style="{ width: `${task.progress}%` }"
                     ></div>
                   </div>
-                  <button
+                  <fluent-button
                     v-if="task.status === 'failed'"
                     class="ghost-btn compact"
                     :disabled="taskRetryingId === task.id"
                     @click="handleRetryTask(task.id)"
                   >
                     {{ taskRetryingId === task.id ? '重试中...' : '失败重试' }}
-                  </button>
+                  </fluent-button>
                 </div>
               </article>
             </div>
@@ -4219,15 +4172,15 @@ onBeforeUnmount(() => {
         <section class="reader-view">
           <header class="reader-topbar">
             <div class="reader-topbar-leading no-drag">
-              <button
+              <fluent-button
                 class="text-btn app-header-back"
                 @click="backToDetail"
               >
                 ‹ 返回详情
-              </button>
+              </fluent-button>
             </div>
 
-            <div class="reader-topbar-drag" data-tauri-drag-region>
+            <div class="reader-topbar-drag">
               <div class="reader-title">
                 <strong>{{ selectedBook.title }}</strong>
                 <span>{{ readerChapter?.title || '未选择章节' }}</span>
@@ -4235,47 +4188,47 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="reader-tools no-drag">
-              <button
+              <fluent-button
                 class="ghost-btn compact"
                 :disabled="!readerSourceUrl"
                 @click="handleOpenExternal(readerSourceUrl, '章节原帖')"
               >
                 原帖
-              </button>
-              <button
+              </fluent-button>
+              <fluent-button
                 class="ghost-btn compact"
                 :disabled="!chapters.length"
                 @click="readerChapterPickerOpen = !readerChapterPickerOpen"
               >
                 {{ readerChapterPickerOpen ? '收起章节' : '章节选择' }}
-              </button>
-              <button
+              </fluent-button>
+              <fluent-button
                 class="ghost-btn compact"
                 :disabled="!translatedReadable"
                 @click="toggleReaderMode"
               >
                 {{ readerMode === 'translated' ? (isComicBook ? '原图' : '原文') : '译文' }}
-              </button>
-              <button
+              </fluent-button>
+              <fluent-button
                 class="ghost-btn compact"
                 :disabled="!hasPreviousChapter"
                 @click="goToAdjacentChapter(-1)"
               >
                 {{ isComicBook ? '上一话' : '上一章' }}
-              </button>
-              <button
+              </fluent-button>
+              <fluent-button
                 class="ghost-btn compact"
                 :disabled="!hasNextChapter"
                 @click="goToAdjacentChapter(1)"
               >
                 {{ isComicBook ? '下一话' : '下一章' }}
-              </button>
-              <button
+              </fluent-button>
+              <fluent-button
                 class="icon-btn"
                 @click="showReaderPanel = !showReaderPanel"
               >
                 ⚙
-              </button>
+              </fluent-button>
             </div>
           </header>
 
@@ -4300,18 +4253,19 @@ onBeforeUnmount(() => {
                   <strong>章节选择</strong>
                   <p>{{ readerChapterPickerSummary }}</p>
                 </div>
-                <button
+                <fluent-button
                   class="ghost-btn compact"
                   @click="readerChapterPickerOpen = false"
                 >
                   收起
-                </button>
+                </fluent-button>
               </div>
               <div class="reader-chapter-picker-list">
                 <button
                   v-for="chapter in chapters"
                   :key="chapter.id"
                   class="reader-chapter-chip"
+                  type="button"
                   :class="{
                     active: chapter.index === activeChapterIndex,
                     progress: persistedReadingProgress.currentIndex > 0 && chapter.index === persistedReadingProgress.currentIndex,
@@ -4410,32 +4364,32 @@ onBeforeUnmount(() => {
             >
               <div class="reader-panel-head">
                 <h3>阅读设置</h3>
-                <button
+                <fluent-button
                   class="icon-btn"
                   @click="showReaderPanel = false"
                 >
                   ×
-                </button>
+                </fluent-button>
               </div>
 
               <div class="reader-block">
                 <span>字体大小</span>
                 <div class="segmented">
-                  <button
+                  <fluent-button
                     v-for="size in ['小', '中', '大', '特大']"
                     :key="size"
                     :class="{ active: readerFontSize === size }"
                     @click="applyReaderFontSize(size as ReaderFontSize)"
                   >
                     {{ size }}
-                  </button>
+                  </fluent-button>
                 </div>
               </div>
 
               <div class="reader-block">
                 <span>应用主题</span>
                 <div class="theme-stack">
-                  <button
+                  <fluent-button
                     v-for="theme in themeOptions"
                     :key="theme.key"
                     :class="{ active: readerTheme === theme.key }"
@@ -4443,52 +4397,80 @@ onBeforeUnmount(() => {
                   >
                     {{ theme.label }}
                     <small v-if="readerTheme === theme.key">当前</small>
-                  </button>
+                  </fluent-button>
                 </div>
               </div>
 
               <div class="reader-block">
                 <div class="reader-color-head">
                   <span>自定义颜色</span>
-                  <button
+                  <fluent-button
                     class="text-btn"
                     type="button"
                     @click="resetReaderColors"
                   >
                     恢复主题
-                  </button>
+                  </fluent-button>
                 </div>
                 <div class="reader-color-grid">
                   <label class="reader-color-field">
                     <small>字体颜色</small>
                     <div class="reader-color-input">
                       <input
+                        ref="readerTextColorInput"
+                        class="native-color-input"
                         :value="readerTextColor || '#111827'"
                         type="color"
-                        @input="applyReaderTextColor(($event.target as HTMLInputElement).value)"
+                        @input="applyReaderTextColor(eventValue($event))"
                       />
-                      <input
+                      <fluent-button
+                        class="reader-color-swatch"
+                        type="button"
+                        aria-label="选择字体颜色"
+                        @click="triggerReaderTextColorPicker"
+                      >
+                        <span
+                          class="reader-color-chip"
+                          :style="{ backgroundColor: readerTextColor || '#111827' }"
+                        ></span>
+                      </fluent-button>
+                      <fluent-text-field
                         :value="readerTextColor"
                         placeholder="跟随主题"
                         type="text"
-                        @input="applyReaderTextColor(($event.target as HTMLInputElement).value)"
-                      />
+                        appearance="outline"
+                        @input="applyReaderTextColor(eventValue($event))"
+                      ></fluent-text-field>
                     </div>
                   </label>
                   <label class="reader-color-field">
                     <small>背景颜色</small>
                     <div class="reader-color-input">
                       <input
+                        ref="readerBackgroundColorInput"
+                        class="native-color-input"
                         :value="readerBackgroundColor || '#ffffff'"
                         type="color"
-                        @input="applyReaderBackgroundColor(($event.target as HTMLInputElement).value)"
+                        @input="applyReaderBackgroundColor(eventValue($event))"
                       />
-                      <input
+                      <fluent-button
+                        class="reader-color-swatch"
+                        type="button"
+                        aria-label="选择背景颜色"
+                        @click="triggerReaderBackgroundColorPicker"
+                      >
+                        <span
+                          class="reader-color-chip"
+                          :style="{ backgroundColor: readerBackgroundColor || '#ffffff' }"
+                        ></span>
+                      </fluent-button>
+                      <fluent-text-field
                         :value="readerBackgroundColor"
                         placeholder="跟随主题"
                         type="text"
-                        @input="applyReaderBackgroundColor(($event.target as HTMLInputElement).value)"
-                      />
+                        appearance="outline"
+                        @input="applyReaderBackgroundColor(eventValue($event))"
+                      ></fluent-text-field>
                     </div>
                   </label>
                 </div>
@@ -4506,14 +4488,18 @@ onBeforeUnmount(() => {
       </template>
     </section>
 
-    <button
-      v-if="showBackToTopButton"
-      class="scroll-top-btn"
-      type="button"
-      title="返回顶部"
-      @click="scrollPageToTop"
-    >
-      ↑ 返回顶部
-    </button>
-  </div>
+    <transition name="scroll-top-fade">
+      <fluent-button
+        v-if="showBackToTopButton"
+        class="scroll-top-btn"
+        appearance="stealth"
+        type="button"
+        title="返回顶部"
+        @click="scrollPageToTop"
+      >
+        <span class="scroll-top-icon" aria-hidden="true" v-html="arrowUpIcon"></span>
+      </fluent-button>
+    </transition>
+  </fluent-design-system-provider>
 </template>
+

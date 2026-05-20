@@ -256,14 +256,30 @@ class BookSourceRecord(BaseModel):
     status: SourceStatus = "unknown"
     statusMessage: str = ""
     lastCheckedAt: str | None = None
+    rulePayload: dict[str, Any] | None = None
     createdAt: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     updatedAt: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
-class BookSourceSearchPayload(BaseModel):
+class BuiltinSiteSearchPayload(BaseModel):
     sourceId: str
     keyword: str = Field(min_length=1, max_length=100)
     limit: int = Field(default=8, ge=1, le=20)
+
+
+class BuiltinSiteSearchResult(BaseModel):
+    title: str
+    author: str | None = None
+    synopsis: str = ""
+    cover: str | None = None
+    sourceUrl: str
+    bookKind: BookKind | None = None
+
+
+class BookSourceSearchPayload(BaseModel):
+    keyword: str = Field(min_length=1, max_length=100)
+    sourceIds: list[str] = Field(default_factory=list)
+    limit: int = Field(default=20, ge=1, le=60)
 
 
 class BookSourceSearchResult(BaseModel):
@@ -273,6 +289,9 @@ class BookSourceSearchResult(BaseModel):
     cover: str | None = None
     sourceUrl: str
     bookKind: BookKind | None = None
+    sourceId: str
+    sourceName: str
+    sourceLanguage: Language | None = None
 
 
 class BookSourceTextImportPayload(BaseModel):
@@ -289,5 +308,6 @@ class BookSourceCheckPayload(BaseModel):
 
 class BookSourceImportResult(BaseModel):
     imported: list[BookSourceRecord] = Field(default_factory=list)
+    updated: list[BookSourceRecord] = Field(default_factory=list)
     duplicates: list[str] = Field(default_factory=list)
     ignored: list[str] = Field(default_factory=list)

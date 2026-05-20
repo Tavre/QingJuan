@@ -7,9 +7,9 @@ import type {
   BookSourceImportResult,
   BookSourceImportTextPayload,
   BookSourceImportUrlPayload,
+  BookSourceRecord,
   BookSourceSearchPayload,
   BookSourceSearchResult,
-  BookSourceRecord,
   BookRecord,
   ChapterActionPayload,
   ChapterContentResponse,
@@ -25,10 +25,6 @@ import { defaultSettings } from '../lib/mock';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:19453';
 const BACKEND_FETCH_RETRY_DELAYS_MS = [250, 500, 1000];
-
-function isTauriRuntime(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-}
 
 function getBaseUrl(): string {
   return (window as Window & { __QINGJUAN_BACKEND__?: string }).__QINGJUAN_BACKEND__ ?? DEFAULT_BASE_URL;
@@ -57,7 +53,7 @@ async function backendFetch(path: string, init?: RequestInit): Promise<Response>
       return await fetch(`${getBaseUrl()}${path}`, init);
     } catch (error) {
       lastError = error;
-      const shouldRetry = isTauriRuntime() && isRetryableBackendFetchError(error) && attempt < BACKEND_FETCH_RETRY_DELAYS_MS.length;
+      const shouldRetry = isRetryableBackendFetchError(error) && attempt < BACKEND_FETCH_RETRY_DELAYS_MS.length;
       if (!shouldRetry) {
         throw error;
       }
@@ -91,13 +87,6 @@ function normalizePreview(preview: PreviewResponse): PreviewResponse {
   return {
     ...preview,
     cover: preview.cover ? toAbsoluteBackendUrl(preview.cover) : preview.cover,
-  };
-}
-
-function normalizeBookSourceSearchResult(result: BookSourceSearchResult): BookSourceSearchResult {
-  return {
-    ...result,
-    cover: result.cover ? toAbsoluteBackendUrl(result.cover) : result.cover,
   };
 }
 
@@ -199,18 +188,6 @@ export async function fetchBookSources(): Promise<BookSourceRecord[]> {
   return await safeJson<BookSourceRecord[]>(response);
 }
 
-export async function searchBookSourceWorks(payload: BookSourceSearchPayload): Promise<BookSourceSearchResult[]> {
-  const response = await backendFetch('/sources/search', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-  const results = await safeJson<BookSourceSearchResult[]>(response);
-  return results.map((item) => normalizeBookSourceSearchResult(item));
-}
-
 export async function importBookSourcesFromUrl(
   payload: BookSourceImportUrlPayload,
 ): Promise<BookSourceImportResult> {
@@ -235,6 +212,23 @@ export async function importBookSourcesFromText(
     body: JSON.stringify(payload),
   });
   return await safeJson<BookSourceImportResult>(response);
+}
+
+export async function searchBookSources(
+  payload: BookSourceSearchPayload,
+): Promise<BookSourceSearchResult[]> {
+  const response = await backendFetch('/sources/search', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  return await safeJson<BookSourceSearchResult[]>(response);
+}
+
+export async function importBookFromSearchResult(payload: AddBookPayload): Promise<BookRecord> {
+  return await importBook(payload);
 }
 
 export async function fetchBookDetail(bookId: string): Promise<BookDetailResponse> {
@@ -413,9 +407,6 @@ export async function fetchSettings(): Promise<TranslationSettings> {
     const response = await backendFetch('/settings');
     return normalizeSettings(await safeJson<TranslationSettings>(response));
   } catch (error) {
-    if (isTauriRuntime()) {
-      throw error;
-    }
     return normalizeSettings(defaultSettings);
   }
 }
@@ -431,9 +422,6 @@ export async function saveSettings(payload: TranslationSettings): Promise<Transl
     });
     return normalizeSettings(await safeJson<TranslationSettings>(response));
   } catch (error) {
-    if (isTauriRuntime()) {
-      throw error;
-    }
     return normalizeSettings(payload);
   }
 }

@@ -163,7 +163,7 @@ DEFAULT_BOOK_SOURCES = [
         id="source-builtin-18comic",
         name="18Comic",
         baseUrl="https://18comic.vip",
-        description="漫画书源，适合按专辑详情页导入到本地书架。",
+        description="内置漫画站点适配，适合按专辑详情页导入到本地书架。",
         bookKind="漫画",
         language="中文",
         sampleUrl="https://18comic.vip",
@@ -314,11 +314,13 @@ def init_db() -> None:
                 status TEXT NOT NULL DEFAULT 'unknown',
                 status_message TEXT NOT NULL DEFAULT '',
                 last_checked_at TEXT,
+                rule_payload TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
             """
         )
+        _ensure_book_source_columns(conn)
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_book_sources_origin_name
@@ -342,6 +344,15 @@ def _ensure_reading_progress_columns(conn: sqlite3.Connection) -> None:
     for column_name, statement in required_columns.items():
         if column_name not in existing_columns:
             conn.execute(statement)
+
+
+def _ensure_book_source_columns(conn: sqlite3.Connection) -> None:
+    existing_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(book_sources)").fetchall()
+    }
+    if "rule_payload" not in existing_columns:
+        conn.execute("ALTER TABLE book_sources ADD COLUMN rule_payload TEXT")
 
 
 def list_books() -> list[BookRecord]:
@@ -426,9 +437,10 @@ def list_book_sources() -> list[BookSourceRecord]:
             SELECT
                 id, name, base_url, description, book_kind, language,
                 enabled, supported, sample_url, tags, origin, import_url,
-                status, status_message, last_checked_at, created_at, updated_at
+                status, status_message, last_checked_at, rule_payload, created_at, updated_at
             FROM book_sources
-            ORDER BY CASE origin WHEN 'builtin' THEN 0 ELSE 1 END, lower(name) ASC, created_at DESC
+            WHERE origin != 'builtin'
+            ORDER BY lower(name) ASC, created_at DESC
             """
         ).fetchall()
     return [_row_to_book_source(row) for row in rows]
@@ -441,7 +453,7 @@ def get_book_source(source_id: str) -> BookSourceRecord | None:
             SELECT
                 id, name, base_url, description, book_kind, language,
                 enabled, supported, sample_url, tags, origin, import_url,
-                status, status_message, last_checked_at, created_at, updated_at
+                status, status_message, last_checked_at, rule_payload, created_at, updated_at
             FROM book_sources
             WHERE id = ?
             """,
@@ -459,8 +471,8 @@ def save_book_source(source: BookSourceRecord) -> BookSourceRecord:
             INSERT INTO book_sources (
                 id, name, base_url, description, book_kind, language,
                 enabled, supported, sample_url, tags, origin, import_url,
-                status, status_message, last_checked_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                status, status_message, last_checked_at, rule_payload, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 base_url = excluded.base_url,
@@ -476,6 +488,7 @@ def save_book_source(source: BookSourceRecord) -> BookSourceRecord:
                 status = excluded.status,
                 status_message = excluded.status_message,
                 last_checked_at = excluded.last_checked_at,
+                rule_payload = excluded.rule_payload,
                 created_at = excluded.created_at,
                 updated_at = excluded.updated_at
             """,
@@ -495,6 +508,7 @@ def save_book_source(source: BookSourceRecord) -> BookSourceRecord:
                 source.status,
                 source.statusMessage,
                 source.lastCheckedAt,
+                json_dumps(source.rulePayload) if source.rulePayload else None,
                 source.createdAt,
                 source.updatedAt,
             ),
@@ -851,8 +865,9 @@ def _row_to_book_source(row: sqlite3.Row | tuple) -> BookSourceRecord:
         status=_normalize_source_status(row[12]),
         statusMessage=row[13] or "",
         lastCheckedAt=row[14],
-        createdAt=row[15],
-        updatedAt=row[16],
+        rulePayload=_normalize_rule_payload(row[15]),
+        createdAt=row[16],
+        updatedAt=row[17],
     )
 
 
@@ -870,6 +885,16 @@ def _normalize_optional_language(value: object) -> str | None:
     return None
 
 
+def _normalize_rule_payload(value: object) -> dict | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        payload = json_loads(value)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _normalize_source_status(value: object) -> str:
     normalized = str(value or "").strip()
     if normalized in {"unknown", "online", "slow", "offline", "unsupported"}:
@@ -884,8 +909,8 @@ def _seed_builtin_book_sources(conn: sqlite3.Connection) -> None:
             INSERT INTO book_sources (
                 id, name, base_url, description, book_kind, language,
                 enabled, supported, sample_url, tags, origin, import_url,
-                status, status_message, last_checked_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                status, status_message, last_checked_at, rule_payload, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 base_url = excluded.base_url,
@@ -915,6 +940,7 @@ def _seed_builtin_book_sources(conn: sqlite3.Connection) -> None:
                 source.status,
                 source.statusMessage,
                 source.lastCheckedAt,
+                json_dumps(source.rulePayload) if source.rulePayload else None,
                 source.createdAt,
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             ),

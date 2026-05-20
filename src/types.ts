@@ -203,23 +203,9 @@ export interface BookSourceRecord {
   status: BookSourceStatus;
   statusMessage: string;
   lastCheckedAt?: string | null;
+  rulePayload?: Record<string, unknown> | null;
   createdAt: string;
   updatedAt: string;
-}
-
-export interface BookSourceSearchPayload {
-  sourceId: string;
-  keyword: string;
-  limit?: number;
-}
-
-export interface BookSourceSearchResult {
-  title: string;
-  author?: string | null;
-  synopsis: string;
-  cover?: string | null;
-  sourceUrl: string;
-  bookKind?: BookKind | null;
 }
 
 export interface BookSourceImportTextPayload {
@@ -230,12 +216,31 @@ export interface BookSourceImportUrlPayload {
   url: string;
 }
 
+export interface BookSourceSearchPayload {
+  keyword: string;
+  sourceIds?: string[];
+  limit?: number;
+}
+
+export interface BookSourceSearchResult {
+  title: string;
+  author?: string | null;
+  synopsis: string;
+  cover?: string | null;
+  sourceUrl: string;
+  bookKind?: BookKind | null;
+  sourceId: string;
+  sourceName: string;
+  sourceLanguage?: Language | null;
+}
+
 export interface BookSourceCheckPayload {
   sourceIds: string[];
 }
 
 export interface BookSourceImportResult {
   imported: BookSourceRecord[];
+  updated: BookSourceRecord[];
   duplicates: string[];
   ignored: string[];
 }

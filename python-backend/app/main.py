@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import argparse
+import ast
 import copy
 import html
 import json
@@ -13,11 +14,14 @@ import mimetypes
 import os
 import re
 import shutil
+import sys
+import unicodedata
 import zipfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 from uuid import uuid4
 
@@ -27,6 +31,7 @@ from bs4 import BeautifulSoup, Tag
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 try:
     from .db import (
@@ -77,11 +82,14 @@ try:
     )
     from .scraper import (
         build_translated_filename,
+        create_book_manifest_only,
         download_book,
         download_selected_chapters,
         load_manifest,
         load_translated_page_payload,
         _fetch_with_edge_cdp,
+        _normalize_search_text,
+        _normalize_source_url,
         preview_from_url,
         repair_18comic_chapter_images,
         save_manifest,
@@ -139,11 +147,14 @@ except ImportError:
     )
     from app.scraper import (
         build_translated_filename,
+        create_book_manifest_only,
         download_book,
         download_selected_chapters,
         load_manifest,
         load_translated_page_payload,
         _fetch_with_edge_cdp,
+        _normalize_search_text,
+        _normalize_source_url,
         preview_from_url,
         repair_18comic_chapter_images,
         save_manifest,
@@ -155,18 +166,32 @@ except ImportError:
 
 LIBRARY_ROOT = DATA_DIR / "library"
 EXPORT_ROOT = DATA_DIR / "exports"
+APP_ROOT = Path(__file__).resolve().parents[2]
+FRONTEND_DIST_DIR = Path(getattr(sys, "_MEIPASS", APP_ROOT)) / "frontend-dist"
+if not FRONTEND_DIST_DIR.exists():
+    FRONTEND_DIST_DIR = APP_ROOT / "dist"
 TASK_QUEUE: asyncio.Queue[str] = asyncio.Queue()
+SOURCE_CHAPTER_CACHE_AHEAD = 20
 SOURCE_IMPORT_HEADERS = {
-    "User-Agent": "QingJuan/0.3.0 BookSourceImporter",
+    "User-Agent": "QingJuan/0.5.0 BookSourceImporter",
     "Accept": "application/json,text/plain;q=0.9,*/*;q=0.8",
 }
 SOURCE_IMPORT_TIMEOUT = 20.0
+LEGADO_SEARCH_DEFAULT_PAGE = "1"
+LEGADO_SEARCH_CONCURRENCY = 12
+LEGADO_SEARCH_SOURCE_TIMEOUT = 3.0
+LEGADO_SEARCH_CONNECT_TIMEOUT = 1.5
+LEGADO_SEARCH_TOTAL_TIMEOUT = 5.0
+LEGADO_SEARCH_RESULT_SETTLE_TIMEOUT = 0.8
 
 async def _run_startup(app_instance: FastAPI) -> None:
     init_db()
     LIBRARY_ROOT.mkdir(parents=True, exist_ok=True)
     EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
     app_instance.state.deleted_book_ids = set()
+    app_instance.state.reader_cache_tasks = set()
+    app_instance.state.reader_cache_keys = set()
+    app_instance.state.reader_cache_locks = {}
     for task in list_pending_tasks():
         task.status = "queued"
         task.message = "等待队列处理"
@@ -178,6 +203,13 @@ async def _run_startup(app_instance: FastAPI) -> None:
 
 
 async def _run_shutdown(app_instance: FastAPI) -> None:
+    reader_cache_tasks = getattr(app_instance.state, "reader_cache_tasks", set())
+    if isinstance(reader_cache_tasks, set):
+        for task in list(reader_cache_tasks):
+            task.cancel()
+        await asyncio.gather(*reader_cache_tasks, return_exceptions=True)
+        reader_cache_tasks.clear()
+
     worker = getattr(app_instance.state, "queue_worker", None)
     if worker is not None:
         worker.cancel()
@@ -196,7 +228,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         await _run_shutdown(app_instance)
 
 
-app = FastAPI(title="青卷后端", version="0.2.1", lifespan=lifespan)
+app = FastAPI(title="青卷后端", version="0.5.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -236,21 +268,13 @@ async def post_source_search(payload: BookSourceSearchPayload) -> list[BookSourc
         raise HTTPException(status_code=400, detail="当前没有可搜索的 Legado 书源，请重新导入包含 searchUrl 与 ruleSearch 的书源")
 
     per_source_limit = max(1, min(payload.limit, max(4, payload.limit // max(1, len(searchable_sources)) + 2)))
+    search_keywords = _fuzzy_source_search_keywords(keyword)
     results: list[BookSourceSearchResult] = []
-    errors: list[str] = []
-    for source in searchable_sources:
-        try:
-            source_results = await _search_legado_source(source, keyword, per_source_limit)
-            results.extend(source_results)
-        except Exception as exc:
-            errors.append(f"{source.name}: {exc}")
-        if len(results) >= payload.limit:
+    for search_keyword in search_keywords:
+        results = await _search_legado_sources(searchable_sources, search_keyword, per_source_limit, payload.limit)
+        if results:
             break
-
-    if not results and errors:
-        raise HTTPException(status_code=400, detail="；".join(errors[:4]))
-
-    return _dedupe_source_search_results(results)[: payload.limit]
+    return _rank_source_search_results(_dedupe_source_search_results(results), keyword)[: payload.limit]
 
 
 @app.post("/builtin-sites/search", response_model=list[BuiltinSiteSearchResult])
@@ -342,6 +366,12 @@ async def get_chapter_content(
     book_dir = _resolve_book_dir(book)
     manifest = _load_or_initialize_manifest(book, book_dir)
     try:
+        manifest = await _ensure_source_chapter_cached(book, book_dir, manifest, chapter_index)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"章节缓存失败：{exc}") from exc
+    try:
         repair_18comic_chapter_images(book_dir, manifest, chapter_index)
     except Exception:
         pass
@@ -361,7 +391,7 @@ async def get_chapter_content(
         else chapter.imageFiles
     )
 
-    return ChapterContentResponse(
+    response = ChapterContentResponse(
         bookId=book.id,
         chapter=chapter,
         content=content,
@@ -371,6 +401,8 @@ async def get_chapter_content(
         imageSources=[_build_book_asset_url(book.id, asset_path) for asset_path in image_assets],
         pageTranslations=page_translations,
     )
+    _schedule_source_chapter_cache_ahead(book, book_dir, manifest, chapter_index)
+    return response
 
 
 @app.get("/books/{book_id}/assets/{asset_path:path}")
@@ -577,7 +609,12 @@ async def post_preview(payload: AddBookPayload) -> PreviewResponse:
 async def post_import(payload: AddBookPayload) -> BookRecord:
     try:
         preview = await preview_from_url(payload)
-        result = await download_book(payload, preview, LIBRARY_ROOT)
+        lightweight_import = bool(payload.sourceId)
+        result = (
+            await create_book_manifest_only(payload, preview, LIBRARY_ROOT)
+            if lightweight_import
+            else await download_book(payload, preview, LIBRARY_ROOT)
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"导入失败：{exc}") from exc
 
@@ -587,7 +624,7 @@ async def post_import(payload: AddBookPayload) -> BookRecord:
         sourceUrl=str(payload.sourceUrl),
         bookKind=preview.bookKind,
         language=payload.language,
-        status="已下载",
+        status="待处理" if lightweight_import else "已下载",
         chapterCount=len(result.chapters),
         translated=False,
         localPath=str(result.local_path),
@@ -993,6 +1030,58 @@ def _build_imported_source_description(group: str, comment: str, search_url: str
     return " | ".join(segment for segment in segments if segment).strip()
 
 
+async def _search_legado_sources(
+    sources: list[BookSourceRecord],
+    keyword: str,
+    per_source_limit: int,
+    total_limit: int,
+) -> list[BookSourceSearchResult]:
+    semaphore = asyncio.Semaphore(LEGADO_SEARCH_CONCURRENCY)
+    results: list[BookSourceSearchResult] = []
+
+    async def search_one(source: BookSourceRecord) -> list[BookSourceSearchResult]:
+        async with semaphore:
+            try:
+                return await _search_legado_source(source, keyword, per_source_limit)
+            except Exception:
+                return []
+
+    tasks = {asyncio.create_task(search_one(source)) for source in sources}
+    loop = asyncio.get_running_loop()
+    total_deadline = loop.time() + LEGADO_SEARCH_TOTAL_TIMEOUT
+    result_deadline: float | None = None
+
+    try:
+        while tasks:
+            deadline = total_deadline
+            if result_deadline is not None:
+                deadline = min(deadline, result_deadline)
+            timeout = max(0.0, deadline - loop.time())
+            if timeout <= 0:
+                break
+
+            done, tasks = await asyncio.wait(tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                break
+
+            for task in done:
+                source_results = await task
+                if source_results:
+                    results.extend(source_results)
+
+            if results and result_deadline is None:
+                result_deadline = loop.time() + LEGADO_SEARCH_RESULT_SETTLE_TIMEOUT
+            if len(results) >= total_limit:
+                break
+    finally:
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    return results
+
+
 def _source_has_search_rule(source: BookSourceRecord) -> bool:
     payload = source.rulePayload or {}
     if not isinstance(payload, dict):
@@ -1012,35 +1101,163 @@ async def _search_legado_source(source: BookSourceRecord, keyword: str, limit: i
     if not search_url or not isinstance(rule_search, dict):
         raise ValueError("书源缺少 searchUrl 或 ruleSearch")
 
-    search_target = _apply_legado_search_url(search_url, keyword, source.baseUrl)
-    if not search_target:
-        raise ValueError("无法解析书源搜索地址")
+    request = _build_legado_search_request(search_url, keyword, source.baseUrl, payload)
+    if not request:
+        raise ValueError("无法解析书源搜索地址，可能需要 Legado 脚本引擎")
+    search_target = str(request.get("url") or "").strip()
     parsed_target = urlparse(search_target)
     if parsed_target.scheme.lower() not in {"http", "https"} or not parsed_target.netloc:
         raise ValueError("书源搜索地址不合法或缺少协议")
 
-    method = str(payload.get("searchMethod") or "GET").upper()
-    body = _build_legado_search_body(payload, keyword)
-    headers = _build_legado_headers(payload)
-    async with httpx.AsyncClient(follow_redirects=True, timeout=25.0, headers=headers) as client:
+    method = str(request.get("method") or "GET").upper()
+    body = request.get("body")
+    headers = request.get("headers") if isinstance(request.get("headers"), dict) else {}
+    charset = str(request.get("charset") or "").strip()
+    timeout = httpx.Timeout(LEGADO_SEARCH_SOURCE_TIMEOUT, connect=LEGADO_SEARCH_CONNECT_TIMEOUT)
+    async with httpx.AsyncClient(follow_redirects=True, timeout=timeout, headers=headers, verify=False) as client:
         if method == "POST":
             response = await client.post(search_target, data=body)
         else:
-            response = await client.get(search_target, params=body if body else None)
+            response = await client.get(search_target)
         response.raise_for_status()
-        html_text = response.text
+        if charset:
+            response.encoding = charset
+        response_text = response.text
 
-    return _parse_legado_search_results(source, html_text, str(response.url), rule_search, limit)
+    return _parse_legado_search_results(source, response_text, str(response.url), rule_search, limit)
+
+
+def _build_legado_search_request(
+    search_url: str,
+    keyword: str,
+    base_url: str,
+    payload: dict[str, object],
+) -> dict[str, object] | None:
+    raw_target = _extract_legado_search_target(search_url, base_url)
+    if not raw_target:
+        return None
+
+    target_with_placeholders = _replace_legado_placeholders(raw_target, keyword)
+    target_url, options = _split_legado_request_options(target_with_placeholders)
+    resolved_url = _resolve_legado_search_url(target_url, base_url)
+    if not resolved_url:
+        return None
+
+    headers = _build_legado_headers(payload)
+    option_headers = options.get("headers")
+    if isinstance(option_headers, dict):
+        for key, value in option_headers.items():
+            headers[str(key)] = str(value)
+
+    method = str(options.get("method") or payload.get("searchMethod") or "GET").upper()
+    body: object | None = None
+    option_body = options.get("body")
+    if option_body is not None:
+        body = _replace_legado_placeholders(str(option_body), keyword)
+    elif method == "POST":
+        body = _build_legado_search_body(payload, keyword)
+
+    return {
+        "url": resolved_url,
+        "method": method,
+        "body": body,
+        "headers": headers,
+        "charset": str(options.get("charset") or "").strip(),
+    }
+
+
+def _extract_legado_search_target(search_url: str, base_url: str) -> str:
+    target = _normalize_form_text(search_url).strip()
+    if not target:
+        return ""
+
+    if target.startswith("@js:"):
+        script = target[4:].strip()
+        extracted = _extract_legado_url_from_js(script, base_url)
+        return extracted or ""
+
+    script_end = target.rfind("</js>")
+    if script_end >= 0:
+        suffix = target[script_end + len("</js>") :].strip()
+        if suffix:
+            return suffix
+        script_start = target.find("<js>")
+        if script_start >= 0:
+            extracted = _extract_legado_url_from_js(target[script_start + len("<js>") : script_end], base_url)
+            return extracted or ""
+
+    return target.replace("{{k}}", "{{key}}")
+
+
+def _extract_legado_url_from_js(script: str, base_url: str) -> str:
+    base_expr = re.escape(base_url.rstrip("/"))
+    candidates: list[str] = []
+
+    for pattern in (
+        r"url\s*=\s*([\"'])(?P<url>https?://.*?)\1",
+        r"return\s+`(?P<url>https?://[^`]+)`",
+        r"return\s+([\"'])(?P<url>https?://.*?)\1",
+    ):
+        for match in re.finditer(pattern, script, flags=re.IGNORECASE | re.DOTALL):
+            candidates.append(str(match.group("url")).strip())
+
+    for match in re.finditer(r"url\s*=\s*baseUrl\s*\+\s*([\"'])(?P<path>.*?)\1", script, flags=re.DOTALL):
+        candidates.append(f"{base_url.rstrip('/')}{match.group('path').strip()}")
+
+    for match in re.finditer(rf"([\"'])({base_expr}[^\"']*)\1", script, flags=re.DOTALL):
+        candidates.append(str(match.group(2)).strip())
+
+    return _pick_legado_js_url_candidate(candidates)
+
+
+def _pick_legado_js_url_candidate(candidates: list[str]) -> str:
+    cleaned: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in cleaned:
+            cleaned.append(candidate)
+    if not cleaned:
+        return ""
+
+    for candidate in cleaned:
+        normalized = candidate.lower()
+        if "{{key}}" in candidate and ("query=" in normalized or "keyword=" in normalized or "search" in normalized):
+            return candidate
+    for candidate in cleaned:
+        if "{{key}}" in candidate and "book_id={{key}}" not in candidate:
+            return candidate
+    return cleaned[0]
+
+
+def _split_legado_request_options(target: str) -> tuple[str, dict[str, object]]:
+    match = re.match(r"^(?P<url>.*?),\s*(?P<options>\{.*\})\s*$", target, flags=re.DOTALL)
+    if not match:
+        return target.strip(), {}
+
+    options: dict[str, object] = {}
+    try:
+        parsed = ast.literal_eval(match.group("options"))
+        if isinstance(parsed, dict):
+            options = parsed
+    except (SyntaxError, ValueError):
+        options = {}
+    return match.group("url").strip(), options
+
+
+def _resolve_legado_search_url(target: str, base_url: str) -> str:
+    normalized = target.strip()
+    if not normalized:
+        return ""
+    if re.match(r"^https?://", normalized, flags=re.IGNORECASE):
+        return normalized
+    normalized_base = base_url.strip().split("##", 1)[0].rstrip("/")
+    if not normalized_base:
+        return normalized
+    return urljoin(f"{normalized_base}/", normalized)
 
 
 def _apply_legado_search_url(search_url: str, keyword: str, base_url: str) -> str:
-    replaced = _replace_legado_placeholders(search_url.strip(), keyword)
-    if not replaced:
-        return ""
-    normalized_base = base_url.strip()
-    if not normalized_base:
-        return replaced
-    return urljoin(f"{normalized_base.rstrip('/')}/", replaced)
+    request = _build_legado_search_request(search_url, keyword, base_url, {})
+    return str(request.get("url") or "") if request else ""
 
 
 def _build_legado_search_body(payload: dict[str, object], keyword: str) -> dict[str, str]:
@@ -1049,30 +1266,37 @@ def _build_legado_search_body(payload: dict[str, object], keyword: str) -> dict[
     if isinstance(request_body, dict):
         for key, value in request_body.items():
             body[str(key)] = _replace_legado_placeholders(str(value), keyword)
-    body.setdefault("key", keyword)
-    body.setdefault("keyword", keyword)
     return body
 
 
 def _replace_legado_placeholders(value: str, keyword: str) -> str:
     normalized = value.strip()
-    replacements = (
-        "{{key}}",
-        "{{searchKey}}",
-        "{{keyword}}",
-        "{{searchword}}",
-        "{key}",
-        "{keyword}",
-        "$key",
-        "$keyword",
-    )
-    for token in replacements:
-        normalized = normalized.replace(token, keyword)
+    encoded_keyword = quote(keyword)
+    replacements = {
+        "{{key}}": encoded_keyword,
+        "{{searchKey}}": encoded_keyword,
+        "{{keyword}}": encoded_keyword,
+        "{{searchword}}": encoded_keyword,
+        "{{k}}": encoded_keyword,
+        "{{page}}": LEGADO_SEARCH_DEFAULT_PAGE,
+        "{key}": encoded_keyword,
+        "{keyword}": encoded_keyword,
+        "$key": encoded_keyword,
+        "$keyword": encoded_keyword,
+    }
+    for token, replacement in replacements.items():
+        normalized = normalized.replace(token, replacement)
+    normalized = re.sub(r"\{\{\s*\(?\s*page\s*-\s*1\s*\)?\s*\*\s*\d+\s*\}\}", "0", normalized)
+    normalized = re.sub(r"\{\{\s*page\s*\}\}", LEGADO_SEARCH_DEFAULT_PAGE, normalized)
     return normalized
 
 
 def _build_legado_headers(payload: dict[str, object]) -> dict[str, str]:
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
+    }
     custom_headers = payload.get("headers")
     if isinstance(custom_headers, dict):
         for key, value in custom_headers.items():
@@ -1082,6 +1306,77 @@ def _build_legado_headers(payload: dict[str, object]) -> dict[str, str]:
 
 def _parse_legado_search_results(
     source: BookSourceRecord,
+    response_text: str,
+    base_url: str,
+    rule_search: dict[str, object],
+    limit: int,
+) -> list[BookSourceSearchResult]:
+    list_selector = _find_first_string(rule_search, ("bookList", "list", "searchList", "items"))
+    if list_selector.strip().startswith("$"):
+        return _parse_legado_json_search_results(source, response_text, base_url, rule_search, limit)
+    return _parse_legado_html_search_results(source, response_text, base_url, rule_search, limit)
+
+
+def _parse_legado_json_search_results(
+    source: BookSourceRecord,
+    response_text: str,
+    base_url: str,
+    rule_search: dict[str, object],
+    limit: int,
+) -> list[BookSourceSearchResult]:
+    try:
+        payload = json.loads(response_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("书源返回内容不是合法 JSON") from exc
+
+    list_selector = _find_first_string(rule_search, ("bookList", "list", "searchList", "items"))
+    item_values = _extract_legado_json_values(payload, list_selector)
+    item_nodes: list[object] = []
+    for item in item_values:
+        if isinstance(item, list):
+            item_nodes.extend(item)
+        else:
+            item_nodes.append(item)
+    if not item_nodes:
+        raise ValueError("未找到搜索结果列表")
+
+    title_selector = _find_first_string(rule_search, ("name", "title", "bookName"))
+    author_selector = _find_first_string(rule_search, ("author", "bookAuthor"))
+    intro_selector = _find_first_string(rule_search, ("intro", "desc", "description"))
+    cover_selector = _find_first_string(rule_search, ("coverUrl", "cover", "image"))
+    book_url_selector = _find_first_string(rule_search, ("bookUrl", "url", "detailUrl"))
+
+    results: list[BookSourceSearchResult] = []
+    seen: set[str] = set()
+    for item in item_nodes:
+        title = _normalize_form_text(_extract_legado_json_text(item, title_selector)).strip()
+        source_url = _extract_legado_json_url(item, book_url_selector, base_url)
+        if not title or not source_url:
+            continue
+        normalized_url = _normalize_source_url(source_url)
+        if normalized_url in seen:
+            continue
+        seen.add(normalized_url)
+        results.append(
+            BookSourceSearchResult(
+                title=title,
+                author=_extract_legado_json_text(item, author_selector) or None,
+                synopsis=_normalize_search_text(_extract_legado_json_text(item, intro_selector)),
+                cover=_extract_legado_json_url(item, cover_selector, base_url),
+                sourceUrl=normalized_url,
+                bookKind=source.bookKind,
+                sourceId=source.id,
+                sourceName=source.name,
+                sourceLanguage=source.language,
+            )
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _parse_legado_html_search_results(
+    source: BookSourceRecord,
     html_text: str,
     base_url: str,
     rule_search: dict[str, object],
@@ -1089,7 +1384,7 @@ def _parse_legado_search_results(
 ) -> list[BookSourceSearchResult]:
     soup = BeautifulSoup(html_text, "html.parser")
     list_selector = _find_first_string(rule_search, ("bookList", "list", "searchList", "items"))
-    item_nodes = soup.select(list_selector) if list_selector else soup.select("a[href], article, li, .book, .item, .result")
+    item_nodes = _select_legado_nodes(soup, list_selector) if list_selector else soup.select("a[href], article, li, .book, .item, .result")
     if not item_nodes:
         raise ValueError("未找到搜索结果列表")
 
@@ -1142,34 +1437,342 @@ def _find_first_string(payload: dict[str, object], keys: tuple[str, ...]) -> str
 
 
 def _pick_legado_node_text(node, selector: str) -> str:
-    if not selector:
-        return ""
-    try:
-        target = node.select_one(selector)
-    except Exception:
-        target = None
-    if target is None:
-        return ""
-    if target.has_attr("text"):
-        return str(target.get("text") or "").strip()
-    return target.get_text(" ", strip=True)
+    value = _extract_legado_node_value(node, selector, prefer_url=False)
+    return _normalize_form_text(value).strip()
 
 
 def _pick_legado_node_url(node, selector: str, base_url: str) -> str:
-    if not selector:
+    value = _extract_legado_node_value(node, selector, prefer_url=True)
+    if not value:
         return ""
+    if value.startswith("http") or value.startswith("/"):
+        return urljoin(base_url, value)
+    return ""
+
+
+def _clean_legado_selector(selector: str) -> str:
+    cleaned = selector.split("@js:", 1)[0].strip()
+    cleaned = cleaned.split("##", 1)[0].strip()
+    return cleaned
+
+
+def _select_legado_nodes(root: Any, selector: str) -> list[Tag]:
+    cleaned = _clean_legado_selector(selector)
+    if not cleaned:
+        return []
+    if cleaned.startswith("@css:"):
+        cleaned = cleaned[5:].strip()
+        try:
+            return [node for node in root.select(cleaned) if isinstance(node, Tag)]
+        except Exception:
+            return []
+    if "@" not in cleaned:
+        try:
+            return [node for node in root.select(cleaned) if isinstance(node, Tag)]
+        except Exception:
+            return []
+
+    current: list[Any] = [root]
+    for raw_segment in cleaned.split("@"):
+        segment = raw_segment.strip()
+        if not segment:
+            continue
+        next_nodes: list[Any] = []
+        if segment.startswith("css:"):
+            css_selector = segment[4:].strip()
+            for node in current:
+                next_nodes.extend(node.select(css_selector))
+        elif segment.startswith("class."):
+            next_nodes = _select_legado_class_segment(current, segment)
+        elif segment.startswith("tag."):
+            next_nodes = _select_legado_tag_segment(current, segment[4:])
+        elif segment in {"text", "textNodes", "href", "src"}:
+            break
+        elif segment.startswith("#") or segment.startswith("."):
+            for node in current:
+                next_nodes.extend(node.select(segment))
+        else:
+            next_nodes = _select_legado_tag_segment(current, segment)
+        current = [node for node in next_nodes if isinstance(node, Tag)]
+        if not current:
+            break
+    return [node for node in current if isinstance(node, Tag)]
+
+
+def _select_legado_class_segment(nodes: list[Any], segment: str) -> list[Any]:
+    parts = segment.split(".")
+    if len(parts) < 2:
+        return []
+    class_name = parts[1]
+    index = _parse_legado_index(parts[2] if len(parts) > 2 else "")
+    matches: list[Any] = []
+    for node in nodes:
+        matches.extend(node.find_all(class_=class_name))
+    return _pick_legado_index(matches, index)
+
+
+def _select_legado_tag_segment(nodes: list[Any], segment: str) -> list[Any]:
+    exclude_index: int | None = None
+    if "!" in segment:
+        segment, excluded = segment.split("!", 1)
+        exclude_index = _parse_legado_index(excluded)
+    parts = segment.split(".")
+    tag_name = parts[0]
+    index = _parse_legado_index(parts[1] if len(parts) > 1 else "")
+    matches: list[Any] = []
+    for node in nodes:
+        if isinstance(node, Tag):
+            matches.extend(node.find_all(tag_name))
+    if exclude_index is not None and 0 <= exclude_index < len(matches):
+        matches = [item for idx, item in enumerate(matches) if idx != exclude_index]
+    return _pick_legado_index(matches, index)
+
+
+def _parse_legado_index(value: str) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pick_legado_index(nodes: list[Any], index: int | None) -> list[Any]:
+    if index is None:
+        return nodes
+    if -len(nodes) <= index < len(nodes):
+        return [nodes[index]]
+    return []
+
+
+def _extract_legado_node_value(node: Any, selector: str, *, prefer_url: bool) -> str:
+    cleaned = _clean_legado_selector(selector)
+    if not cleaned:
+        return ""
+    parts = [part.strip() for part in cleaned.split("&&") if part.strip()]
+    for part in parts or [cleaned]:
+        value = _extract_legado_node_value_once(node, part, prefer_url=prefer_url)
+        if value:
+            return value
+    return ""
+
+
+def _extract_legado_node_value_once(node: Any, selector: str, *, prefer_url: bool) -> str:
+    if "@" in selector:
+        segments = [segment.strip() for segment in selector.split("@") if segment.strip()]
+        terminal = segments[-1] if segments else ""
+        path = "@".join(segments[:-1]) if terminal in {"text", "textNodes", "href", "src"} else selector
+        terminal = terminal if terminal in {"text", "textNodes", "href", "src"} else "href" if prefer_url else "text"
+        targets = _select_legado_nodes(node, path)
+        target = targets[0] if targets else None
+        if isinstance(target, Tag):
+            return _value_from_legado_target(target, terminal)
+        return ""
+
     try:
         target = node.select_one(selector)
     except Exception:
         target = None
     if target is None:
         return ""
-    for attr in ("href", "src", "data-src", "data-original"):
-        value = str(target.get(attr) or "").strip()
-        if value:
-            return urljoin(base_url, value)
-    text = target.get_text(" ", strip=True)
-    return urljoin(base_url, text) if text.startswith("http") or text.startswith("/") else ""
+    if prefer_url:
+        for attr in ("href", "src", "data-src", "data-original"):
+            value = str(target.get(attr) or "").strip()
+            if value:
+                return value
+    return target.get_text(" ", strip=True)
+
+
+def _value_from_legado_target(target: Tag, terminal: str) -> str:
+    if terminal in {"text", "textNodes"}:
+        return target.get_text(" ", strip=True)
+    value = str(target.get(terminal) or "").strip()
+    if value:
+        return value
+    if terminal == "href":
+        for attr in ("src", "data-src", "data-original"):
+            value = str(target.get(attr) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _extract_legado_json_values(payload: object, selector: str) -> list[object]:
+    cleaned = _clean_legado_selector(selector)
+    for part in [part.strip() for part in cleaned.split("&&") if part.strip()]:
+        values = _extract_legado_json_path(payload, part)
+        if values:
+            return values
+    return []
+
+
+def _extract_legado_json_text(item: object, selector: str) -> str:
+    values = _extract_legado_json_values(item, selector)
+    if not values:
+        return ""
+    value = values[0]
+    if isinstance(value, (dict, list)):
+        return ""
+    return _normalize_form_text(str(value)).strip()
+
+
+def _extract_legado_json_url(item: object, selector: str, base_url: str) -> str:
+    cleaned = _clean_legado_selector(selector)
+    if "{{$." in cleaned:
+        value = re.sub(
+            r"\{\{(\$\.[^{}]+)\}\}",
+            lambda match: quote(_first_json_path_text(item, match.group(1))),
+            cleaned,
+        )
+    else:
+        value = _extract_legado_json_text(item, cleaned)
+    if not value:
+        return ""
+    return urljoin(base_url, value)
+
+
+def _first_json_path_text(item: object, selector: str) -> str:
+    values = _extract_legado_json_path(item, selector)
+    if not values:
+        return ""
+    value = values[0]
+    return "" if isinstance(value, (dict, list)) else str(value)
+
+
+def _extract_legado_json_path(payload: object, selector: str) -> list[object]:
+    path = selector.strip()
+    if not path.startswith("$"):
+        return []
+    path = path.split("##", 1)[0].strip()
+    if path.startswith("$.."):
+        key_path = path[3:]
+        key_name, rest = _split_json_path_head(key_path)
+        matches = _find_json_key_recursive(payload, key_name)
+        if rest:
+            results: list[object] = []
+            for match in matches:
+                results.extend(_walk_json_path(match, rest))
+            return results
+        return matches
+    if path.startswith("$."):
+        return _walk_json_path(payload, path[2:])
+    return [payload]
+
+
+def _split_json_path_head(path: str) -> tuple[str, str]:
+    if "." not in path:
+        return path, ""
+    head, rest = path.split(".", 1)
+    return head, rest
+
+
+def _find_json_key_recursive(payload: object, key: str) -> list[object]:
+    key_name, index = _parse_json_key_index(key)
+    results: list[object] = []
+    if isinstance(payload, dict):
+        if key_name in payload:
+            value = payload[key_name]
+            results.extend(_apply_json_index(value, index))
+        for value in payload.values():
+            results.extend(_find_json_key_recursive(value, key))
+    elif isinstance(payload, list):
+        for value in payload:
+            results.extend(_find_json_key_recursive(value, key))
+    return results
+
+
+def _walk_json_path(payload: object, path: str) -> list[object]:
+    current: list[object] = [payload]
+    for segment in [segment for segment in path.split(".") if segment]:
+        key_name, index = _parse_json_key_index(segment)
+        next_values: list[object] = []
+        for value in current:
+            if isinstance(value, dict) and key_name in value:
+                next_values.extend(_apply_json_index(value[key_name], index))
+            elif isinstance(value, list) and key_name == "*":
+                next_values.extend(value)
+        current = next_values
+        if not current:
+            break
+    return current
+
+
+def _parse_json_key_index(segment: str) -> tuple[str, int | str | None]:
+    match = re.match(r"^(?P<key>[^\[]+)(?:\[(?P<index>\*|\d+)\])?$", segment)
+    if not match:
+        return segment, None
+    raw_index = match.group("index")
+    if raw_index == "*":
+        return match.group("key"), "*"
+    return match.group("key"), int(raw_index) if raw_index is not None else None
+
+
+def _apply_json_index(value: object, index: int | str | None) -> list[object]:
+    if index == "*":
+        return list(value) if isinstance(value, list) else []
+    if isinstance(index, int):
+        if isinstance(value, list) and 0 <= index < len(value):
+            return [value[index]]
+        return []
+    return [value]
+
+
+def _normalize_fuzzy_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(char for char in normalized if char.isalnum() or "\u4e00" <= char <= "\u9fff")
+
+
+def _is_fuzzy_subsequence(needle: str, haystack: str) -> bool:
+    if not needle:
+        return True
+    cursor = 0
+    for char in needle:
+        cursor = haystack.find(char, cursor)
+        if cursor < 0:
+            return False
+        cursor += len(char)
+    return True
+
+
+def _fuzzy_match_score(haystack: str, keyword: str) -> int:
+    normalized_haystack = _normalize_fuzzy_text(haystack)
+    normalized_keyword = _normalize_fuzzy_text(keyword)
+    if not normalized_keyword:
+        return 0
+    if normalized_haystack == normalized_keyword:
+        return 100
+    if normalized_haystack.startswith(normalized_keyword):
+        return 80
+    if normalized_keyword in normalized_haystack:
+        return 60
+    if _is_fuzzy_subsequence(normalized_keyword, normalized_haystack):
+        return 30
+    return 0
+
+
+def _source_result_match_score(result: BookSourceSearchResult, keyword: str) -> int:
+    title_score = _fuzzy_match_score(result.title, keyword)
+    author_score = _fuzzy_match_score(result.author or "", keyword)
+    synopsis_score = _fuzzy_match_score(result.synopsis, keyword)
+    source_score = _fuzzy_match_score(result.sourceName, keyword)
+    return max(title_score, author_score, synopsis_score // 2, source_score // 2)
+
+
+def _rank_source_search_results(results: list[BookSourceSearchResult], keyword: str) -> list[BookSourceSearchResult]:
+    return sorted(
+        results,
+        key=lambda result: (
+            _source_result_match_score(result, keyword),
+            -len(result.title),
+        ),
+        reverse=True,
+    )
+
+
+def _fuzzy_source_search_keywords(keyword: str) -> list[str]:
+    candidates = [keyword.strip()]
+    normalized = _normalize_fuzzy_text(keyword)
+    if normalized and normalized not in candidates:
+        candidates.append(normalized)
+    return [candidate for index, candidate in enumerate(candidates) if candidate and candidate not in candidates[:index]]
 
 
 def _dedupe_source_search_results(results: list[BookSourceSearchResult]) -> list[BookSourceSearchResult]:
@@ -1391,6 +1994,144 @@ def _load_single_chapter(book: BookRecord, chapter_index: int, mode: str = "tran
     return chapter, chapter_path
 
 
+def _chapter_needs_source_cache(book_dir: Path, chapter: dict | None) -> bool:
+    if not isinstance(chapter, dict):
+        return False
+    source_url = str(chapter.get("url") or "").strip()
+    if not source_url:
+        return False
+    filename = str(chapter.get("file_name") or "").strip()
+    if not filename:
+        return True
+    return not (book_dir / filename).exists()
+
+
+def _source_chapter_cache_indexes(
+    book_dir: Path,
+    manifest: dict,
+    chapter_index: int,
+    *,
+    ahead_count: int = SOURCE_CHAPTER_CACHE_AHEAD,
+) -> list[int]:
+    lookup = _build_manifest_lookup(manifest)
+    end_index = chapter_index + max(0, ahead_count)
+    indexes: list[int] = []
+    for index in range(chapter_index, end_index + 1):
+        if _chapter_needs_source_cache(book_dir, lookup.get(index)):
+            indexes.append(index)
+    return indexes
+
+
+def _get_reader_cache_locks() -> dict[str, asyncio.Lock]:
+    locks = getattr(app.state, "reader_cache_locks", None)
+    if not isinstance(locks, dict):
+        locks = {}
+        app.state.reader_cache_locks = locks
+    return locks
+
+
+def _get_reader_cache_keys() -> set[str]:
+    keys = getattr(app.state, "reader_cache_keys", None)
+    if not isinstance(keys, set):
+        keys = set()
+        app.state.reader_cache_keys = keys
+    return keys
+
+
+def _reader_cache_key(book_id: str, chapter_index: int) -> str:
+    return f"{book_id}:{chapter_index}"
+
+
+def _reader_cache_lock_for_book(book_id: str) -> asyncio.Lock:
+    locks = _get_reader_cache_locks()
+    lock = locks.get(book_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        locks[book_id] = lock
+    return lock
+
+
+async def _cache_one_source_chapter(book: BookRecord, book_dir: Path, chapter_index: int) -> dict:
+    lock = _reader_cache_lock_for_book(book.id)
+    async with lock:
+        if _is_book_deleted(book.id):
+            raise HTTPException(status_code=404, detail="书籍已被删除")
+        manifest = _load_or_initialize_manifest(book, book_dir)
+        lookup = _build_manifest_lookup(manifest)
+        if not _chapter_needs_source_cache(book_dir, lookup.get(chapter_index)):
+            return manifest
+        await download_selected_chapters(
+            book_dir=book_dir,
+            manifest=manifest,
+            chapter_indexes=[chapter_index],
+            concurrency=1,
+        )
+        _refresh_book_state(book)
+        return _load_or_initialize_manifest(book, book_dir)
+
+
+async def _ensure_source_chapter_cached(
+    book: BookRecord,
+    book_dir: Path,
+    manifest: dict,
+    chapter_index: int,
+) -> dict:
+    lookup = _build_manifest_lookup(manifest)
+    if not _chapter_needs_source_cache(book_dir, lookup.get(chapter_index)):
+        return manifest
+    return await _cache_one_source_chapter(book, book_dir, chapter_index)
+
+
+async def _cache_source_chapters_ahead(book: BookRecord, book_dir: Path, chapter_indexes: list[int]) -> None:
+    keys = _get_reader_cache_keys()
+    try:
+        for chapter_index in chapter_indexes:
+            if _is_book_deleted(book.id):
+                return
+            try:
+                await _cache_one_source_chapter(book, book_dir, chapter_index)
+            except Exception as exc:
+                print(f"[qingjuan-reader-cache] {book.id} chapter {chapter_index} failed: {exc}")
+    finally:
+        for chapter_index in chapter_indexes:
+            keys.discard(_reader_cache_key(book.id, chapter_index))
+
+
+def _track_reader_cache_task(task: asyncio.Task[None]) -> None:
+    tasks = getattr(app.state, "reader_cache_tasks", None)
+    if not isinstance(tasks, set):
+        tasks = set()
+        app.state.reader_cache_tasks = tasks
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+
+
+def _schedule_source_chapter_cache_ahead(
+    book: BookRecord,
+    book_dir: Path,
+    manifest: dict,
+    chapter_index: int,
+) -> None:
+    candidate_indexes = _source_chapter_cache_indexes(book_dir, manifest, chapter_index)
+    if not candidate_indexes:
+        return
+
+    keys = _get_reader_cache_keys()
+    chapter_indexes: list[int] = []
+    for index in candidate_indexes:
+        key = _reader_cache_key(book.id, index)
+        if key in keys:
+            continue
+        keys.add(key)
+        chapter_indexes.append(index)
+
+    if not chapter_indexes:
+        return
+
+    task = asyncio.create_task(_cache_source_chapters_ahead(book, book_dir, chapter_indexes))
+    _track_reader_cache_task(task)
+
+
 def _build_manifest_lookup(manifest: dict) -> dict[int, dict]:
     payload = manifest.get("chapters", [])
     lookup: dict[int, dict] = {}
@@ -1575,7 +2316,15 @@ def _normalize_progress_anchor_type(value: str | None) -> str:
 def _refresh_book_state(book: BookRecord, chapters: list[ChapterRecord] | None = None) -> BookRecord:
     current_chapters = chapters or _load_chapter_records(book)
     translated = any(chapter.translated for chapter in current_chapters)
-    status = "已完成" if current_chapters and all(chapter.translated for chapter in current_chapters) else "已下载"
+    downloaded_count = len([chapter for chapter in current_chapters if chapter.downloaded])
+    if current_chapters and all(chapter.translated for chapter in current_chapters):
+        status = "已完成"
+    elif current_chapters and downloaded_count == len(current_chapters):
+        status = "已下载"
+    elif downloaded_count > 0:
+        status = "解析中"
+    else:
+        status = "待处理"
     if (
         book.chapterCount == len(current_chapters)
         and book.translated == translated
@@ -2131,6 +2880,10 @@ async def _process_translate_task(task: TaskRecord, book: BookRecord) -> None:
 
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+if FRONTEND_DIST_DIR.exists():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST_DIR, html=True), name="frontend")
 
 
 if __name__ == "__main__":

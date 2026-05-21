@@ -1,33 +1,47 @@
-.ace-tool/
-.codex-tmp/
+# Dependencies
 node_modules/
-dist/
-.vite/
-.idea/
-.vscode/
-target/
-src-tauri/target/
-src-tauri/gen/
-src-tauri/binaries/
 python-backend/.venv/
-python-backend/__pycache__/
-python-backend/app/__pycache__/
-python-backend/data/
+
+# Build outputs
+dist/
+release/
+.vite/
+target/
 python-backend/build/
 python-backend/dist/
 python-backend/*.spec
-*.log
-!.keep
-ui示例/
-qj_icon.png
-qj_icon2.png
+
+# Runtime data and caches
+python-backend/data/
+python-backend/tmp/
 tmp/
-debug_bubble_cleanup/
+__pycache__/
+python-backend/__pycache__/
+python-backend/app/__pycache__/
+
+# Logs
+*.log
+python-backend/sidecar-*.log
+
+# Local editor / agent state
+.ace-tool/
+.codex-tmp/
+.claude/
+.idea/
+.vscode/
+
+# Legacy Tauri outputs
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/
+
+# Local-only assets / scratch files
+ui示例/
 debug_bubble_cleanup/
 debug_masks/
 debug_masks2/
-.gitignore
-.codex-tmp/
-.claude/
+qj_icon.png
 0012.png
 key.txt
+
+!.keep

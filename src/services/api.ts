@@ -23,11 +23,18 @@ import type {
 } from '../types';
 import { defaultSettings } from '../lib/mock';
 
-const DEFAULT_BASE_URL = 'http://127.0.0.1:19453';
+const DEFAULT_BACKEND_PORT = '19453';
 const BACKEND_FETCH_RETRY_DELAYS_MS = [250, 500, 1000];
 
+function defaultBackendBaseUrl(): string {
+  if (window.location.protocol.startsWith('http') && window.location.port === DEFAULT_BACKEND_PORT) {
+    return window.location.origin;
+  }
+  return `http://${window.location.hostname || '127.0.0.1'}:${DEFAULT_BACKEND_PORT}`;
+}
+
 function getBaseUrl(): string {
-  return (window as Window & { __QINGJUAN_BACKEND__?: string }).__QINGJUAN_BACKEND__ ?? DEFAULT_BASE_URL;
+  return (window as Window & { __QINGJUAN_BACKEND__?: string }).__QINGJUAN_BACKEND__ ?? defaultBackendBaseUrl();
 }
 
 function sleep(ms: number): Promise<void> {

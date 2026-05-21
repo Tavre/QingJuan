@@ -14,6 +14,9 @@ export interface AddBookPayload {
   title?: string;
   language: Language;
   needTranslation: boolean;
+  sourceId?: string;
+  synopsis?: string;
+  cover?: string | null;
 }
 
 export interface ChapterPreview {

@@ -179,7 +179,40 @@ npm run build
 npm run preview
 ```
 
-生产环境仍需要单独部署或启动 FastAPI 后端，并通过 `VITE_QINGJUAN_BACKEND_URL` 指向对应服务。
+生产环境可以单独部署 `dist/` 静态前端并启动 FastAPI 后端；也可以直接使用 `npm run build:desktop` 生成的桌面端程序，由 FastAPI 后端托管前端静态资源。
+
+## 桌面端与移动端打包
+
+一次性生成桌面端和移动端产物：
+
+```bash
+npm run build:release
+```
+
+也可以只生成其中一端：
+
+```bash
+npm run build:desktop
+npm run build:mobile
+```
+
+打包产物：
+
+- 桌面端：`release/desktop/`
+- 移动端 Web / PWA：`release/mobile/`
+
+桌面端说明：
+
+- `release/desktop/qingjuan-desktop.exe` 是集成前端静态资源的 FastAPI 后端程序
+- 双击 `release/desktop/启动青卷.bat` 会启动服务并打开 `http://127.0.0.1:19453`
+- 如需让手机访问电脑上的服务，双击 `release/desktop/启动青卷-局域网.bat`，然后在手机浏览器打开 `http://电脑局域网IP:19453`
+
+移动端说明：
+
+- `release/mobile/` 是可部署到静态服务器的移动 Web / PWA 产物，不包含 Python 后端
+- 手机端需要连接一台已启动的青卷后端；默认会连接当前访问主机的 `19453` 端口
+- 手机浏览器打开后，可通过浏览器菜单添加到主屏幕作为 PWA 使用
+- 当前没有引入 Android / iOS 原生壳工程，因此不会生成 APK / IPA
 
 ## 常用命令
 
@@ -188,6 +221,9 @@ npm run test
 npm run test -- frontend
 npm run test -- backend
 npm run build
+npm run build:release
+npm run build:desktop
+npm run build:mobile
 python -m py_compile python-backend/app/main.py python-backend/app/db.py python-backend/app/models.py python-backend/app/scraper.py
 ```
 
@@ -225,9 +261,10 @@ npm run test -- backend
 ## 当前运行架构
 
 - 前端是普通浏览器应用，由 Vite 开发服务器或 `dist/` 静态产物提供
-- 后端是独立 FastAPI 服务，默认监听 `127.0.0.1:19453`
+- 后端是独立 FastAPI 服务，默认监听 `127.0.0.1:19453`，生产包中也可直接托管前端静态资源
 - 前端启动时会等待后端 `/health` 接口可用，再初始化书架与设置
-- 当前脚本不再构建 Tauri sidecar，也不再提供桌面窗口控制
+- 桌面端打包基于 PyInstaller，将 FastAPI 后端与前端静态资源合并为本地服务程序
+- 移动端打包为 Web / PWA 静态产物，仍需要连接可访问的青卷后端
 
 ## Roadmap
 

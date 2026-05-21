@@ -61,6 +61,9 @@ class AddBookPayload(BaseModel):
     title: str | None = None
     language: Language
     needTranslation: bool = False
+    sourceId: str | None = None
+    synopsis: str | None = None
+    cover: str | None = None
 
 
 class ChapterPreview(BaseModel):

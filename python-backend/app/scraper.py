@@ -914,6 +914,226 @@ def _extract_chapters(soup: BeautifulSoup, base_url: str) -> list[ChapterPreview
     return items[:500]
 
 
+def _clean_payload_metadata(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _is_generic_synopsis(value: str) -> bool:
+    normalized = value.strip()
+    return not normalized or normalized == "未抓取到简介，建议后续针对目标站点补充规则。"
+
+
+def _apply_payload_metadata_to_preview(preview: PreviewResponse, payload: AddBookPayload) -> PreviewResponse:
+    updates: dict[str, object] = {}
+    payload_title = _clean_payload_metadata(payload.title)
+    payload_synopsis = _clean_payload_metadata(getattr(payload, "synopsis", ""))
+    payload_cover = _clean_payload_metadata(getattr(payload, "cover", ""))
+
+    if payload_title and (not preview.title.strip() or preview.title == "未命名小说"):
+        updates["title"] = payload_title
+    if payload_synopsis and _is_generic_synopsis(preview.synopsis):
+        updates["synopsis"] = payload_synopsis
+    if payload_cover and not preview.cover:
+        updates["cover"] = payload_cover
+
+    return preview.model_copy(update=updates) if updates else preview
+
+
+def _json_payload_from_text(text: str) -> object | None:
+    normalized = text.lstrip("\ufeff").strip()
+    if not normalized.startswith(("{", "[")):
+        return None
+    try:
+        return json.loads(normalized)
+    except json.JSONDecodeError:
+        return None
+
+
+def _find_json_value(payload: object, keys: tuple[str, ...]) -> object | None:
+    if isinstance(payload, dict):
+        for key in keys:
+            value = payload.get(key)
+            if value not in (None, ""):
+                return value
+        for value in payload.values():
+            nested = _find_json_value(value, keys)
+            if nested not in (None, ""):
+                return nested
+    elif isinstance(payload, list):
+        for value in payload:
+            nested = _find_json_value(value, keys)
+            if nested not in (None, ""):
+                return nested
+    return None
+
+
+def _json_value_text(payload: object, keys: tuple[str, ...], *, max_length: int = 0) -> str:
+    value = _find_json_value(payload, keys)
+    if value is None or isinstance(value, (dict, list)):
+        return ""
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    if max_length and len(text) > max_length:
+        return text[:max_length].rstrip()
+    return text
+
+
+def _json_value_body_text(payload: object, keys: tuple[str, ...], *, max_length: int = 0) -> str:
+    value = _find_json_value(payload, keys)
+    if value is None or isinstance(value, (dict, list)):
+        return ""
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+    text = "\n".join(line for line in lines if line).strip()
+    if max_length and len(text) > max_length:
+        return text[:max_length].rstrip()
+    return text
+
+
+def _json_value_url(payload: object, keys: tuple[str, ...], base_url: str) -> str | None:
+    value = _find_json_value(payload, keys)
+    if value is None or isinstance(value, (dict, list)):
+        return None
+    text = str(value).strip()
+    return urljoin(base_url, text) if text else None
+
+
+def _chapters_from_json_payload(payload: object, base_url: str) -> list[ChapterPreview]:
+    candidates = _find_json_value(payload, ("chapters", "chapter_list", "chapterList", "catalog", "volume_list", "items", "data"))
+    if not isinstance(candidates, list):
+        first_chapter_content = _json_value_text(payload, ("first_chapter_content", "firstChapterContent"), max_length=1)
+        if first_chapter_content:
+            title = _json_value_text(
+                payload,
+                ("first_chapter_name", "firstChapterName", "chapter_name", "chapterName"),
+                max_length=160,
+            )
+            return [ChapterPreview(title=title or "第一章", url=base_url)]
+        return []
+
+    chapters: list[ChapterPreview] = []
+    seen: set[str] = set()
+    for index, item in enumerate(candidates, start=1):
+        if not isinstance(item, dict):
+            continue
+        title = _json_value_text(item, ("title", "chapter_title", "chapterTitle", "name"), max_length=160)
+        url = _json_value_url(item, ("url", "chapter_url", "chapterUrl", "link", "href"), base_url)
+        if not url:
+            url = _json_chapter_url_from_ids(item, base_url)
+        if not title:
+            title = f"第{index}章"
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        chapters.append(ChapterPreview(title=title, url=url))
+    return chapters[:2000]
+
+
+def _json_chapter_url_from_ids(item: dict[str, object], base_url: str) -> str:
+    book_id = _json_value_text(item, ("book_id", "bookId"), max_length=80)
+    chapter_id = _json_value_text(item, ("chapter_id", "chapterId", "id"), max_length=80)
+    if not chapter_id:
+        return ""
+
+    parsed = urlparse(base_url)
+    if book_id and "/novels/api/book/" in parsed.path:
+        return f"{parsed.scheme}://{parsed.netloc}/novels/api/book/{book_id}/chapters/{chapter_id}"
+    return urljoin(base_url, chapter_id)
+
+
+async def _extend_json_preview_chapters(
+    client: httpx.AsyncClient,
+    preview: PreviewResponse,
+    payload: object,
+    source_url: str,
+) -> PreviewResponse:
+    if preview.chapterCount > 1:
+        return preview
+
+    chapters_url = _json_chapters_url(payload, source_url)
+    if not chapters_url:
+        return preview
+
+    try:
+        response = await client.get(chapters_url, headers=_request_headers(chapters_url, referer=source_url))
+        response.raise_for_status()
+    except Exception:
+        return preview
+
+    chapters_payload = _json_payload_from_text(response.text)
+    if chapters_payload is None:
+        return preview
+
+    chapters = _chapters_from_json_payload(chapters_payload, chapters_url)
+    if len(chapters) <= preview.chapterCount:
+        return preview
+
+    return preview.model_copy(update={"chapters": chapters, "chapterCount": len(chapters)})
+
+
+def _json_chapters_url(payload: object, source_url: str) -> str:
+    book_id = _json_value_text(payload, ("book_id", "bookId", "id"), max_length=80)
+    if not book_id:
+        return ""
+
+    parsed = urlparse(source_url)
+    path = parsed.path
+    if "/novels/api/book/" in path:
+        base_path = path.split("/chapters/", 1)[0]
+        return f"{parsed.scheme}://{parsed.netloc}{base_path}/chapters?paging=0"
+    return ""
+
+
+def _preview_from_json_text(text: str, source_url: str, payload: AddBookPayload) -> PreviewResponse | None:
+    data = _json_payload_from_text(text)
+    if data is None:
+        return None
+
+    fallback_title = payload.title or Path(urlparse(source_url).path).stem or "未命名小说"
+    title = _json_value_text(data, ("book_name", "bookName", "title", "name"), max_length=120) or fallback_title
+    author = _json_value_text(data, ("author_name", "authorName", "author", "writer"), max_length=80) or None
+    synopsis = _json_value_text(data, ("intro", "book_desc", "description", "desc", "abstract", "summary"), max_length=500)
+    cover = _json_value_url(data, ("cover_url", "coverUrl", "cover_picture", "cover", "thumb_url", "image"), source_url)
+    chapters = _chapters_from_json_payload(data, source_url)
+    if not chapters:
+        chapters = [ChapterPreview(title=title, url=source_url)]
+
+    return PreviewResponse(
+        title=title,
+        author=author,
+        synopsis=synopsis or "未抓取到简介，建议后续针对目标站点补充规则。",
+        cover=cover,
+        chapterCount=len(chapters),
+        chapters=chapters,
+    )
+
+
+def _chapter_text_from_json_text(text: str) -> str:
+    data = _json_payload_from_text(text)
+    if data is None:
+        return ""
+    return _json_value_body_text(
+        data,
+        (
+            "content",
+            "chapter_content",
+            "chapterContent",
+            "body",
+            "text",
+            "txt",
+            "book_content",
+            "bookContent",
+            "first_chapter_content",
+            "firstChapterContent",
+            "chapter_text",
+            "chapterText",
+            "intro",
+            "description",
+            "abstract",
+        ),
+        max_length=50000,
+    )
+
+
 def _collect_generic_chapter_links(anchors: list[Any], base_url: str) -> list[ChapterPreview]:
     items: list[ChapterPreview] = []
     seen: set[str] = set()
@@ -5850,6 +6070,15 @@ async def preview_from_url(payload: AddBookPayload) -> PreviewResponse:
         return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
 
     html, resolved_url = await _fetch_preview_html(source_url)
+    json_preview = _preview_from_json_text(html, resolved_url, payload)
+    if json_preview is not None:
+        result = json_preview.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
+        json_payload = _json_payload_from_text(html)
+        if json_payload is not None:
+            async with _build_http_client() as client:
+                result = await _extend_json_preview_chapters(client, result, json_payload, resolved_url)
+        return _apply_payload_metadata_to_preview(result, payload)
+
     soup = BeautifulSoup(html, "html.parser")
     fallback_title = payload.title or Path(urlparse(source_url).path).stem or "未命名小说"
     title = _extract_title(soup, fallback_title)
@@ -5869,7 +6098,8 @@ async def preview_from_url(payload: AddBookPayload) -> PreviewResponse:
         chapterCount=len(chapters),
         chapters=chapters,
     )
-    return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
+    result = result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
+    return _apply_payload_metadata_to_preview(result, payload)
 
 
 async def download_book(payload: AddBookPayload, preview: PreviewResponse, root_dir: Path) -> DownloadResult:
@@ -5883,7 +6113,10 @@ async def download_book(payload: AddBookPayload, preview: PreviewResponse, root_
     )
 
     async with _build_http_client() as client:
-        cover_file = await _download_cover_image(client, book_dir, preview.cover, str(payload.sourceUrl))
+        try:
+            cover_file = await _download_cover_image(client, book_dir, preview.cover, str(payload.sourceUrl))
+        except Exception:
+            cover_file = None
         if preview.chapters and _is_linovelib_url(preview.chapters[0].url):
             await _prime_linovelib_session(client, preview.chapters[0].url)
         for index, chapter in enumerate(preview.chapters, start=1):
@@ -5926,6 +6159,64 @@ async def download_book(payload: AddBookPayload, preview: PreviewResponse, root_
                     "images_repaired": _is_18comic_url(chapter.url),
                 }
             )
+
+    manifest = {
+        "title": preview.title,
+        "author": preview.author,
+        "source_url": str(payload.sourceUrl),
+        "book_kind": preview.bookKind,
+        "language": payload.language,
+        "need_translation": payload.needTranslation,
+        "synopsis": preview.synopsis,
+        "cover_url": preview.cover,
+        "cover_file": cover_file,
+        "chapter_count": len(chapter_manifest),
+        "chapters": chapter_manifest,
+    }
+    save_manifest(book_dir, manifest)
+
+    return DownloadResult(
+        title=preview.title,
+        synopsis=preview.synopsis,
+        cover=cover_file or preview.cover,
+        chapters=preview.chapters,
+        local_path=book_dir,
+    )
+
+
+async def create_book_manifest_only(payload: AddBookPayload, preview: PreviewResponse, root_dir: Path) -> DownloadResult:
+    safe_title = re.sub(r'[\/:*?"<>|]', "_", preview.title).strip() or "未命名小说"
+    book_dir = root_dir / payload.language / safe_title
+    book_dir.mkdir(parents=True, exist_ok=True)
+    chapter_manifest: list[dict[str, Any]] = []
+
+    async with _build_http_client() as client:
+        try:
+            cover_file = await _download_cover_image(client, book_dir, preview.cover, str(payload.sourceUrl))
+        except Exception:
+            cover_file = None
+
+    for index, chapter in enumerate(preview.chapters, start=1):
+        safe_chapter_title = re.sub(r'[\\/:*?"<>|]', "_", chapter.title)[:80]
+        filename = f"{index:04d}-{safe_chapter_title}.txt"
+        chapter_manifest.append(
+            {
+                "index": index,
+                "title": chapter.title,
+                "url": chapter.url,
+                "file_name": filename,
+                "downloaded": False,
+                "translated": False,
+                "translated_file_name": None,
+                "translated_meta_file_name": None,
+                "illustration": False,
+                "image_urls": [],
+                "image_files": [],
+                "translated_image_files": [],
+                "page_count": chapter.pageCount,
+                "images_repaired": False,
+            }
+        )
 
     manifest = {
         "title": preview.title,
@@ -6163,6 +6454,11 @@ async def _fetch_chapter_data(client: httpx.AsyncClient, chapter_url: str, chapt
 
         response = await client.get(chapter_url, headers=_request_headers(chapter_url))
         response.raise_for_status()
+        json_text = _chapter_text_from_json_text(response.text)
+        if json_text:
+            return ChapterFetchResult(text=json_text, image_urls=[], illustration=False)
+        if _json_payload_from_text(response.text) is not None:
+            raise ValueError("书源返回 JSON 数据，但未能从中提取章节正文，请换用包含章节正文规则的书源")
         _raise_if_blocked(response.text, chapter_url)
         soup = BeautifulSoup(response.text, "html.parser")
         text = "\n".join(

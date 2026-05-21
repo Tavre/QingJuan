@@ -1,7 +1,7 @@
 {
   "name": "qingjuan",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.5.0",
   "description": "青卷：基于 Vue 3 与 Python 的内容集成工具。",
   "author": "Tavre",
   "license": "GPL-3.0-only",
@@ -10,6 +10,9 @@
     "test": "node scripts/run-test.mjs",
     "dev": "vite --host 127.0.0.1 --port 1420",
     "build": "vue-tsc --noEmit && vite build",
+    "build:desktop": "node scripts/build-release.mjs desktop",
+    "build:mobile": "node scripts/build-release.mjs mobile",
+    "build:release": "node scripts/build-release.mjs all",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "backend:dev": "cd python-backend && python -m app.main serve --host 127.0.0.1 --port 19453"
   },

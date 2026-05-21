@@ -79,7 +79,7 @@ interface BookPresentation {
   progressCurrent: number;
   progressTotal: number;
   addedAt: string;
-  words: string;
+  contentCountText: string;
   serialState: string;
 }
 
@@ -377,20 +377,48 @@ const stats = computed(() => {
   ];
 });
 
+function normalizeFuzzyText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFKC')
+    .replace(/[\s\p{P}\p{S}_]+/gu, '');
+}
+
+function fuzzyMatchText(haystack: string, keyword: string): boolean {
+  const normalizedHaystack = normalizeFuzzyText(haystack);
+  const normalizedKeyword = normalizeFuzzyText(keyword);
+  if (!normalizedKeyword) {
+    return true;
+  }
+  if (normalizedHaystack.includes(normalizedKeyword)) {
+    return true;
+  }
+
+  let cursor = 0;
+  for (const char of normalizedKeyword) {
+    cursor = normalizedHaystack.indexOf(char, cursor);
+    if (cursor < 0) {
+      return false;
+    }
+    cursor += char.length;
+  }
+  return true;
+}
+
 const filteredBooks = computed(() => {
-  const keyword = searchQuery.value.trim().toLowerCase();
+  const keyword = searchQuery.value.trim();
   if (!keyword) {
     return books.value;
   }
 
   return books.value.filter((book) => {
-    const haystack = `${book.title} ${book.synopsis} ${getPresentation(book).author}`.toLowerCase();
-    return haystack.includes(keyword);
+    const haystack = `${book.title} ${book.synopsis} ${getPresentation(book).author}`;
+    return fuzzyMatchText(haystack, keyword);
   });
 });
 
 const filteredSources = computed(() => {
-  const keyword = sourceSearchQuery.value.trim().toLowerCase();
+  const keyword = sourceSearchQuery.value.trim();
   if (!keyword) {
     return bookSources.value;
   }
@@ -405,9 +433,8 @@ const filteredSources = computed(() => {
       source.tags.join(' '),
       source.statusMessage,
     ]
-      .join(' ')
-      .toLowerCase();
-    return haystack.includes(keyword);
+      .join(' ');
+    return fuzzyMatchText(haystack, keyword);
   });
 });
 
@@ -474,7 +501,7 @@ const selectedPresentation = computed(() => {
     progressCurrent: progressIndex,
     progressTotal: detail?.chapters.length ?? book.chapterCount,
     addedAt: (detail?.addedAt || book.updatedAt).slice(0, 10),
-    words: `${(detail?.totalWords ?? 0).toLocaleString('en-US')}`,
+    contentCountText: formatBookContentCount(detail, book.bookKind),
     serialState: book.status === '已完成' ? '已完结' : '连载中',
   };
 });
@@ -1392,6 +1419,9 @@ async function handleImportSearchResult(result: BookSourceSearchResult) {
       language: resultImportLanguage(result),
       needTranslation: false,
       title: result.title.trim() || undefined,
+      sourceId: result.sourceId,
+      synopsis: result.synopsis?.trim() || undefined,
+      cover: result.cover || undefined,
     });
     updateBookCache(book);
     selectedBookId.value = book.id;
@@ -2120,7 +2150,20 @@ function formatContentCount(count: number, bookKind: BookRecord['bookKind'] | Pr
   return bookKind === '漫画' ? formatPageCount(count) : formatWordCount(count);
 }
 
+function formatBookContentCount(
+  detail: BookDetailResponse | null,
+  bookKind: BookRecord['bookKind'] | PreviewResponse['bookKind'] = '轻小说',
+): string {
+  if (!detail || detail.downloadedChapterCount === 0) {
+    return '未缓存';
+  }
+  return formatContentCount(detail.totalWords, bookKind);
+}
+
 function formatChapterMeta(chapter: ChapterRecord, bookKind: BookRecord['bookKind'] | null | undefined): string {
+  if (!chapter.downloaded) {
+    return '未缓存';
+  }
   if (bookKind === '漫画') {
     return formatPageCount(chapter.pageCount || chapter.imageCount || 0);
   }
@@ -2202,7 +2245,7 @@ function getPresentation(book: BookRecord): BookPresentation {
     progressCurrent: Math.max(0, Math.min(book.chapterCount, book.lastReadChapterIndex || 0)),
     progressTotal: Math.max(book.chapterCount, 1),
     addedAt: `2026-03-${String(addedDays).padStart(2, '0')}`,
-    words: '0',
+    contentCountText: '未缓存',
     serialState: book.status === '已完成' ? '已完结' : '连载中',
   };
 }
@@ -2702,7 +2745,7 @@ onBeforeUnmount(() => {
       </nav>
 
       <div class="sidebar-footer">
-        <span>v0.3.0</span>
+        <span>v0.5.0</span>
       </div>
     </aside>
 
@@ -3928,7 +3971,7 @@ onBeforeUnmount(() => {
                 </article>
                 <article>
                   <span>{{ selectedBook.bookKind === '漫画' ? '总页数' : '总字数' }}</span>
-                  <strong>{{ formatContentCount(Number(selectedPresentation.words), selectedBook.bookKind) }}</strong>
+                  <strong>{{ selectedPresentation.contentCountText }}</strong>
                 </article>
                 <article>
                   <span>添加日期</span>

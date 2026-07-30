@@ -1,0 +1,50 @@
+name: 缺陷报告
+description: 报告可复现的功能、界面或兼容性问题
+title: '[Bug] '
+labels: ['bug', 'needs-triage']
+body:
+  - type: markdown
+    attributes:
+      value: 提交前请移除密钥、账号、数据库和受版权保护的正文。
+  - type: input
+    id: version
+    attributes:
+      label: 青卷版本
+      placeholder: v0.5.0 或提交哈希
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 运行环境
+      placeholder: Windows 11 24H2 / Flutter 3.24.3 / Python 3.13
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: 按顺序列出最小复现步骤
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为与脱敏日志
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交确认
+      options:
+        - label: 我已搜索现有 Issue，未发现重复报告
+          required: true
+        - label: 我已移除密钥、账号和个人内容
+          required: true

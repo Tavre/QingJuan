@@ -11,7 +11,9 @@ permissions:
 jobs:
   windows-client:
     name: Flutter Windows client
-    runs-on: windows-latest
+    # Flutter 3.24.3 is the documented project toolchain. Keep its Windows
+    # build on the matching Visual Studio 2022 runner instead of a moving image.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -19,6 +21,7 @@ jobs:
           flutter-version: '3.24.3'
           channel: stable
           cache: true
+      - run: flutter config --enable-windows-desktop
       - run: flutter pub get
       - run: dart format --output=none --set-exit-if-changed lib test
       - run: flutter analyze

@@ -54,6 +54,10 @@ GitHub Actions 必须验证：
 - Windows 上 Flutter 格式化、分析、测试和 Release 构建；
 - Python 上 Ruff 与 Pytest。
 
+Windows 客户端 CI 固定使用 `windows-2022`，与项目要求的 Flutter `3.24.3` 和
+Visual Studio 2022 工具链保持一致；不要改回会随 GitHub 镜像迁移而变化的
+`windows-latest`。工作流必须在获取依赖前显式启用 Windows Desktop 支持。
+
 Dependabot 只维护当前技术栈：
 
 - `pub`：Flutter/Dart；
@@ -65,9 +69,21 @@ Dependabot 只维护当前技术栈：
 
 ## 5. Windows 发布
 
+### 版本规则
+
+- `pubspec.yaml` 是客户端、Windows EXE 与后端的唯一发布版本源，格式为
+  `major.minor.patch+build`；对外发布标签使用 `vmajor.minor.patch`。
+- 默认情况下，每次准备发布更新都自动递增 patch 和 build。例如
+  `1.0.0+5` 的下一次普通更新为 `1.0.1+6`。
+- 用户或发布负责人明确指定版本时，以指定的语义版本为准，build 仍必须大于上一版；
+  major、minor、预发布版或跳号不得自行推断。
+- 日常调试和重复构建不得修改版本号；只有准备形成新的发布更新时才执行递增。
+- 修改版本后必须验证 FastAPI 元数据与 Windows 文件属性均来自同一版本源，禁止在
+  Dart、Python、C++ 或发布脚本中新增独立硬编码版本。
+
 发布前：
 
-1. 更新 `pubspec.yaml` 版本；
+1. 按上述规则更新 `pubspec.yaml` 版本；
 2. 执行全部质量门禁；
 3. 执行 `tool/build_windows.ps1`；
 4. 在无 Python 开发环境的 Windows 机器启动；

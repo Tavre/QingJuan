@@ -57,6 +57,8 @@ python-backend/
 ├─ app/db.py            # SQLite 与持久化
 ├─ app/scraper.py       # 外部站点、下载、OCR、翻译适配
 └─ tests/               # 后端测试
+
+assets/                 # 品牌图片、文档截图与 Windows 应用图标
 ```
 
 文件放置原则：

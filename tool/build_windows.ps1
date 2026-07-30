@@ -38,6 +38,7 @@ try {
             --collect-all "Crypto" `
             --hidden-import "yaml" `
             --add-data "$(Join-Path $backendRoot "app/windows_ocr.ps1");app" `
+            --add-data "$(Join-Path $projectRoot "pubspec.yaml");." `
             --distpath $backendOutput `
             --workpath (Join-Path $backendRoot "build") `
             --specpath $backendRoot `

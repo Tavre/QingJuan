@@ -1,6 +1,6 @@
 <!-- markdownlint-disable MD033 MD041 -->
 <p align="center">
-  <img alt="青卷 LOGO" src="./qj_icon2.png" width="160" height="160" />
+  <img alt="青卷 LOGO" src="./assets/qj_icon2.png" width="160" height="160" />
 </p>
 
 <h1 align="center">青卷 QingJuan</h1>
@@ -13,7 +13,7 @@
 [`fluent_ui`](https://pub.dev/packages/fluent_ui)，遵循
 [Microsoft Fluent UI](https://github.com/microsoft/fluentui) 和 Windows 11 的简约设计语言；
 本地服务使用 Python、FastAPI 与 SQLite。桌面应用会自动探测并启动本地后端，退出时关闭由自己创建的后端进程。
-![alt text](应用截图.png)
+![青卷应用截图](./assets/应用截图.png)
 > 当前处于持续开发阶段。漫画译图、部分站点适配与第三方书源可能受目标站点变化影响，请勿将实验功能用于不可恢复的重要数据。
 
 ## 功能

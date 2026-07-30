@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.api.routers import health_router
-from app.application import APP_TITLE, APP_VERSION, create_application
+from app.application import APP_TITLE, APP_VERSION, create_application, read_app_version
 
 
 def test_application_factory_registers_router() -> None:
@@ -23,3 +23,10 @@ def test_application_factory_sets_metadata() -> None:
 
     assert application.title == APP_TITLE
     assert application.version == APP_VERSION
+
+
+def test_read_app_version_uses_pubspec_semantic_version(tmp_path) -> None:
+    pubspec = tmp_path / "pubspec.yaml"
+    pubspec.write_text("name: qingjuan\nversion: 1.0.1+6\n", encoding="utf-8")
+
+    assert read_app_version(pubspec) == "1.0.1"

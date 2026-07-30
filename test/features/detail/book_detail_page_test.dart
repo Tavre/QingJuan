@@ -41,6 +41,118 @@ void main() {
     expect(find.text('暂时无法加载'), findsNothing);
   });
 
+  testWidgets('offers recovery and bookshelf deletion when detail fails',
+      (tester) async {
+    var deleteRequested = false;
+    final harness = await _Harness.create(
+      MockClient((request) async {
+        if (request.method == 'DELETE') {
+          deleteRequested = true;
+          expect(request.url.path, '/books/book-1');
+          return http.Response(
+            jsonEncode(<String, String>{
+              'status': 'ok',
+              'bookId': 'book-1',
+            }),
+            200,
+            headers: const <String, String>{
+              'content-type': 'application/json; charset=utf-8',
+            },
+          );
+        }
+        expect(request.url.path, '/books/book-1');
+        return http.Response(
+          jsonEncode(<String, String>{
+            'detail': '本地书籍目录不存在：C:/QingJuan/data/library/测试',
+          }),
+          404,
+          headers: const <String, String>{
+            'content-type': 'application/json; charset=utf-8',
+          },
+        );
+      }),
+      child: const _DetailLauncher(),
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.tap(find.text('打开作品'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('暂时无法加载'), findsOneWidget);
+    expect(find.byIcon(FluentIcons.back), findsOneWidget);
+    expect(find.text('重试'), findsOneWidget);
+    expect(find.text('从书架删除'), findsOneWidget);
+
+    await tester.tap(find.text('从书架删除'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('删除这本书？'), findsOneWidget);
+    expect(deleteRequested, isFalse);
+
+    await tester.tap(find.widgetWithText(FilledButton, '删除'));
+    await tester.pumpAndSettle();
+
+    expect(deleteRequested, isTrue);
+    expect(find.text('打开作品'), findsOneWidget);
+  });
+
+  testWidgets('returns from missing directory error without deleting',
+      (tester) async {
+    final harness = await _Harness.create(
+      MockClient((_) async => http.Response(
+            jsonEncode(<String, String>{
+              'detail': '本地书籍目录不存在：C:/QingJuan/data/library/测试',
+            }),
+            404,
+            headers: const <String, String>{
+              'content-type': 'application/json; charset=utf-8',
+            },
+          )),
+      child: const _DetailLauncher(),
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.tap(find.text('打开作品'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(FluentIcons.back));
+    await tester.pumpAndSettle();
+
+    expect(find.text('打开作品'), findsOneWidget);
+    expect(find.text('暂时无法加载'), findsNothing);
+  });
+
+  testWidgets('keeps error page available when bookshelf deletion fails',
+      (tester) async {
+    final harness = await _Harness.create(
+      MockClient((request) async {
+        final detail = request.method == 'DELETE'
+            ? '无法删除书架记录'
+            : '本地书籍目录不存在：C:/QingJuan/data/library/测试';
+        return http.Response(
+          jsonEncode(<String, String>{'detail': detail}),
+          request.method == 'DELETE' ? 500 : 404,
+          headers: const <String, String>{
+            'content-type': 'application/json; charset=utf-8',
+          },
+        );
+      }),
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('从书架删除'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '删除'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('删除失败'), findsOneWidget);
+    expect(find.text('暂时无法加载'), findsOneWidget);
+    expect(find.text('从书架删除'), findsOneWidget);
+  });
+
   testWidgets('builds only visible chapter rows for a large book',
       (tester) async {
     final chapters = List<Object?>.generate(
@@ -121,7 +233,10 @@ class _Harness {
     required this.settings,
   });
 
-  static Future<_Harness> create(http.Client client) async {
+  static Future<_Harness> create(
+    http.Client client, {
+    Widget child = const BookDetailPage(bookId: 'book-1'),
+  }) async {
     final appState = AppState(await SharedPreferences.getInstance());
     final api = ApiClient(() => appState.backendUrl, client: client);
     final backend = BackendProcessManager(api);
@@ -139,7 +254,7 @@ class _Harness {
         sources: sources,
         tasks: tasks,
         settings: settings,
-        child: const BookDetailPage(bookId: 'book-1'),
+        child: child,
       ),
     );
     return _Harness(
@@ -165,5 +280,36 @@ class _Harness {
     tasks.dispose();
     settings.dispose();
     api.close();
+  }
+}
+
+class _DetailLauncher extends StatelessWidget {
+  const _DetailLauncher();
+
+  @override
+  Widget build(BuildContext context) {
+    return Navigator(
+      onGenerateRoute: (_) => PageRouteBuilder<void>(
+        pageBuilder: (_, __, ___) => const _DetailLauncherButton(),
+      ),
+    );
+  }
+}
+
+class _DetailLauncherButton extends StatelessWidget {
+  const _DetailLauncherButton();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Button(
+        onPressed: () => Navigator.of(context).push<void>(
+          PageRouteBuilder<void>(
+            pageBuilder: (_, __, ___) => const BookDetailPage(bookId: 'book-1'),
+          ),
+        ),
+        child: const Text('打开作品'),
+      ),
+    );
   }
 }

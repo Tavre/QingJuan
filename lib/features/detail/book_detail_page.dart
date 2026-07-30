@@ -24,6 +24,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
   bool _loading = true;
   bool _actionRunning = false;
   bool _initialized = false;
+  String? _deleteError;
   final Set<int> _selected = <int>{};
 
   @override
@@ -40,6 +41,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
     setState(() {
       _loading = true;
       _error = null;
+      _deleteError = null;
     });
     try {
       final detail = await _scope.api.fetchBookDetail(widget.bookId);
@@ -88,6 +90,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
   }
 
   Future<void> _delete() async {
+    if (_actionRunning) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => ContentDialog(
@@ -104,10 +107,71 @@ class _BookDetailPageState extends State<BookDetailPage> {
       ),
     );
     if (confirmed != true || !mounted) return;
-    await _scope.library.delete(widget.bookId);
-    if (mounted) {
+
+    setState(() {
+      _actionRunning = true;
+      _deleteError = null;
+    });
+    try {
+      await _scope.library.delete(widget.bookId);
+      if (!mounted) return;
+      setState(() => _actionRunning = false);
       Navigator.pop(context);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _actionRunning = false;
+        _deleteError = '$error';
+      });
     }
+  }
+
+  Widget _buildErrorPage() {
+    final canDeleteMissingBook = _error!.contains('本地书籍目录不存在');
+    return NavigationView(
+      appBar: NavigationAppBar(
+        automaticallyImplyLeading: false,
+        leading: IconButton(
+          icon: const Icon(FluentIcons.back),
+          onPressed: () => Navigator.maybePop(context),
+        ),
+        title: const Text('作品详情'),
+      ),
+      content: Column(
+        children: <Widget>[
+          if (_deleteError != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+              child: InfoBar(
+                title: const Text('删除失败'),
+                content: Text(_deleteError!),
+                severity: InfoBarSeverity.error,
+                onClose: () => setState(() => _deleteError = null),
+              ),
+            ),
+          Expanded(
+            child: ErrorView(
+              message: _error!,
+              onRetry: _actionRunning ? null : _load,
+              additionalActions: <Widget>[
+                if (canDeleteMissingBook)
+                  Button(
+                    onPressed: _actionRunning ? null : _delete,
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        Icon(FluentIcons.delete, size: 14),
+                        SizedBox(width: 7),
+                        Text('从书架删除'),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   void _openReader([int? chapterIndex]) {
@@ -194,8 +258,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
       return const NavigationView(content: LoadingView(label: '正在加载作品详情'));
     }
     if (_error != null) {
-      return NavigationView(
-          content: ErrorView(message: _error!, onRetry: _load));
+      return _buildErrorPage();
     }
     final detail = _detail!;
     final compact = windowClassOf(context) == WindowClass.compact;

@@ -2,7 +2,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum AppSection { library, search, sources, tasks, settings }
+enum AppSection { library, search, sources, tasks, settings, about }
 
 enum AppThemeMode { system, light, dark }
 

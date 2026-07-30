@@ -50,6 +50,13 @@ Hameln、Alphapolis、18Comic 和 Bika。第三方网站结构或访问策略随
 也欢迎阅读[开发规范](./docs/development/README.md)后提交 Pull Request。
 提交前请搜索重复问题，并移除密钥、数据库、账号和个人内容。
 
+## 交流与支持
+
+- GitHub 仓库：[Tavre/QingJuan](https://github.com/Tavre/QingJuan)
+- QQ 讨论群：`1074882763`
+
+应用内可从左侧菜单进入“关于”页面查看并复制以上信息。
+
 安全问题不要在公开 Issue 中披露利用细节或用户数据。请使用 GitHub 仓库的
 **Security → Report a vulnerability** 私密报告入口，并附受影响版本、最小复现、影响范围和建议方案。
 

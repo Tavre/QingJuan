@@ -3,6 +3,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 import '../../app/app_scope.dart';
 import '../../app/app_state.dart';
 import '../../shared/responsive.dart';
+import '../about/about_page.dart';
 import '../library/library_page.dart';
 import '../search/search_page.dart';
 import '../settings/settings_page.dart';
@@ -28,6 +29,7 @@ class _AppShellState extends State<AppShell> {
     AppSection.sources,
     AppSection.tasks,
     AppSection.settings,
+    AppSection.about,
   ];
 
   double _paneWidth = _defaultPaneWidth;
@@ -40,6 +42,7 @@ class _AppShellState extends State<AppShell> {
         AppSection.sources => const SourcesPage(),
         AppSection.tasks => const TasksPage(),
         AppSection.settings => const SettingsPage(),
+        AppSection.about => const AboutPage(),
       };
 
   String _label(AppSection section) => switch (section) {
@@ -48,6 +51,7 @@ class _AppShellState extends State<AppShell> {
         AppSection.sources => '书源',
         AppSection.tasks => '任务',
         AppSection.settings => '设置',
+        AppSection.about => '关于',
       };
 
   IconData _icon(AppSection section) => switch (section) {
@@ -56,6 +60,7 @@ class _AppShellState extends State<AppShell> {
         AppSection.sources => FluentIcons.database,
         AppSection.tasks => FluentIcons.history,
         AppSection.settings => FluentIcons.settings,
+        AppSection.about => FluentIcons.info,
       };
 
   void _togglePane() {
@@ -123,12 +128,21 @@ class _AppShellState extends State<AppShell> {
                 menuButton: isExpanded ? _paneToggleButton() : null,
                 header: const Text('阅读工作台'),
                 items: <NavigationPaneItem>[
-                  for (final section in _sections)
+                  for (final section
+                      in _sections.where((item) => item != AppSection.about))
                     PaneItem(
                       icon: Icon(_icon(section)),
                       title: Text(_label(section)),
                       body: _page(section),
                     ),
+                ],
+                footerItems: <NavigationPaneItem>[
+                  PaneItem(
+                    key: const ValueKey('about-navigation-item'),
+                    icon: Icon(_icon(AppSection.about)),
+                    title: Text(_label(AppSection.about)),
+                    body: _page(AppSection.about),
+                  ),
                 ],
               ),
             ),

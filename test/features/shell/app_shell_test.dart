@@ -1,4 +1,5 @@
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qingjuan/app/app_scope.dart';
 import 'package:qingjuan/app/app_state.dart';
@@ -28,6 +29,7 @@ void main() {
         tester.widget<NavigationView>(find.byType(NavigationView));
     expect(compactView.pane?.displayMode, PaneDisplayMode.compact);
     expect(compactView.pane?.items, hasLength(5));
+    expect(compactView.pane?.footerItems, hasLength(1));
     expect(find.text('书架'), findsWidgets);
   });
 
@@ -42,8 +44,56 @@ void main() {
         tester.widget<NavigationView>(find.byType(NavigationView));
     expect(expandedView.pane?.displayMode, PaneDisplayMode.open);
     expect(expandedView.pane?.items, hasLength(5));
+    expect(expandedView.pane?.footerItems, hasLength(1));
     expect(expandedView.appBar?.automaticallyImplyLeading, isFalse);
     expect(find.byType(Image), findsNothing);
+  });
+
+  testWidgets('about navigation shows project and community information',
+      (tester) async {
+    MethodCall? clipboardCall;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') clipboardCall = call;
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+    final harness = await _Harness.create(const Size(1280, 800));
+    addTearDown(harness.dispose);
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 600));
+
+    final view = tester.widget<NavigationView>(find.byType(NavigationView));
+    final aboutItem = view.pane!.footerItems.single as PaneItem;
+    expect((aboutItem.title! as Text).data, '关于');
+
+    await tester.tap(
+      find.byKey(const ValueKey('about-navigation-item')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('关于青卷'), findsOneWidget);
+    expect(find.text('https://github.com/Tavre/QingJuan'), findsOneWidget);
+    expect(find.text('1074882763'), findsOneWidget);
+    expect(find.text('Windows 10 / Windows 11'), findsOneWidget);
+    expect(find.text('GNU General Public License v3.0'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(
+        const ValueKey('copy-https://github.com/Tavre/QingJuan'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('GitHub 地址已复制'), findsOneWidget);
+    expect(clipboardCall?.method, 'Clipboard.setData');
+    expect(
+      (clipboardCall?.arguments as Map<Object?, Object?>?)?['text'],
+      'https://github.com/Tavre/QingJuan',
+    );
   });
 
   testWidgets('expanded navigation pane can collapse and expand',

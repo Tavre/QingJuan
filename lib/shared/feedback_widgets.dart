@@ -65,10 +65,16 @@ class EmptyView extends StatelessWidget {
 }
 
 class ErrorView extends StatelessWidget {
-  const ErrorView({required this.message, required this.onRetry, super.key});
+  const ErrorView({
+    required this.message,
+    required this.onRetry,
+    this.additionalActions = const <Widget>[],
+    super.key,
+  });
 
   final String message;
-  final VoidCallback onRetry;
+  final VoidCallback? onRetry;
+  final List<Widget> additionalActions;
 
   @override
   Widget build(BuildContext context) {
@@ -76,7 +82,15 @@ class ErrorView extends StatelessWidget {
       icon: FluentIcons.error,
       title: '暂时无法加载',
       message: message,
-      action: Button(onPressed: onRetry, child: const Text('重试')),
+      action: Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 10,
+        runSpacing: 10,
+        children: <Widget>[
+          Button(onPressed: onRetry, child: const Text('重试')),
+          ...additionalActions,
+        ],
+      ),
     );
   }
 }

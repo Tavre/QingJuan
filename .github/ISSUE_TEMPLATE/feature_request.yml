@@ -1,0 +1,34 @@
+name: 功能建议
+description: 提议有明确用户价值的改进
+title: '[Feature] '
+labels: ['enhancement', 'needs-triage']
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 描述使用场景、当前阻碍和受影响用户。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 考虑过的替代方案
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 影响范围
+      options:
+        - Flutter / Fluent UI
+        - Windows 桌面端
+        - FastAPI / 数据层
+        - 抓取与站点适配
+        - 文档与工程化
+    validations:
+      required: true

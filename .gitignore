@@ -1,47 +1,101 @@
-# Dependencies
-node_modules/
-python-backend/.venv/
+# Flutter / Dart dependencies and generated files
+.dart_tool/
+.packages
+.pub/
+.pub-cache/
+.flutter-plugins
+.flutter-plugins-dependencies
+**/flutter/ephemeral/
+coverage/
 
-# Build outputs
+# Python environments and caches
+python-backend/.venv/
+.venv/
+venv/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+
+# Build and packaging outputs
+build/
 dist/
 release/
-.vite/
-target/
 python-backend/build/
 python-backend/dist/
 python-backend/*.spec
+test-results/
 
-# Runtime data and caches
+# Runtime data, downloads and local databases
 python-backend/data/
 python-backend/tmp/
 tmp/
-__pycache__/
-python-backend/__pycache__/
-python-backend/app/__pycache__/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
 
-# Logs
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+.secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+credentials.*.json
+cookies.json
+cookies.*.json
+settings.local.json
+key.txt
+
+# Logs, crash dumps and temporary files
 *.log
+logs/
 python-backend/sidecar-*.log
+*.dmp
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*.swp
+*~
 
-# Local editor / agent state
+# Operating-system and editor state
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.idea/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Local AI-agent state
 .ace-tool/
 .codex-tmp/
 .claude/
-.idea/
-.vscode/
 
-# Legacy Tauri outputs
-src-tauri/target/
-src-tauri/gen/
-src-tauri/binaries/
-
-# Local-only assets / scratch files
-ui示例/
+# Legacy local-only scratch assets
 debug_bubble_cleanup/
 debug_masks/
 debug_masks2/
 qj_icon.png
 0012.png
-key.txt
 
+# Allow intentional empty directory placeholders.
 !.keep

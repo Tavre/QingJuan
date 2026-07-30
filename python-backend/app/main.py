@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import argparse
+import ast
+
 # QingJuan
 # Author: Tavre
 # License: GPL-3.0-only
-
 import asyncio
-import argparse
-import ast
 import copy
 import html
 import json
@@ -14,42 +14,54 @@ import mimetypes
 import os
 import re
 import shutil
-import sys
 import unicodedata
+import warnings
 import zipfile
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from pathlib import Path
-from typing import Any
-from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
+from typing import Annotated, Any
+from urllib.parse import quote, urljoin, urlparse
 from uuid import uuid4
 
 import httpx
 import uvicorn
-from bs4 import BeautifulSoup, Tag
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
-from fastapi.staticfiles import StaticFiles
+from bs4 import BeautifulSoup, Tag, XMLParsedAsHTMLWarning
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, Response, StreamingResponse
+
+# 部分书源返回 XML/RSS，统一用 html.parser 解析时 bs4 会刷 XMLParsedAsHTMLWarning。
+# 解析结果不受影响，这里屏蔽该告警避免污染日志。
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 try:
+    from .api.routers import (
+        API_ROUTERS,
+        health_router,
+        library_router,
+        settings_router,
+        sources_router,
+        tasks_router,
+    )
+    from .application import create_application
     from .db import (
         DATA_DIR,
         append_task_log,
+        create_task,
+        delete_book,
         get_book,
         get_book_source,
+        get_task,
         init_db,
         list_book_sources,
         list_books,
+        list_builtin_book_source_base_urls,
         list_pending_tasks,
         list_task_logs,
         list_tasks,
         load_reading_progress,
         load_settings,
-        create_task,
-        delete_book,
-        get_task,
         save_book,
         save_book_source,
         save_reading_progress,
@@ -58,18 +70,18 @@ try:
     )
     from .models import (
         AddBookPayload,
-        BookSourceImportResult,
-        BookSourceRecord,
-        BookSourceSearchPayload,
-        BookSourceSearchResult,
-        BuiltinSiteSearchPayload,
-        BuiltinSiteSearchResult,
-        BookSourceTextImportPayload,
-        BookSourceUrlImportPayload,
         BookDetailResponse,
         BookExportPayload,
         BookExportResponse,
         BookRecord,
+        BookSourceImportResult,
+        BookSourceRecord,
+        BookSourceSearchPayload,
+        BookSourceSearchResult,
+        BookSourceTextImportPayload,
+        BookSourceUrlImportPayload,
+        BuiltinSiteSearchPayload,
+        BuiltinSiteSearchResult,
         ChapterActionPayload,
         ChapterContentResponse,
         ChapterRecord,
@@ -80,41 +92,52 @@ try:
         TaskRecord,
         TranslationSettings,
     )
+    from .process_lifecycle import start_parent_process_watcher
     from .scraper import (
+        _fetch_with_edge_cdp,
+        _normalize_search_text,
+        _normalize_source_url,
         build_translated_filename,
         create_book_manifest_only,
         download_book,
         download_selected_chapters,
         load_manifest,
         load_translated_page_payload,
-        _fetch_with_edge_cdp,
-        _normalize_search_text,
-        _normalize_source_url,
         preview_from_url,
         repair_18comic_chapter_images,
         save_manifest,
         search_builtin_site_books,
-        translated_image_payload_is_current,
-        translate_single_manga_image,
         translate_selected_chapters,
+        translate_single_manga_image,
+        translated_image_payload_is_current,
     )
 except ImportError:
+    from app.api.routers import (
+        API_ROUTERS,
+        health_router,
+        library_router,
+        settings_router,
+        sources_router,
+        tasks_router,
+    )
+    from app.application import create_application
     from app.db import (
         DATA_DIR,
         append_task_log,
+        create_task,
+        delete_book,
         get_book,
         get_book_source,
+        get_task,
         init_db,
         list_book_sources,
         list_books,
+        list_builtin_book_source_base_urls,
         list_pending_tasks,
         list_task_logs,
         list_tasks,
         load_reading_progress,
         load_settings,
-        create_task,
-        delete_book,
-        get_task,
         save_book,
         save_book_source,
         save_reading_progress,
@@ -123,18 +146,18 @@ except ImportError:
     )
     from app.models import (
         AddBookPayload,
-        BookSourceImportResult,
-        BookSourceRecord,
-        BookSourceSearchPayload,
-        BookSourceSearchResult,
-        BuiltinSiteSearchPayload,
-        BuiltinSiteSearchResult,
-        BookSourceTextImportPayload,
-        BookSourceUrlImportPayload,
         BookDetailResponse,
         BookExportPayload,
         BookExportResponse,
         BookRecord,
+        BookSourceImportResult,
+        BookSourceRecord,
+        BookSourceSearchPayload,
+        BookSourceSearchResult,
+        BookSourceTextImportPayload,
+        BookSourceUrlImportPayload,
+        BuiltinSiteSearchPayload,
+        BuiltinSiteSearchResult,
         ChapterActionPayload,
         ChapterContentResponse,
         ChapterRecord,
@@ -145,44 +168,49 @@ except ImportError:
         TaskRecord,
         TranslationSettings,
     )
+    from app.process_lifecycle import start_parent_process_watcher
     from app.scraper import (
+        _fetch_with_edge_cdp,
+        _normalize_search_text,
+        _normalize_source_url,
         build_translated_filename,
         create_book_manifest_only,
         download_book,
         download_selected_chapters,
         load_manifest,
         load_translated_page_payload,
-        _fetch_with_edge_cdp,
-        _normalize_search_text,
-        _normalize_source_url,
         preview_from_url,
         repair_18comic_chapter_images,
         save_manifest,
         search_builtin_site_books,
-        translated_image_payload_is_current,
-        translate_single_manga_image,
         translate_selected_chapters,
+        translate_single_manga_image,
+        translated_image_payload_is_current,
     )
 
 LIBRARY_ROOT = DATA_DIR / "library"
 EXPORT_ROOT = DATA_DIR / "exports"
-APP_ROOT = Path(__file__).resolve().parents[2]
-FRONTEND_DIST_DIR = Path(getattr(sys, "_MEIPASS", APP_ROOT)) / "frontend-dist"
-if not FRONTEND_DIST_DIR.exists():
-    FRONTEND_DIST_DIR = APP_ROOT / "dist"
 TASK_QUEUE: asyncio.Queue[str] = asyncio.Queue()
 SOURCE_CHAPTER_CACHE_AHEAD = 20
 SOURCE_IMPORT_HEADERS = {
-    "User-Agent": "QingJuan/0.5.0 BookSourceImporter",
-    "Accept": "application/json,text/plain;q=0.9,*/*;q=0.8",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json,text/plain,text/html;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
 }
-SOURCE_IMPORT_TIMEOUT = 20.0
+SOURCE_IMPORT_TIMEOUT = 60.0
+SOURCE_IMPORT_CONNECT_TIMEOUT = 10.0
+SOURCE_IMPORT_JSON_KEYS = ("data", "bookSources", "sources", "items", "list", "result")
+SOURCE_IMPORT_JSONP_NAME_PATTERN = re.compile(r"^[\w$.]+$")
 LEGADO_SEARCH_DEFAULT_PAGE = "1"
-LEGADO_SEARCH_CONCURRENCY = 12
-LEGADO_SEARCH_SOURCE_TIMEOUT = 3.0
-LEGADO_SEARCH_CONNECT_TIMEOUT = 1.5
-LEGADO_SEARCH_TOTAL_TIMEOUT = 5.0
-LEGADO_SEARCH_RESULT_SETTLE_TIMEOUT = 0.8
+# 书源体量通常上千、且多数站点失效或较慢，旧参数（并发 12 / 总超时 5s）在 5 秒内
+# 只能实际查询二三十个源，命中率约 3%，导致“搜索热门书也无结果”。放宽并发与超时
+# 窗口后可覆盖数百个源；配合命中后的落定窗口在拿到首批结果后再多等几秒收集更多。
+LEGADO_SEARCH_CONCURRENCY = 48
+LEGADO_SEARCH_SOURCE_TIMEOUT = 4.0
+LEGADO_SEARCH_CONNECT_TIMEOUT = 2.0
+LEGADO_SEARCH_TOTAL_TIMEOUT = 18.0
+LEGADO_SEARCH_RESULT_SETTLE_TIMEOUT = 4.0
 
 async def _run_startup(app_instance: FastAPI) -> None:
     init_db()
@@ -213,10 +241,8 @@ async def _run_shutdown(app_instance: FastAPI) -> None:
     worker = getattr(app_instance.state, "queue_worker", None)
     if worker is not None:
         worker.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await worker
-        except asyncio.CancelledError:
-            pass
 
 
 @asynccontextmanager
@@ -228,27 +254,17 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         await _run_shutdown(app_instance)
 
 
-app = FastAPI(title="青卷后端", version="0.5.0", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.get("/health")
+@health_router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "qingjuan-backend", "dataDir": str(DATA_DIR)}
 
 
-@app.get("/sources", response_model=list[BookSourceRecord])
+@sources_router.get("/sources", response_model=list[BookSourceRecord])
 async def get_sources() -> list[BookSourceRecord]:
     return list_book_sources()
 
 
-@app.post("/sources/search", response_model=list[BookSourceSearchResult])
+@sources_router.post("/sources/search", response_model=list[BookSourceSearchResult])
 async def post_source_search(payload: BookSourceSearchPayload) -> list[BookSourceSearchResult]:
     keyword = payload.keyword.strip()
     if not keyword:
@@ -277,7 +293,119 @@ async def post_source_search(payload: BookSourceSearchPayload) -> list[BookSourc
     return _rank_source_search_results(_dedupe_source_search_results(results), keyword)[: payload.limit]
 
 
-@app.post("/builtin-sites/search", response_model=list[BuiltinSiteSearchResult])
+@sources_router.post("/sources/search-stream")
+async def post_source_search_stream(payload: BookSourceSearchPayload, request: Request) -> StreamingResponse:
+    """流式搜索：边搜边出。每个书源返回即刻推送结果，客户端可随时断开以停止。
+
+    采用 NDJSON（按行的 JSON）协议，逐行推送以下事件：
+    - {"type":"meta","total":N}                 搜索开始，共 N 个可搜索书源
+    - {"type":"result","data":{...}}            命中一条结果（去重后）
+    - {"type":"progress","done":k,"total":N,...} 已完成 k 个书源
+    - {"type":"done","results":m,...}           搜索自然结束
+    """
+    keyword = payload.keyword.strip()
+    if not keyword:
+        raise HTTPException(status_code=400, detail="搜索关键词不能为空")
+
+    source_ids = {source_id.strip() for source_id in payload.sourceIds if source_id.strip()}
+    sources = [
+        source
+        for source in list_book_sources()
+        if source.enabled and (not source_ids or source.id in source_ids)
+    ]
+    if not sources:
+        raise HTTPException(status_code=400, detail="请先导入并启用 Legado 书源")
+
+    searchable_sources = [source for source in sources if _source_has_search_rule(source)]
+    if not searchable_sources:
+        raise HTTPException(status_code=400, detail="当前没有可搜索的 Legado 书源，请重新导入包含 searchUrl 与 ruleSearch 的书源")
+
+    generator = _stream_legado_search(request, searchable_sources, keyword, payload.limit)
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    return StreamingResponse(generator, media_type="application/x-ndjson", headers=headers)
+
+
+def _ndjson_line(event: dict[str, object]) -> bytes:
+    return (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+async def _stream_legado_search(
+    request: Request,
+    sources: list[BookSourceRecord],
+    keyword: str,
+    total_limit: int,
+) -> AsyncIterator[bytes]:
+    per_source_limit = max(1, min(total_limit, max(4, total_limit // max(1, len(sources)) + 2)))
+    keywords = _fuzzy_source_search_keywords(keyword)
+    search_keyword = keywords[0] if keywords else keyword
+    semaphore = asyncio.Semaphore(LEGADO_SEARCH_CONCURRENCY)
+    queue: asyncio.Queue[tuple[str, list[BookSourceSearchResult]]] = asyncio.Queue()
+
+    async def worker(source: BookSourceRecord) -> None:
+        async with semaphore:
+            try:
+                source_results = await _search_legado_source(source, search_keyword, per_source_limit)
+            except Exception:
+                source_results = []
+            await queue.put(("result", source_results))
+
+    workers = [asyncio.create_task(worker(source)) for source in sources]
+
+    async def watch_completion() -> None:
+        await asyncio.gather(*workers, return_exceptions=True)
+        await queue.put(("__done__", []))
+
+    completion_task = asyncio.create_task(watch_completion())
+
+    seen_urls: set[str] = set()
+    emitted = 0
+    done_count = 0
+    total = len(sources)
+
+    try:
+        yield _ndjson_line({"type": "meta", "total": total})
+        while True:
+            try:
+                kind, source_results = await asyncio.wait_for(queue.get(), timeout=1.0)
+            except TimeoutError:
+                # 队列空闲时探测客户端是否已断开（用户点了停止 / 离开页面）。
+                if await request.is_disconnected():
+                    break
+                continue
+
+            if kind == "__done__":
+                break
+
+            done_count += 1
+            reached_limit = False
+            for result in source_results:
+                if result.sourceUrl in seen_urls:
+                    continue
+                seen_urls.add(result.sourceUrl)
+                emitted += 1
+                yield _ndjson_line({"type": "result", "data": result.model_dump(mode="json")})
+                if emitted >= total_limit:
+                    reached_limit = True
+                    break
+
+            yield _ndjson_line(
+                {"type": "progress", "done": done_count, "total": total, "results": emitted}
+            )
+            if reached_limit:
+                break
+
+        yield _ndjson_line(
+            {"type": "done", "results": emitted, "done": done_count, "total": total}
+        )
+    finally:
+        # 客户端断开或自然结束都要回收并发请求，避免后台残留搜索任务。
+        for task in workers:
+            task.cancel()
+        completion_task.cancel()
+        await asyncio.gather(*workers, completion_task, return_exceptions=True)
+
+
+@sources_router.post("/builtin-sites/search", response_model=list[BuiltinSiteSearchResult])
 async def post_builtin_site_search(payload: BuiltinSiteSearchPayload) -> list[BuiltinSiteSearchResult]:
     source = _get_source_or_404(payload.sourceId)
     keyword = payload.keyword.strip()
@@ -289,7 +417,7 @@ async def post_builtin_site_search(payload: BuiltinSiteSearchPayload) -> list[Bu
         raise HTTPException(status_code=400, detail=f"内置站点作品搜索失败：{exc}") from exc
 
 
-@app.post("/sources/import-url", response_model=BookSourceImportResult)
+@sources_router.post("/sources/import-url", response_model=BookSourceImportResult)
 async def post_source_import_url(payload: BookSourceUrlImportPayload) -> BookSourceImportResult:
     try:
         content = await _fetch_book_source_import_payload(str(payload.url))
@@ -297,22 +425,22 @@ async def post_source_import_url(payload: BookSourceUrlImportPayload) -> BookSou
     except HTTPException:
         raise
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=400, detail=f"Legado 书源链接获取失败：{exc}") from exc
+        raise HTTPException(status_code=400, detail=f"无法获取远程书源：{exc}") from exc
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Legado 书源链接导入失败：{exc}") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/sources/import-text", response_model=BookSourceImportResult)
+@sources_router.post("/sources/import-text", response_model=BookSourceImportResult)
 async def post_source_import_text(payload: BookSourceTextImportPayload) -> BookSourceImportResult:
     try:
         return _import_book_sources(payload.content)
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Legado 书源内容导入失败：{exc}") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.put("/sources/{source_id}", response_model=BookSourceRecord)
+@sources_router.put("/sources/{source_id}", response_model=BookSourceRecord)
 async def put_source(source_id: str, payload: BookSourceRecord) -> BookSourceRecord:
     current = _get_source_or_404(source_id)
     if current.origin == "builtin":
@@ -325,7 +453,7 @@ async def put_source(source_id: str, payload: BookSourceRecord) -> BookSourceRec
     return save_book_source(updated)
 
 
-@app.get("/books", response_model=list[BookRecord])
+@library_router.get("/books", response_model=list[BookRecord])
 async def get_books() -> list[BookRecord]:
     books: list[BookRecord] = []
     for book in list_books():
@@ -333,17 +461,17 @@ async def get_books() -> list[BookRecord]:
     return books
 
 
-@app.get("/tasks", response_model=list[TaskRecord])
+@tasks_router.get("/tasks", response_model=list[TaskRecord])
 async def get_tasks() -> list[TaskRecord]:
     return list_tasks()
 
 
-@app.get("/books/{book_id}", response_model=BookDetailResponse)
+@library_router.get("/books/{book_id}", response_model=BookDetailResponse)
 async def get_book_detail(book_id: str) -> BookDetailResponse:
     return _build_book_detail(await _hydrate_book_record_async(_get_book_or_404(book_id), fetch_remote_metadata=True))
 
 
-@app.delete("/books/{book_id}")
+@library_router.delete("/books/{book_id}")
 async def delete_book_route(book_id: str) -> dict[str, str]:
     book = _get_book_or_404(book_id)
     book_dir = _resolve_book_dir(book)
@@ -356,7 +484,7 @@ async def delete_book_route(book_id: str) -> dict[str, str]:
     return {"status": "ok", "bookId": book.id}
 
 
-@app.get("/books/{book_id}/chapters/{chapter_index}", response_model=ChapterContentResponse)
+@library_router.get("/books/{book_id}/chapters/{chapter_index}", response_model=ChapterContentResponse)
 async def get_chapter_content(
     book_id: str,
     chapter_index: int,
@@ -371,10 +499,8 @@ async def get_chapter_content(
         raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"章节缓存失败：{exc}") from exc
-    try:
+    with suppress(Exception):
         repair_18comic_chapter_images(book_dir, manifest, chapter_index)
-    except Exception:
-        pass
     chapter, chapter_path = _load_single_chapter(book, chapter_index, mode)
     content = chapter_path.read_text(encoding="utf-8")
     is_translated_mode = chapter_path.name.endswith(".translated.txt")
@@ -405,7 +531,7 @@ async def get_chapter_content(
     return response
 
 
-@app.get("/books/{book_id}/assets/{asset_path:path}")
+@library_router.get("/books/{book_id}/assets/{asset_path:path}")
 async def get_book_asset(book_id: str, asset_path: str) -> FileResponse:
     book = _get_book_or_404(book_id)
     book_dir = _resolve_book_dir(book).resolve()
@@ -419,7 +545,7 @@ async def get_book_asset(book_id: str, asset_path: str) -> FileResponse:
     return FileResponse(target_path, media_type=media_type or "application/octet-stream")
 
 
-@app.post("/books/{book_id}/export", response_model=BookExportResponse)
+@library_router.post("/books/{book_id}/export", response_model=BookExportResponse)
 async def post_book_export(book_id: str, payload: BookExportPayload) -> BookExportResponse:
     book = _get_book_or_404(book_id)
     export_path = _export_book(book, payload.format, payload.targetPath)
@@ -433,7 +559,7 @@ async def post_book_export(book_id: str, payload: BookExportPayload) -> BookExpo
     )
 
 
-@app.get("/books/{book_id}/exports/{file_name}")
+@library_router.get("/books/{book_id}/exports/{file_name}")
 async def get_book_export(book_id: str, file_name: str) -> FileResponse:
     _get_book_or_404(book_id)
     export_dir = (EXPORT_ROOT / book_id).resolve()
@@ -446,8 +572,8 @@ async def get_book_export(book_id: str, file_name: str) -> FileResponse:
     return FileResponse(target_path, media_type=media_type, filename=target_path.name)
 
 
-@app.post("/books/{book_id}/cover", response_model=BookRecord)
-async def post_book_cover(book_id: str, file: UploadFile = File(...)) -> BookRecord:
+@library_router.post("/books/{book_id}/cover", response_model=BookRecord)
+async def post_book_cover(book_id: str, file: Annotated[UploadFile, File()]) -> BookRecord:
     try:
         book = _get_book_or_404(book_id)
         book_dir = _resolve_book_dir(book)
@@ -484,11 +610,11 @@ async def post_book_cover(book_id: str, file: UploadFile = File(...)) -> BookRec
         await file.close()
 
 
-@app.post("/images/translate")
+@library_router.post("/images/translate")
 async def post_translate_image(
-    file: UploadFile = File(...),
-    language: str = Form(...),
-    title: str = Form(default=""),
+    file: Annotated[UploadFile, File()],
+    language: Annotated[str, Form()],
+    title: Annotated[str, Form()] = "",
 ) -> Response:
     try:
         normalized_language = _validate_language(language)
@@ -537,7 +663,7 @@ async def post_translate_image(
         await file.close()
 
 
-@app.put("/books/{book_id}/progress", response_model=ReadingProgressRecord)
+@library_router.put("/books/{book_id}/progress", response_model=ReadingProgressRecord)
 async def put_reading_progress(book_id: str, payload: ReadingProgressPayload) -> ReadingProgressRecord:
     book = _get_book_or_404(book_id)
     chapters = _load_chapter_records(book)
@@ -556,13 +682,13 @@ async def put_reading_progress(book_id: str, payload: ReadingProgressPayload) ->
     return save_reading_progress(progress)
 
 
-@app.get("/books/{book_id}/tasks", response_model=list[TaskRecord])
+@tasks_router.get("/books/{book_id}/tasks", response_model=list[TaskRecord])
 async def get_book_tasks(book_id: str) -> list[TaskRecord]:
     _get_book_or_404(book_id)
     return list_tasks(book_id)
 
 
-@app.get("/tasks/{task_id}/logs", response_model=list[TaskLogRecord])
+@tasks_router.get("/tasks/{task_id}/logs", response_model=list[TaskLogRecord])
 async def get_task_logs(task_id: str, after: int = Query(default=0, ge=0)) -> list[TaskLogRecord]:
     task = get_task(task_id)
     if task is None:
@@ -570,21 +696,21 @@ async def get_task_logs(task_id: str, after: int = Query(default=0, ge=0)) -> li
     return list_task_logs(task.id, after)
 
 
-@app.post("/books/{book_id}/chapters/download", response_model=TaskRecord)
+@tasks_router.post("/books/{book_id}/chapters/download", response_model=TaskRecord)
 async def post_download_chapters(book_id: str, payload: ChapterActionPayload) -> TaskRecord:
     book = _get_book_or_404(book_id)
     _load_or_initialize_manifest(book, _resolve_book_dir(book))
     return _enqueue_task(book, "download", payload)
 
 
-@app.post("/books/{book_id}/chapters/translate", response_model=TaskRecord)
+@tasks_router.post("/books/{book_id}/chapters/translate", response_model=TaskRecord)
 async def post_translate_chapters(book_id: str, payload: ChapterActionPayload) -> TaskRecord:
     book = _get_book_or_404(book_id)
     _load_or_initialize_manifest(book, _resolve_book_dir(book))
     return _enqueue_task(book, "translate", payload)
 
 
-@app.post("/tasks/{task_id}/retry", response_model=TaskRecord)
+@tasks_router.post("/tasks/{task_id}/retry", response_model=TaskRecord)
 async def post_retry_task(task_id: str) -> TaskRecord:
     task = get_task(task_id)
     if task is None:
@@ -597,7 +723,7 @@ async def post_retry_task(task_id: str) -> TaskRecord:
     return _enqueue_task(book, task.taskType, payload)
 
 
-@app.post("/books/preview", response_model=PreviewResponse)
+@library_router.post("/books/preview", response_model=PreviewResponse)
 async def post_preview(payload: AddBookPayload) -> PreviewResponse:
     try:
         return await preview_from_url(payload)
@@ -605,7 +731,7 @@ async def post_preview(payload: AddBookPayload) -> PreviewResponse:
         raise HTTPException(status_code=400, detail=f"解析失败：{exc}") from exc
 
 
-@app.post("/books/import", response_model=BookRecord)
+@library_router.post("/books/import", response_model=BookRecord)
 async def post_import(payload: AddBookPayload) -> BookRecord:
     try:
         preview = await preview_from_url(payload)
@@ -636,13 +762,13 @@ async def post_import(payload: AddBookPayload) -> BookRecord:
     return _hydrate_book_record(record)
 
 
-@app.post("/books/import-local", response_model=BookRecord)
+@library_router.post("/books/import-local", response_model=BookRecord)
 async def post_import_local(
-    file: UploadFile = File(...),
-    bookKind: str = Form(...),
-    language: str = Form(...),
-    needTranslation: bool = Form(False),
-    title: str = Form(default=""),
+    file: Annotated[UploadFile, File()],
+    bookKind: Annotated[str, Form()],
+    language: Annotated[str, Form()],
+    needTranslation: Annotated[bool, Form()] = False,
+    title: Annotated[str, Form()] = "",
 ) -> BookRecord:
     try:
         normalized_book_kind = _validate_book_kind(bookKind)
@@ -695,12 +821,12 @@ async def post_import_local(
     return _hydrate_book_record(record)
 
 
-@app.get("/settings", response_model=TranslationSettings)
+@settings_router.get("/settings", response_model=TranslationSettings)
 async def get_settings() -> TranslationSettings:
     return load_settings()
 
 
-@app.put("/settings", response_model=TranslationSettings)
+@settings_router.put("/settings", response_model=TranslationSettings)
 async def put_settings(payload: TranslationSettings) -> TranslationSettings:
     return save_settings(payload)
 
@@ -710,12 +836,19 @@ def main() -> None:
     parser.add_argument("command", nargs="?", default="serve")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=19453)
+    parser.add_argument("--parent-pid", type=int)
     args = parser.parse_args()
 
     if args.command != "serve":
         raise SystemExit(f"Unsupported command: {args.command}")
 
-    uvicorn.run(app, host=args.host, port=args.port, reload=False)
+    server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port, reload=False))
+    if args.parent_pid:
+        start_parent_process_watcher(
+            args.parent_pid,
+            lambda: setattr(server, "should_exit", True),
+        )
+    server.run()
 
 
 def _get_book_or_404(book_id: str) -> BookRecord:
@@ -783,17 +916,26 @@ def _normalize_form_text(value: str) -> str:
 
 
 async def _fetch_book_source_import_payload(url: str) -> str:
+    timeout = httpx.Timeout(
+        SOURCE_IMPORT_TIMEOUT,
+        connect=SOURCE_IMPORT_CONNECT_TIMEOUT,
+        read=SOURCE_IMPORT_TIMEOUT,
+    )
     try:
         async with httpx.AsyncClient(
             follow_redirects=True,
-            timeout=SOURCE_IMPORT_TIMEOUT,
+            timeout=timeout,
             headers=SOURCE_IMPORT_HEADERS,
         ) as client:
             response = await client.get(url)
             response.raise_for_status()
-            return response.text
+            text = response.text
     except httpx.HTTPError:
         return await _fetch_book_source_import_payload_with_browser(url)
+
+    if not text or not text.strip():
+        return await _fetch_book_source_import_payload_with_browser(url)
+    return text
 
 
 async def _fetch_book_source_import_payload_with_browser(url: str) -> str:
@@ -830,6 +972,13 @@ def _import_book_sources(content: str, import_url: str | None = None) -> BookSou
         _normalize_book_source_identity(source.baseUrl): source
         for source in list_book_sources()
     }
+    # 内置书源不在 existing_by_base 中（list_book_sources 已过滤），但仍占用
+    # base_url 唯一约束。预先收集内置站点 URL，导入时跳过冲突项，避免直接
+    # INSERT 触发 UNIQUE constraint failed: book_sources.base_url。
+    builtin_identities = {
+        _normalize_book_source_identity(base_url)
+        for base_url in list_builtin_book_source_base_urls()
+    }
     result = BookSourceImportResult()
 
     for index, item in enumerate(payload, start=1):
@@ -845,6 +994,10 @@ def _import_book_sources(content: str, import_url: str | None = None) -> BookSou
 
         identity = _normalize_book_source_identity(candidate.baseUrl)
         existing = existing_by_base.get(identity)
+        if existing is None and identity in builtin_identities:
+            display_name = candidate.name or candidate.baseUrl
+            result.ignored.append(f"{display_name} 与内置书源 URL（{candidate.baseUrl}）冲突，已跳过")
+            continue
         if existing is not None:
             if candidate.rulePayload:
                 merged = existing.model_copy(
@@ -891,18 +1044,76 @@ def _parse_book_source_payload(content: str) -> list[object]:
     try:
         payload = json.loads(normalized)
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"Legado 书源内容不是合法 JSON：{exc.msg}") from exc
+        if _looks_like_html(normalized):
+            extracted = _extract_book_source_payload_from_html(normalized).lstrip("﻿").strip()
+            if extracted:
+                try:
+                    payload = json.loads(extracted)
+                except json.JSONDecodeError as exc_html:
+                    payload, jsonp_error = _try_load_book_source_jsonp(extracted)
+                    if payload is None:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Legado 书源内容不是合法 JSON：{jsonp_error or exc_html.msg}",
+                        ) from exc_html
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Legado 书源内容不是合法 JSON：{exc.msg}",
+                ) from exc
+        else:
+            payload, jsonp_error = _try_load_book_source_jsonp(normalized)
+            if payload is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Legado 书源内容不是合法 JSON：{jsonp_error or exc.msg}",
+                ) from exc
 
     if isinstance(payload, list):
         return payload
     if isinstance(payload, dict):
-        for key in ("data", "bookSources", "sources"):
+        for key in SOURCE_IMPORT_JSON_KEYS:
             nested = payload.get(key)
             if isinstance(nested, list):
                 return nested
         return [payload]
 
     raise HTTPException(status_code=400, detail="Legado 书源内容必须是 JSON 对象或数组")
+
+
+def _try_load_book_source_jsonp(raw: str) -> tuple[object | None, str | None]:
+    inner = _strip_jsonp_wrapper(raw)
+    if inner is None or inner == raw:
+        return None, None
+    try:
+        return json.loads(inner), None
+    except json.JSONDecodeError as exc:
+        return None, exc.msg
+
+
+def _strip_jsonp_wrapper(raw: str) -> str | None:
+    text = raw.strip()
+    while text.endswith(";"):
+        text = text[:-1].rstrip()
+    if not text.endswith(")"):
+        return None
+    open_idx = text.find("(")
+    if open_idx <= 0:
+        return None
+    head = text[:open_idx].strip()
+    if not head or not SOURCE_IMPORT_JSONP_NAME_PATTERN.match(head):
+        return None
+    inner = text[open_idx + 1 : -1].strip()
+    return inner or None
+
+
+def _looks_like_html(text: str) -> bool:
+    head = text[:512].lstrip().lower()
+    if not head:
+        return False
+    if head.startswith("<!doctype") or head.startswith("<html") or head.startswith("<!--"):
+        return True
+    return "<body" in head or "<head" in head or "<script" in head
 
 
 def _build_imported_book_source(entry: dict[str, object], import_url: str | None = None) -> BookSourceRecord | None:
@@ -2245,7 +2456,7 @@ async def _hydrate_book_record_async(book: BookRecord, *, fetch_remote_metadata:
             ),
             timeout=8,
         )
-    except (asyncio.TimeoutError, Exception):
+    except (TimeoutError, Exception):
         return hydrated
 
     if not preview.cover and not preview.author:
@@ -2882,8 +3093,10 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-if FRONTEND_DIST_DIR.exists():
-    app.mount("/", StaticFiles(directory=FRONTEND_DIST_DIR, html=True), name="frontend")
+app = create_application(
+    routers=API_ROUTERS,
+    lifespan=lifespan,
+)
 
 
 if __name__ == "__main__":

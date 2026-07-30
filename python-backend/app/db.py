@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import shutil
+import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
 
 from .models import (
-    BookSourceRecord,
     BookRecord,
+    BookSourceRecord,
     ComicSourceConfig,
     MangaOcrConfig,
     ProviderConfig,
@@ -66,7 +66,8 @@ DEFAULT_SETTINGS = TranslationSettings(
         "grok2api": ProviderConfig(enabled=False, baseUrl="http://127.0.0.1:8000/v1", model="grok-4"),
         "custom": ProviderConfig(enabled=False, baseUrl="https://localhost:8001/v1", model="custom-model"),
     },
-    mangaOcr=MangaOcrConfig(),
+    # 默认使用本机 Windows 系统 OCR（离线、免外部服务）；密钥留空即用默认语言优先级。
+    mangaOcr=MangaOcrConfig(enabled=True, baseUrl="windows"),
     bika=ComicSourceConfig(),
 )
 
@@ -444,6 +445,20 @@ def list_book_sources() -> list[BookSourceRecord]:
             """
         ).fetchall()
     return [_row_to_book_source(row) for row in rows]
+
+
+def list_builtin_book_source_base_urls() -> list[str]:
+    """返回内置书源的 base_url 列表。
+
+    导入 Legado 书源时，book_sources 表的 base_url 唯一约束会同时覆盖内置书源，
+    但 list_book_sources 只返回非内置书源，导致去重逻辑看不到内置站点。
+    此处单独提供内置 base_url，供导入流程跳过与内置站点 URL 冲突的条目。
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT base_url FROM book_sources WHERE origin = 'builtin'"
+        ).fetchall()
+    return [row[0] for row in rows]
 
 
 def get_book_source(source_id: str) -> BookSourceRecord | None:

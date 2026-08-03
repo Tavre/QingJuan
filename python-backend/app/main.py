@@ -68,6 +68,7 @@ try:
         save_settings,
         save_task,
     )
+    from .link_jobs import LinkJobStore
     from .models import (
         AddBookPayload,
         BookDetailResponse,
@@ -85,6 +86,8 @@ try:
         ChapterActionPayload,
         ChapterContentResponse,
         ChapterRecord,
+        LinkJobRecord,
+        LinkJobStartPayload,
         PreviewResponse,
         ReadingProgressPayload,
         ReadingProgressRecord,
@@ -144,6 +147,7 @@ except ImportError:
         save_settings,
         save_task,
     )
+    from app.link_jobs import LinkJobStore
     from app.models import (
         AddBookPayload,
         BookDetailResponse,
@@ -161,6 +165,8 @@ except ImportError:
         ChapterActionPayload,
         ChapterContentResponse,
         ChapterRecord,
+        LinkJobRecord,
+        LinkJobStartPayload,
         PreviewResponse,
         ReadingProgressPayload,
         ReadingProgressRecord,
@@ -191,6 +197,7 @@ except ImportError:
 LIBRARY_ROOT = DATA_DIR / "library"
 EXPORT_ROOT = DATA_DIR / "exports"
 TASK_QUEUE: asyncio.Queue[str] = asyncio.Queue()
+LINK_JOB_STORE = LinkJobStore()
 SOURCE_CHAPTER_CACHE_AHEAD = 20
 SOURCE_IMPORT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -220,6 +227,7 @@ async def _run_startup(app_instance: FastAPI) -> None:
     app_instance.state.reader_cache_tasks = set()
     app_instance.state.reader_cache_keys = set()
     app_instance.state.reader_cache_locks = {}
+    app_instance.state.link_job_tasks = set()
     for task in list_pending_tasks():
         task.status = "queued"
         task.message = "等待队列处理"
@@ -231,6 +239,13 @@ async def _run_startup(app_instance: FastAPI) -> None:
 
 
 async def _run_shutdown(app_instance: FastAPI) -> None:
+    link_job_tasks = getattr(app_instance.state, "link_job_tasks", set())
+    if isinstance(link_job_tasks, set):
+        for task in list(link_job_tasks):
+            task.cancel()
+        await asyncio.gather(*link_job_tasks, return_exceptions=True)
+        link_job_tasks.clear()
+
     reader_cache_tasks = getattr(app_instance.state, "reader_cache_tasks", set())
     if isinstance(reader_cache_tasks, set):
         for task in list(reader_cache_tasks):
@@ -718,9 +733,16 @@ async def post_retry_task(task_id: str) -> TaskRecord:
     if task.status != "failed":
         raise HTTPException(status_code=400, detail="只有失败任务才能重试")
 
-    book = _get_book_or_404(task.bookId)
-    payload = ChapterActionPayload(chapterIndexes=task.chapterIndexes)
-    return _enqueue_task(book, task.taskType, payload)
+    _get_book_or_404(task.bookId)
+    task.status = "queued"
+    task.completedCount = 0
+    task.progress = 0
+    task.message = "等待重试"
+    task.error = None
+    task.updatedAt = _now()
+    save_task(task)
+    TASK_QUEUE.put_nowait(task.id)
+    return task
 
 
 @library_router.post("/books/preview", response_model=PreviewResponse)
@@ -731,19 +753,13 @@ async def post_preview(payload: AddBookPayload) -> PreviewResponse:
         raise HTTPException(status_code=400, detail=f"解析失败：{exc}") from exc
 
 
-@library_router.post("/books/import", response_model=BookRecord)
-async def post_import(payload: AddBookPayload) -> BookRecord:
-    try:
-        preview = await preview_from_url(payload)
-        lightweight_import = bool(payload.sourceId)
-        result = (
-            await create_book_manifest_only(payload, preview, LIBRARY_ROOT)
-            if lightweight_import
-            else await download_book(payload, preview, LIBRARY_ROOT)
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"导入失败：{exc}") from exc
-
+async def _create_imported_book(payload: AddBookPayload, preview: PreviewResponse) -> BookRecord:
+    lightweight_import = bool(payload.sourceId)
+    result = (
+        await create_book_manifest_only(payload, preview, LIBRARY_ROOT)
+        if lightweight_import
+        else await download_book(payload, preview, LIBRARY_ROOT)
+    )
     record = BookRecord(
         id=f"book-{uuid4()}",
         title=result.title,
@@ -760,6 +776,102 @@ async def post_import(payload: AddBookPayload) -> BookRecord:
     )
     save_book(record)
     return _hydrate_book_record(record)
+
+
+async def _run_link_job_stage(
+    job_id: str,
+    operation: asyncio.Task[Any],
+    *,
+    message: str,
+    start_progress: float,
+    end_progress: float,
+) -> Any:
+    elapsed_seconds = 0
+    try:
+        while True:
+            done, _ = await asyncio.wait({operation}, timeout=3)
+            if operation in done:
+                return operation.result()
+            elapsed_seconds += 3
+            progress = min(end_progress - 1, start_progress + elapsed_seconds / 3)
+            LINK_JOB_STORE.append_log(
+                job_id,
+                "info",
+                f"{message}，已等待 {elapsed_seconds} 秒",
+                progress=progress,
+            )
+    except BaseException:
+        if not operation.done():
+            operation.cancel()
+            await asyncio.gather(operation, return_exceptions=True)
+        raise
+
+
+async def _run_link_job(job_id: str) -> None:
+    request = LINK_JOB_STORE.get(job_id)
+    payload = LINK_JOB_STORE.payload_for(job_id)
+    LINK_JOB_STORE.start(job_id, "开始识别作品链接")
+    LINK_JOB_STORE.append_log(job_id, "info", f"已提交链接：{payload.sourceUrl}", progress=5)
+    try:
+        preview = await _run_link_job_stage(
+            job_id,
+            asyncio.create_task(preview_from_url(payload)),
+            message="正在获取作品元数据和章节目录",
+            start_progress=12,
+            end_progress=60,
+        )
+        LINK_JOB_STORE.append_log(
+            job_id,
+            "info",
+            f"已解析《{preview.title}》，共 {preview.chapterCount} 章",
+            progress=65 if request.mode == "import" else 95,
+        )
+        if request.mode == "preview":
+            LINK_JOB_STORE.complete(job_id, "链接解析完成", preview=preview)
+            return
+
+        LINK_JOB_STORE.append_log(job_id, "info", "开始下载并写入本地书库", progress=68)
+        book = await _run_link_job_stage(
+            job_id,
+            asyncio.create_task(_create_imported_book(payload, preview)),
+            message="正在下载章节并写入本地书库",
+            start_progress=68,
+            end_progress=98,
+        )
+        LINK_JOB_STORE.complete(job_id, "链接导入完成", preview=preview, book=book)
+    except asyncio.CancelledError:
+        LINK_JOB_STORE.fail(job_id, "应用正在关闭，链接任务已取消")
+        raise
+    except Exception as exc:
+        LINK_JOB_STORE.fail(job_id, exc)
+
+
+@library_router.post("/books/link-jobs", response_model=LinkJobRecord)
+async def post_link_job(request: LinkJobStartPayload) -> LinkJobRecord:
+    job = LINK_JOB_STORE.create(request.mode, request.payload)
+    task = asyncio.create_task(_run_link_job(job.id))
+    link_job_tasks: set[asyncio.Task[Any]] = getattr(app.state, "link_job_tasks", set())
+    link_job_tasks.add(task)
+    app.state.link_job_tasks = link_job_tasks
+    task.add_done_callback(link_job_tasks.discard)
+    return job
+
+
+@library_router.get("/books/link-jobs/{job_id}", response_model=LinkJobRecord)
+async def get_link_job(job_id: str) -> LinkJobRecord:
+    try:
+        return LINK_JOB_STORE.get(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@library_router.post("/books/import", response_model=BookRecord)
+async def post_import(payload: AddBookPayload) -> BookRecord:
+    try:
+        preview = await preview_from_url(payload)
+        return await _create_imported_book(payload, preview)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"导入失败：{exc}") from exc
 
 
 @library_router.post("/books/import-local", response_model=BookRecord)

@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../../core/api/api_client.dart';
 import '../../core/models/book.dart';
+import '../../core/models/link_job.dart';
 import '../../core/state/load_state.dart';
 
 class LibraryController extends ChangeNotifier {
@@ -12,6 +15,14 @@ class LibraryController extends ChangeNotifier {
   List<Book> books = const [];
   String query = '';
   String? error;
+  LinkJob? linkJob;
+  JsonMap? linkJobPayload;
+  String? linkJobConnectionError;
+  Timer? _linkJobPoller;
+  bool _linkJobLoadInProgress = false;
+  bool _disposed = false;
+
+  bool get hasActiveLinkJob => linkJob?.isActive ?? false;
 
   List<Book> get filteredBooks {
     final needle = query.trim().toLowerCase();
@@ -49,6 +60,63 @@ class LibraryController extends ChangeNotifier {
 
   Future<BookPreview> preview(JsonMap payload) => api.previewBook(payload);
 
+  Future<void> startLinkJob(String mode, JsonMap payload) async {
+    if (hasActiveLinkJob) return;
+    linkJobConnectionError = null;
+    linkJobPayload = Map<String, dynamic>.from(payload);
+    linkJob = await api.startLinkJob(mode, payload);
+    if (_disposed) return;
+    notifyListeners();
+    _updateLinkJobPolling();
+    await refreshLinkJob();
+  }
+
+  Future<void> refreshLinkJob() async {
+    final current = linkJob;
+    if (current == null || _linkJobLoadInProgress || _disposed) return;
+    _linkJobLoadInProgress = true;
+    try {
+      final next = await api.fetchLinkJob(current.id);
+      if (_disposed) return;
+      linkJob = next;
+      linkJobConnectionError = null;
+      _updateLinkJobPolling();
+      if (next.isCompleted && next.mode == 'import' && next.book != null) {
+        await load(silent: true);
+      } else {
+        notifyListeners();
+      }
+    } catch (exception) {
+      if (_disposed) return;
+      linkJobConnectionError = '$exception';
+      notifyListeners();
+    } finally {
+      _linkJobLoadInProgress = false;
+    }
+  }
+
+  void clearLinkJob() {
+    if (hasActiveLinkJob) return;
+    _linkJobPoller?.cancel();
+    _linkJobPoller = null;
+    linkJob = null;
+    linkJobPayload = null;
+    linkJobConnectionError = null;
+    notifyListeners();
+  }
+
+  void _updateLinkJobPolling() {
+    if (hasActiveLinkJob && _linkJobPoller == null) {
+      _linkJobPoller = Timer.periodic(
+        const Duration(seconds: 1),
+        (_) => unawaited(refreshLinkJob()),
+      );
+    } else if (!hasActiveLinkJob) {
+      _linkJobPoller?.cancel();
+      _linkJobPoller = null;
+    }
+  }
+
   Future<Book> import(JsonMap payload) async {
     final book = await api.importBook(payload);
     await load(silent: true);
@@ -78,5 +146,12 @@ class LibraryController extends ChangeNotifier {
     books = books.where((book) => book.id != bookId).toList();
     state = books.isEmpty ? LoadState.empty : LoadState.ready;
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _linkJobPoller?.cancel();
+    super.dispose();
   }
 }

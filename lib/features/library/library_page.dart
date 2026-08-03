@@ -24,19 +24,34 @@ class LibraryPage extends StatelessWidget {
           title: '书架',
           subtitle: '集中管理下载、翻译与阅读进度。',
           scrollable: false,
-          command: FilledButton(
-            onPressed: () async {
-              final book = await showImportBookDialog(context);
-              if (book != null && context.mounted) {
-                await Navigator.of(context).push<void>(
-                  PageRouteBuilder<void>(
-                    pageBuilder: (_, __, ___) =>
-                        BookDetailPage(bookId: book.id),
+          command: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              if (controller.linkJob != null) ...<Widget>[
+                Button(
+                  onPressed: () => _openImportDialog(context),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      if (controller.hasActiveLinkJob) ...<Widget>[
+                        const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: ProgressRing(strokeWidth: 2.5),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      Text(controller.hasActiveLinkJob ? '链接解析中' : '查看链接任务'),
+                    ],
                   ),
-                );
-              }
-            },
-            child: const Text('添加书籍'),
+                ),
+                const SizedBox(width: 8),
+              ],
+              FilledButton(
+                onPressed: () => _openImportDialog(context),
+                child: const Text('添加书籍'),
+              ),
+            ],
           ),
           child: Expanded(
             child: Column(
@@ -115,5 +130,16 @@ class LibraryPage extends StatelessWidget {
         );
       },
     );
+  }
+
+  Future<void> _openImportDialog(BuildContext context) async {
+    final book = await showImportBookDialog(context);
+    if (book != null && context.mounted) {
+      await Navigator.of(context).push<void>(
+        PageRouteBuilder<void>(
+          pageBuilder: (_, __, ___) => BookDetailPage(bookId: book.id),
+        ),
+      );
+    }
   }
 }

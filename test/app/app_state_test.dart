@@ -1,6 +1,7 @@
 import 'package:fluent_ui/fluent_ui.dart' show ThemeMode;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qingjuan/app/app_state.dart';
+import 'package:qingjuan/core/models/tts_voice.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -40,5 +41,34 @@ void main() {
 
     expect(themeNotifications, 1);
     expect(state.themeModeListenable.value, ThemeMode.dark);
+  });
+
+  test('AppState persists and restores the selected TTS voice', () async {
+    const voice = TtsVoice(
+      name: 'Microsoft Xiaoxiao',
+      locale: 'zh-CN',
+      gender: 'female',
+      identifier: 'voice-xiaoxiao',
+    );
+    final preferences = await SharedPreferences.getInstance();
+    final state = AppState(preferences);
+
+    await state.setTtsVoice(voice);
+    final restored = AppState(preferences);
+
+    expect(restored.ttsVoice, voice);
+
+    await restored.setTtsVoice(null);
+    expect(AppState(preferences).ttsVoice, isNull);
+  });
+
+  test('AppState ignores a corrupted persisted TTS voice', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'qingjuan.ttsVoice': '{"name":42,"locale":false}',
+    });
+
+    final state = AppState(await SharedPreferences.getInstance());
+
+    expect(state.ttsVoice, isNull);
   });
 }

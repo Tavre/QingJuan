@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 
 import '../models/book.dart';
+import '../models/link_job.dart';
 import '../models/settings.dart';
 import '../models/source.dart';
 import '../models/task.dart';
@@ -134,6 +135,22 @@ class ApiClient {
     final response =
         _decode(await _request('POST', '/books/preview', body: payload));
     return BookPreview.fromJson(_map(response));
+  }
+
+  Future<LinkJob> startLinkJob(String mode, JsonMap payload) async {
+    final response = _decode(
+      await _request(
+        'POST',
+        '/books/link-jobs',
+        body: <String, dynamic>{'mode': mode, 'payload': payload},
+      ),
+    );
+    return LinkJob.fromJson(_map(response));
+  }
+
+  Future<LinkJob> fetchLinkJob(String jobId) async {
+    final response = _decode(await _request('GET', '/books/link-jobs/$jobId'));
+    return LinkJob.fromJson(_map(response));
   }
 
   Future<Book> importBook(JsonMap payload) async {

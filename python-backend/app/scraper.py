@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 import hmac
@@ -34,6 +35,12 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, Unidentifi
 
 try:
     from .db import DATA_DIR
+    from .manga_download import (
+        MANGA_RETRYABLE_STATUS_CODES,
+        fetch_image_with_retry,
+        is_valid_image_file,
+        write_image_atomic,
+    )
     from .models import (
         AddBookPayload,
         BookSourceRecord,
@@ -48,6 +55,12 @@ try:
     )
 except ImportError:
     from app.db import DATA_DIR
+    from app.manga_download import (
+        MANGA_RETRYABLE_STATUS_CODES,
+        fetch_image_with_retry,
+        is_valid_image_file,
+        write_image_atomic,
+    )
     from app.models import (
         AddBookPayload,
         BookSourceRecord,
@@ -98,6 +111,14 @@ HAMELN_HOST_KEYWORDS = ("syosetu.org",)
 LINOVELIB_HOST_KEYWORDS = ("linovelib.com", "bilinovel.com")
 COMIC_18_HOST_KEYWORDS = ("18comic.vip",)
 BIKAWEBAPP_HOST_KEYWORDS = ("bikawebapp.com",)
+GENERIC_MANGA_HOST_KEYWORDS = (
+    "webtoons.com",
+    "mangabz.com",
+    "manhuagui.com",
+    "copymanga.com",
+    "copymanga.site",
+    "dmzj.com",
+)
 BUILTIN_MANGA_IMAGE_TIMEOUT_SECONDS = 1800
 BUILTIN_MANGA_IMAGE_SUPPORTED_PROVIDERS = {"openai", "newapi", "grok2api", "custom"}
 CHAT_COMPLETION_IMAGE_MODEL_HINTS = (
@@ -118,6 +139,7 @@ KAKUYOMU_WORK_PATH_PATTERN = re.compile(r"^/works/(?P<work_id>\d+)(?:/episodes/(
 SYOSETU_BOOK_PATH_PATTERN = re.compile(r"^/(?P<book_code>[a-z0-9]+)(?:/(?P<chapter_no>\d+)/?)?$", re.IGNORECASE)
 HAMELN_BOOK_PATH_PATTERN = re.compile(r"^/novel/(?P<book_id>\d+)(?:/(?P<chapter_no>\d+)\.html)?/?$")
 PIXIV_SERIES_PATH_PATTERN = re.compile(r"^/novel/series/(?P<series_id>\d+)/?$")
+PIXIV_ARTWORK_PATH_PATTERN = re.compile(r"^/(?:[a-z]{2}/)?artworks/(?P<artwork_id>\d+)/?$")
 NOVELUP_STORY_PATH_PATTERN = re.compile(r"^/story/(?P<story_id>\d+)(?:/.*)?$")
 ALPHAPOLIS_WORK_PATH_PATTERN = re.compile(
     r"^/novel/(?P<author_id>\d+)/(?P<content_id>\d+)(?:/episode/(?P<episode_id>\d+))?/?$"
@@ -275,8 +297,21 @@ def _is_bikawebapp_url(url: str) -> bool:
     return _host_matches(url, BIKAWEBAPP_HOST_KEYWORDS)
 
 
+def _is_pixiv_manga_url(url: str) -> bool:
+    return _is_pixiv_url(url) and PIXIV_ARTWORK_PATH_PATTERN.match(urlparse(url).path) is not None
+
+
+def _is_generic_manga_url(url: str) -> bool:
+    return _host_matches(url, GENERIC_MANGA_HOST_KEYWORDS)
+
+
 def _is_manga_source_url(url: str) -> bool:
-    return _is_18comic_url(url) or _is_bikawebapp_url(url)
+    return (
+        _is_18comic_url(url)
+        or _is_bikawebapp_url(url)
+        or _is_pixiv_manga_url(url)
+        or _is_generic_manga_url(url)
+    )
 
 
 def _clean_title_suffix(title: str, suffixes: tuple[str, ...]) -> str:
@@ -800,6 +835,86 @@ def _bika_order_from_url(url: str) -> str | None:
 def _manga_placeholder_text(chapter_title: str, page_count: int) -> str:
     readable_count = max(page_count, 0)
     return f"{chapter_title}\n\n漫画章节，共 {readable_count} 页。"
+
+
+MANGA_READER_IMAGE_SELECTORS = (
+    "#_imageList img",
+    "#viewer img",
+    ".comic-contain img",
+    ".comic-container img",
+    ".reader-main img",
+    ".manga-reader img",
+    ".chapter-content img",
+    "[data-page] img",
+)
+MANGA_SCRIPT_IMAGE_ARRAY_PATTERN = re.compile(
+    r"\b(?:chapterImages|pageImages|imageUrls|images)\s*=\s*(\[[\s\S]*?\])\s*;?",
+    re.IGNORECASE,
+)
+MANGA_SCRIPT_PATH_PATTERN = re.compile(
+    r"\b(?:chapterPath|imagePath|imgPath)\s*=\s*(['\"])(.*?)\1\s*;?",
+    re.IGNORECASE,
+)
+MANGA_IMAGE_NOISE_PATTERN = re.compile(
+    r"(?:logo|icon|avatar|banner|advert|/ads?/|loading|spinner|spacer|placeholder|cover)",
+    re.IGNORECASE,
+)
+
+
+def _is_probable_manga_image_url(url: str) -> bool:
+    parsed = urlparse(url)
+    suffix = Path(parsed.path).suffix.lower()
+    return (
+        parsed.scheme in {"http", "https"}
+        and suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+        and MANGA_IMAGE_NOISE_PATTERN.search(url) is None
+    )
+
+
+def _decode_script_image_array(value: str) -> list[str]:
+    normalized = value.replace(r"\/", "/")
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            payload = parser(normalized)
+        except (ValueError, SyntaxError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, (list, tuple)):
+            return [str(item).strip() for item in payload if isinstance(item, str) and item.strip()]
+    return []
+
+
+def _extract_generic_manga_image_urls(html: str, base_url: str) -> list[str]:
+    soup = BeautifulSoup(html, "html.parser")
+    candidates: list[str] = []
+    selector = ", ".join(MANGA_READER_IMAGE_SELECTORS)
+    for image in soup.select(selector):
+        for key in ("data-url", "data-src", "data-original", "src"):
+            value = str(image.get(key) or "").strip()
+            if value and not value.startswith("data:"):
+                candidates.append(urljoin(base_url, value))
+                break
+
+    for script in soup.select("script"):
+        script_text = script.string or script.get_text(" ", strip=False)
+        if not script_text:
+            continue
+        path_match = MANGA_SCRIPT_PATH_PATTERN.search(script_text)
+        image_path = path_match.group(2).replace(r"\/", "/").strip() if path_match else ""
+        for array_match in MANGA_SCRIPT_IMAGE_ARRAY_PATTERN.finditer(script_text):
+            for item in _decode_script_image_array(array_match.group(1)):
+                candidate = item
+                if image_path and not urlparse(item).scheme and not item.startswith(("/", "//")):
+                    candidate = f"{image_path.rstrip('/')}/{item.lstrip('/')}"
+                candidates.append(urljoin(base_url, candidate))
+
+    seen: set[str] = set()
+    image_urls: list[str] = []
+    for candidate in candidates:
+        if candidate in seen or not _is_probable_manga_image_url(candidate):
+            continue
+        seen.add(candidate)
+        image_urls.append(candidate)
+    return image_urls
 
 
 def _linovelib_candidate_urls(url: str) -> list[str]:
@@ -1348,6 +1463,11 @@ def _pixiv_novel_id_from_url(url: str) -> str | None:
 def _pixiv_series_id_from_url(url: str) -> str | None:
     match = PIXIV_SERIES_PATH_PATTERN.match(urlparse(url).path)
     return match.group("series_id") if match else None
+
+
+def _pixiv_artwork_id_from_url(url: str) -> str | None:
+    match = PIXIV_ARTWORK_PATH_PATTERN.match(urlparse(url).path)
+    return match.group("artwork_id") if match else None
 
 
 def _pixiv_api_headers(referer: str | None = None) -> dict[str, str]:
@@ -5390,6 +5510,13 @@ def _jm_client() -> Any:
     return _jm_client_instance
 
 
+def _refresh_jm_client() -> None:
+    global _jm_client_instance
+    _jm_client_instance = None
+    with suppress(Exception):
+        _jm_client()
+
+
 def _jm_live_image_domains() -> list[str]:
     try:
         from jmcomic import JmModuleConfig
@@ -5440,8 +5567,10 @@ def _sync_fetch_18comic_binary(url: str, referer: str) -> bytes:
         "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
     }
     last_error: Exception | None = None
-    candidates = _jm_image_candidate_urls(url)
     for attempt in range(1, 4):
+        if attempt > 1:
+            _refresh_jm_client()
+        candidates = _jm_image_candidate_urls(url)
         for candidate in candidates:
             try:
                 response = curl_requests.get(candidate, impersonate="chrome", timeout=40, headers=headers)
@@ -5956,6 +6085,11 @@ async def _bika_request_with_retry(
                 token=token,
                 json_payload=json_payload,
             )
+        except httpx.HTTPStatusError as exc:
+            last_error = exc
+            if exc.response.status_code not in MANGA_RETRYABLE_STATUS_CODES or attempt >= max_retries:
+                raise
+            await asyncio.sleep(_retry_wait_seconds(exc.response, attempt - 1))
         except (httpx.TransportError, ssl.SSLError) as exc:
             last_error = exc
             if attempt >= max_retries:
@@ -6263,6 +6397,36 @@ async def _preview_syosetu(source_url: str, payload: AddBookPayload) -> PreviewR
     )
 
 
+async def _preview_pixiv_artwork(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    normalized = _normalize_source_url(source_url)
+    artwork_id = _pixiv_artwork_id_from_url(normalized)
+    if not artwork_id:
+        raise ValueError("无法识别 Pixiv 作品编号")
+    async with _build_http_client() as client:
+        result = await _fetch_json(
+            client,
+            f"https://www.pixiv.net/ajax/illust/{artwork_id}",
+            _pixiv_api_headers(normalized),
+        )
+    body = result["body"]
+    if not isinstance(body, dict):
+        raise ValueError("Pixiv 插画接口返回异常")
+    title = str(body.get("title") or payload.title or "未命名漫画").strip()
+    urls = body.get("urls") if isinstance(body.get("urls"), dict) else {}
+    cover = str(urls.get("original") or urls.get("regular") or "").strip() or None
+    description_html = str(body.get("description") or "").strip()
+    synopsis = BeautifulSoup(description_html, "html.parser").get_text(" ", strip=True)
+    page_count = max(1, int(body.get("pageCount") or 1))
+    return PreviewResponse(
+        title=title,
+        author=str(body.get("userName") or "").strip() or None,
+        synopsis=synopsis,
+        cover=cover,
+        chapterCount=1,
+        chapters=[ChapterPreview(title=title, url=normalized, pageCount=page_count)],
+    )
+
+
 async def _preview_pixiv(source_url: str, payload: AddBookPayload) -> PreviewResponse:
     normalized = _normalize_source_url(source_url)
     async with _build_http_client() as client:
@@ -6456,6 +6620,9 @@ async def preview_from_url(payload: AddBookPayload) -> PreviewResponse:
     if _is_bikawebapp_url(source_url):
         result = await _preview_bika(source_url, payload)
         return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
+    if _is_pixiv_manga_url(source_url):
+        result = await _preview_pixiv_artwork(source_url, payload)
+        return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
     if _is_kakuyomu_url(source_url):
         result = await _preview_kakuyomu(source_url, payload)
         return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
@@ -6537,6 +6704,8 @@ async def download_book(payload: AddBookPayload, preview: PreviewResponse, root_
                     image_download_semaphore=image_download_semaphore,
                 )
             except Exception as exc:
+                if _is_manga_source_url(chapter.url):
+                    raise RuntimeError(f"漫画章节下载失败：{chapter.title}：{exc}") from exc
                 result = ChapterFetchResult(
                     text=f"章节抓取失败：{exc}\n原始链接：{chapter.url}",
                     image_urls=[],
@@ -6763,6 +6932,77 @@ async def _fetch_pixiv_chapter_data(
     return ChapterFetchResult(text=text, image_urls=image_urls, illustration=illustration)
 
 
+async def _fetch_pixiv_manga_data(
+    client: httpx.AsyncClient,
+    chapter_url: str,
+    chapter_title: str = "",
+) -> ChapterFetchResult:
+    artwork_id = _pixiv_artwork_id_from_url(chapter_url)
+    if not artwork_id:
+        raise ValueError("无法识别 Pixiv 作品编号")
+    payload = await _fetch_json(
+        client,
+        f"https://www.pixiv.net/ajax/illust/{artwork_id}/pages",
+        _pixiv_api_headers(chapter_url),
+    )
+    body = payload["body"]
+    if not isinstance(body, list):
+        raise ValueError("Pixiv 分页接口返回异常")
+    image_urls: list[str] = []
+    for item in body:
+        if not isinstance(item, dict):
+            continue
+        urls = item.get("urls")
+        if not isinstance(urls, dict):
+            continue
+        candidate = str(urls.get("original") or urls.get("regular") or "").strip()
+        if candidate and candidate not in image_urls:
+            image_urls.append(candidate)
+    if not image_urls:
+        raise ValueError("未能从 Pixiv 接口提取出漫画页面")
+    title = chapter_title.strip() or "Pixiv 漫画"
+    return ChapterFetchResult(
+        text=_manga_placeholder_text(title, len(image_urls)),
+        image_urls=image_urls,
+        illustration=False,
+    )
+
+
+async def _fetch_generic_manga_chapter_data(
+    client: httpx.AsyncClient,
+    chapter_url: str,
+    chapter_title: str = "",
+) -> ChapterFetchResult:
+    response = await _get_html_response(client, chapter_url)
+    resolved_url = str(response.url)
+    image_urls = _extract_generic_manga_image_urls(response.text, resolved_url)
+    if not image_urls:
+        try:
+            snapshot = await _fetch_with_edge_cdp(
+                chapter_url,
+                headless=True,
+                ready_expression="""
+                    document.querySelectorAll(
+                        '#_imageList img, #viewer img, .comic-contain img, .comic-container img, '
+                        + '.reader-main img, .manga-reader img, .chapter-content img, [data-page] img'
+                    ).length > 0
+                """,
+                blocked_message="漫画阅读页被目标站点的访问保护拦截。",
+            )
+            resolved_url = snapshot.resolved_url
+            image_urls = _extract_generic_manga_image_urls(snapshot.html, resolved_url)
+        except Exception as exc:
+            raise ValueError("未能从漫画阅读页提取图片；页面可能需要登录或站点规则已经变化") from exc
+    if not image_urls:
+        raise ValueError("未能从漫画阅读页提取图片")
+    title = chapter_title.strip() or "漫画章节"
+    return ChapterFetchResult(
+        text=_manga_placeholder_text(title, len(image_urls)),
+        image_urls=image_urls,
+        illustration=False,
+    )
+
+
 def _sync_fetch_18comic_chapter_data(chapter_url: str, chapter_title: str = "") -> ChapterFetchResult:
     photo_id = _18comic_album_id_from_url(chapter_url)
     if photo_id:
@@ -6864,6 +7104,10 @@ async def _fetch_chapter_data(client: httpx.AsyncClient, chapter_url: str, chapt
             return await _fetch_18comic_chapter_data(client, chapter_url, chapter_title)
         if _is_bikawebapp_url(chapter_url):
             return await _fetch_bika_chapter_data(client, chapter_url, chapter_title)
+        if _is_pixiv_manga_url(chapter_url):
+            return await _fetch_pixiv_manga_data(client, chapter_url, chapter_title)
+        if _is_generic_manga_url(chapter_url):
+            return await _fetch_generic_manga_chapter_data(client, chapter_url, chapter_title)
         if _is_linovelib_url(chapter_url):
             return await _fetch_linovelib_chapter_data(client, chapter_url, chapter_title)
         if _is_kakuyomu_url(chapter_url):
@@ -6897,6 +7141,8 @@ async def _fetch_chapter_data(client: httpx.AsyncClient, chapter_url: str, chapt
             return ChapterFetchResult(text=text, image_urls=[], illustration=False)
         return ChapterFetchResult(text=soup.get_text("\n", strip=True)[:15000], image_urls=[], illustration=False)
     except Exception as exc:
+        if _is_manga_source_url(chapter_url):
+            raise
         return ChapterFetchResult(
             text=f"章节抓取失败：{exc}\n原始链接：{chapter_url}",
             image_urls=[],
@@ -7223,8 +7469,14 @@ async def _download_binary_bytes(
 ) -> bytes:
     if _is_18comic_url(url) or _is_18comic_url(referer):
         return await asyncio.to_thread(_sync_fetch_18comic_binary, url, referer)
-    response = await _get_binary_response(client, url, referer=referer)
-    return response.content
+    if _is_linovelib_url(url):
+        response = await _get_binary_response(client, url, referer=referer)
+        return response.content
+    return await fetch_image_with_retry(
+        client,
+        url,
+        headers=_image_request_headers(url, referer),
+    )
 
 
 def _image_download_concurrency(source_url: str, concurrency: int) -> int:
@@ -7254,18 +7506,18 @@ async def _download_chapter_images(
         file_hash = md5(image_url.encode("utf-8")).hexdigest()[:10]
         filename = f"{chapter_index:04d}-{image_number:02d}-{file_hash}{extension}"
         target_path = images_dir / filename
-        if target_path.exists():
+        if await asyncio.to_thread(is_valid_image_file, target_path):
             return f"images/{filename}"
 
         async def fetch_and_write() -> None:
             content = await _download_binary_bytes(client, image_url, referer)
-            await asyncio.to_thread(target_path.write_bytes, content)
+            await asyncio.to_thread(write_image_atomic, target_path, content)
 
         if image_download_semaphore is None:
             await fetch_and_write()
         else:
             async with image_download_semaphore:
-                if not target_path.exists():
+                if not await asyncio.to_thread(is_valid_image_file, target_path):
                     await fetch_and_write()
         return f"images/{filename}"
 
@@ -7289,8 +7541,8 @@ async def _download_cover_image(
     extension = _image_extension_from_bytes(image_bytes, _image_extension_from_url(cover_url))
     filename = f"cover{extension}"
     target_path = covers_dir / filename
-    if not target_path.exists():
-        target_path.write_bytes(image_bytes)
+    if not await asyncio.to_thread(is_valid_image_file, target_path):
+        await asyncio.to_thread(write_image_atomic, target_path, image_bytes)
     return f"covers/{filename}"
 
 

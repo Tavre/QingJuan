@@ -39,6 +39,32 @@ void main() {
 
     expect(find.text('测试作品'), findsWidgets);
     expect(find.text('暂时无法加载'), findsNothing);
+    expect(find.text('听小说'), findsOneWidget);
+  });
+
+  testWidgets('hides audiobook action for manga books', (tester) async {
+    final payload = <String, Object?>{
+      ..._detailPayload,
+      'book': <String, Object?>{
+        ...(_detailPayload['book']! as Map<String, Object?>),
+        'bookKind': '漫画',
+      },
+    };
+    final harness = await _Harness.create(
+      MockClient((_) async => http.Response(
+            jsonEncode(payload),
+            200,
+            headers: const <String, String>{
+              'content-type': 'application/json; charset=utf-8',
+            },
+          )),
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('听小说'), findsNothing);
   });
 
   testWidgets('offers recovery and bookshelf deletion when detail fails',

@@ -1,19 +1,27 @@
+import 'dart:async';
+
 import 'package:fluent_ui/fluent_ui.dart';
 
 import '../../app/app_scope.dart';
 import '../../app/app_state.dart';
 import '../../core/models/settings.dart';
+import '../../core/models/tts_voice.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
+import '../audiobook/tts_voice_service.dart';
 
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key});
+  const SettingsPage({this.voiceService, super.key});
+
+  final TtsVoiceService? voiceService;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
 }
 
 class _SettingsPageState extends State<SettingsPage> {
+  static const _systemVoiceKey = '__system_default__';
+
   final _backendController = TextEditingController();
   final _baseUrlController = TextEditingController();
   final _apiKeyController = TextEditingController();
@@ -24,6 +32,70 @@ class _SettingsPageState extends State<SettingsPage> {
   String _provider = 'openai';
   bool _providerEnabled = false;
   bool _initialized = false;
+  late final TtsVoiceService _voiceService;
+  List<TtsVoice> _voices = const <TtsVoice>[];
+  bool _voicesLoading = true;
+  String? _voiceError;
+  String? _previewingVoiceKey;
+
+  @override
+  void initState() {
+    super.initState();
+    _voiceService = widget.voiceService ?? FlutterTtsVoiceService();
+    unawaited(_loadVoices());
+  }
+
+  Future<void> _loadVoices() async {
+    if (mounted) {
+      setState(() {
+        _voicesLoading = true;
+        _voiceError = null;
+      });
+    }
+    try {
+      final voices = await _voiceService.loadVoices();
+      if (!mounted) return;
+      setState(() {
+        _voices = voices;
+        _voicesLoading = false;
+        if (voices.isEmpty) {
+          _voiceError = 'Windows 当前没有可用的系统声音，请先安装语音包。';
+        }
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _voicesLoading = false;
+        _voiceError = '$error';
+      });
+    }
+  }
+
+  Future<void> _selectVoice(AppState appState, String? key) async {
+    if (key == null) return;
+    final voice = key == _systemVoiceKey
+        ? null
+        : _voices.cast<TtsVoice?>().firstWhere(
+              (item) => item?.stableKey == key,
+              orElse: () => appState.ttsVoice,
+            );
+    await _voiceService.stop();
+    await appState.setTtsVoice(voice);
+  }
+
+  Future<void> _previewVoice(TtsVoice voice) async {
+    setState(() {
+      _previewingVoiceKey = voice.stableKey;
+      _voiceError = null;
+    });
+    try {
+      await _voiceService.preview(voice);
+    } catch (error) {
+      if (mounted) setState(() => _voiceError = '$error');
+    } finally {
+      if (mounted) setState(() => _previewingVoiceKey = null);
+    }
+  }
 
   @override
   void didChangeDependencies() {
@@ -106,6 +178,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   void dispose() {
+    unawaited(_voiceService.dispose());
     _backendController.dispose();
     _baseUrlController.dispose();
     _apiKeyController.dispose();
@@ -125,7 +198,7 @@ class _SettingsPageState extends State<SettingsPage> {
       animation: Listenable.merge(<Listenable>[scope.appState, settings]),
       builder: (context, _) => PageFrame(
         title: '设置',
-        subtitle: '管理界面主题、后端连接和翻译服务。',
+        subtitle: '管理界面主题、听书声音、后端连接和翻译服务。',
         command: FilledButton(
           onPressed: settings.saving ? null : _save,
           child: const Text('保存设置'),
@@ -150,6 +223,9 @@ class _SettingsPageState extends State<SettingsPage> {
                 );
               }).toList(),
             ),
+            const SizedBox(height: 30),
+            const SectionTitle('听书声音'),
+            _buildVoiceSettings(scope.appState, compact),
             const SizedBox(height: 30),
             const SectionTitle('后端连接'),
             InfoLabel(
@@ -258,6 +334,100 @@ class _SettingsPageState extends State<SettingsPage> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildVoiceSettings(AppState appState, bool compact) {
+    final selected = appState.ttsVoice;
+    final selectedAvailable = selected == null ||
+        _voices.any((voice) => voice.stableKey == selected.stableKey);
+    final choices = <TtsVoice>[
+      ..._voices,
+      if (selected != null && !selectedAvailable) selected,
+    ];
+    final selectedKey = selected?.stableKey ?? _systemVoiceKey;
+    final selectedVoice = selected == null
+        ? null
+        : choices.cast<TtsVoice?>().firstWhere(
+              (voice) => voice?.stableKey == selected.stableKey,
+              orElse: () => null,
+            );
+    final selector = SizedBox(
+      width: compact ? double.infinity : 520,
+      child: ComboBox<String>(
+        value: selectedKey,
+        isExpanded: true,
+        items: <ComboBoxItem<String>>[
+          const ComboBoxItem<String>(
+            value: _systemVoiceKey,
+            child: Text('跟随系统默认声音'),
+          ),
+          ...choices.map(
+            (voice) => ComboBoxItem<String>(
+              value: voice.stableKey,
+              child: Text(
+                '${voice.name} · ${voice.description}'
+                '${!selectedAvailable && voice == selected ? '（当前不可用）' : ''}',
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ),
+        ],
+        onChanged: _voicesLoading
+            ? null
+            : (key) => unawaited(_selectVoice(appState, key)),
+      ),
+    );
+    final previewing =
+        selectedVoice != null && _previewingVoiceKey == selectedVoice.stableKey;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        InfoLabel(
+          label: '系统声线',
+          child: Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: <Widget>[
+              selector,
+              Button(
+                onPressed: selectedVoice == null ||
+                        _voicesLoading ||
+                        _previewingVoiceKey != null ||
+                        !selectedAvailable
+                    ? null
+                    : () => unawaited(_previewVoice(selectedVoice)),
+                child: Text(previewing ? '试听中…' : '试听'),
+              ),
+              IconButton(
+                icon: const Icon(FluentIcons.refresh, size: 16),
+                onPressed: _voicesLoading ? null : _loadVoices,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          _voicesLoading
+              ? '正在读取 Windows 已安装声音…'
+              : '已发现 ${_voices.length} 个系统声音。选择会立即保存，并用于之后打开的听书页面。',
+          style: FluentTheme.of(context).typography.caption,
+        ),
+        if (_voicesLoading) ...<Widget>[
+          const SizedBox(height: 10),
+          const ProgressBar(),
+        ],
+        if (_voiceError != null) ...<Widget>[
+          const SizedBox(height: 12),
+          InfoBar(
+            title: const Text('声音服务不可用'),
+            content: Text(_voiceError!),
+            severity: InfoBarSeverity.warning,
+          ),
+        ],
+      ],
     );
   }
 }

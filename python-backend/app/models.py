@@ -11,6 +11,7 @@ TranslationProvider = Literal["openai", "newapi", "anthropic", "grok2api", "cust
 TaskType = Literal["download", "translate"]
 TaskStatus = Literal["queued", "running", "completed", "failed"]
 TaskLogLevel = Literal["info", "warning", "error"]
+LinkJobMode = Literal["preview", "import"]
 SourceOrigin = Literal["builtin", "manual", "file", "remote"]
 SourceStatus = Literal["unknown", "online", "slow", "offline", "unsupported"]
 MangaTextDirection = Literal["vertical", "horizontal"]
@@ -97,6 +98,32 @@ class BookRecord(BaseModel):
     cover: str | None = None
     lastReadChapterIndex: int = 0
     lastReadAt: str | None = None
+
+
+class LinkJobStartPayload(BaseModel):
+    mode: LinkJobMode
+    payload: AddBookPayload
+
+
+class LinkJobLogRecord(BaseModel):
+    sequence: int
+    level: TaskLogLevel = "info"
+    message: str
+    createdAt: str
+
+
+class LinkJobRecord(BaseModel):
+    id: str
+    mode: LinkJobMode
+    status: TaskStatus
+    progress: float = 0
+    message: str = ""
+    logs: list[LinkJobLogRecord] = Field(default_factory=list)
+    preview: PreviewResponse | None = None
+    book: BookRecord | None = None
+    error: str | None = None
+    createdAt: str
+    updatedAt: str
 
 
 class ChapterRecord(BaseModel):

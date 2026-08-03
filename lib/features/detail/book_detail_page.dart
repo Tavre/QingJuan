@@ -5,6 +5,7 @@ import '../../core/models/book.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
+import '../audiobook/audiobook_page.dart';
 import '../reader/reader_page.dart';
 
 class BookDetailPage extends StatefulWidget {
@@ -187,6 +188,25 @@ class _BookDetailPageState extends State<BookDetailPage> {
     );
   }
 
+  void _openAudiobook([int? chapterIndex]) {
+    final detail = _detail;
+    if (detail == null || detail.book.kind == '漫画') return;
+    Navigator.of(context).push<void>(
+      PageRouteBuilder<void>(
+        pageBuilder: (_, __, ___) => AudiobookPage(
+          detail: detail,
+          voice: _scope.appState.ttsVoice,
+          initialChapterIndex: chapterIndex ?? detail.progress.chapterIndex,
+          loadChapter: (index, mode) => _scope.api.fetchChapter(
+            detail.book.id,
+            index,
+            mode: mode,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildOverview(BookDetail detail, bool compact) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -212,6 +232,18 @@ class _BookDetailPageState extends State<BookDetailPage> {
               onPressed: () => _openReader(),
               child: const Text('继续阅读'),
             ),
+            if (detail.book.kind != '漫画' && detail.chapters.isNotEmpty)
+              Button(
+                onPressed: () => _openAudiobook(),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Icon(FluentIcons.headset, size: 16),
+                    SizedBox(width: 8),
+                    Text('听小说'),
+                  ],
+                ),
+              ),
             Button(
               onPressed: _actionRunning ? null : () => _enqueue('download'),
               child: Text(_selected.isEmpty ? '下载全部' : '下载所选'),

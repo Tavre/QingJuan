@@ -1,7 +1,7 @@
 name: qingjuan
 description: 青卷：基于 Flutter 与 Fluent UI 的 Windows 阅读客户端。
 publish_to: none
-version: 1.0.1+8
+version: 1.2.0+11
 
 environment:
   sdk: ^3.5.0
@@ -11,6 +11,7 @@ dependencies:
     sdk: flutter
   flutter_localizations:
     sdk: flutter
+  flutter_tts: 4.2.5
   file_selector: ^1.0.3
   fluent_ui: 4.9.2
   http: ^1.2.2

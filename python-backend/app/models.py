@@ -7,10 +7,10 @@ from pydantic import BaseModel, Field, HttpUrl
 
 BookKind = Literal["长小说", "轻小说", "漫画"]
 Language = Literal["中文", "英文", "日文"]
-TranslationProvider = Literal["openai", "newapi", "anthropic", "grok2api", "custom"]
 TaskType = Literal["download", "translate"]
 TaskStatus = Literal["queued", "running", "completed", "failed"]
 TaskLogLevel = Literal["info", "warning", "error"]
+LinkJobMode = Literal["preview", "import"]
 SourceOrigin = Literal["builtin", "manual", "file", "remote"]
 SourceStatus = Literal["unknown", "online", "slow", "offline", "unsupported"]
 MangaTextDirection = Literal["vertical", "horizontal"]
@@ -99,6 +99,32 @@ class BookRecord(BaseModel):
     lastReadAt: str | None = None
 
 
+class LinkJobStartPayload(BaseModel):
+    mode: LinkJobMode
+    payload: AddBookPayload
+
+
+class LinkJobLogRecord(BaseModel):
+    sequence: int
+    level: TaskLogLevel = "info"
+    message: str
+    createdAt: str
+
+
+class LinkJobRecord(BaseModel):
+    id: str
+    mode: LinkJobMode
+    status: TaskStatus
+    progress: float = 0
+    message: str = ""
+    logs: list[LinkJobLogRecord] = Field(default_factory=list)
+    preview: PreviewResponse | None = None
+    book: BookRecord | None = None
+    error: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
 class ChapterRecord(BaseModel):
     id: str
     index: int
@@ -139,17 +165,33 @@ class ChapterActionPayload(BaseModel):
 
 
 class BookExportPayload(BaseModel):
-    format: Literal["txt", "epub"]
+    format: Literal["txt", "text", "docx", "epub", "pdf", "images"]
     targetPath: str | None = None
+    chapterIndexes: list[int] = Field(default_factory=list)
 
 
 class BookExportResponse(BaseModel):
     bookId: str
-    format: Literal["txt", "epub"]
+    format: Literal["txt", "text", "docx", "epub", "pdf", "images"]
     fileName: str
     filePath: str
     downloadUrl: str
     chapterCount: int
+    fileCount: int
+
+
+class ChapterExportPayload(BaseModel):
+    format: Literal["txt", "text", "docx", "epub", "pdf", "images"]
+    targetPath: str
+
+
+class ChapterExportResponse(BaseModel):
+    bookId: str
+    chapterIndex: int
+    format: Literal["txt", "text", "docx", "epub", "pdf", "images"]
+    fileName: str
+    filePath: str
+    fileCount: int
 
 
 class TaskRecord(BaseModel):
@@ -200,11 +242,12 @@ class ChapterContentResponse(BaseModel):
     pageTranslations: list[str] = []
 
 
-class ProviderConfig(BaseModel):
+class OpenAICompatibleConfig(BaseModel):
     enabled: bool = False
-    baseUrl: str = ""
+    baseUrl: str = "https://api.openai.com/v1"
     apiKey: str = ""
-    model: str = ""
+    model: str = "gpt-5.4"
+    supportsVision: bool = False
 
 
 class MangaOcrConfig(BaseModel):
@@ -219,7 +262,6 @@ class ComicSourceConfig(BaseModel):
 
 
 class TranslationSettings(BaseModel):
-    defaultProvider: TranslationProvider = "openai"
     systemPrompt: str = """你是一位专业的文学翻译家，精通中英文互译，擅长小说、散文等文学作品的翻译。
 ## 翻译原则
 1. **忠实原文**：准确传达原文的意思，不随意增删内容
@@ -238,7 +280,7 @@ class TranslationSettings(BaseModel):
     [中译英 / 英译中]"""
     autoTranslateNextChapters: int = 0
     downloadConcurrency: int = Field(default=3, ge=1, le=8)
-    providers: dict[TranslationProvider, ProviderConfig]
+    translationModel: OpenAICompatibleConfig = Field(default_factory=OpenAICompatibleConfig)
     mangaOcr: MangaOcrConfig = Field(default_factory=MangaOcrConfig)
     bika: ComicSourceConfig = Field(default_factory=ComicSourceConfig)
 

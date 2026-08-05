@@ -89,6 +89,7 @@ $RECYCLE.BIN/
 .ace-tool/
 .codex-tmp/
 .claude/
+windows/.obsidian/
 
 # Legacy local-only scratch assets
 debug_bubble_cleanup/

@@ -33,7 +33,21 @@ try {
             --collect-all "curl_cffi" `
             --collect-all "websockets" `
             --collect-all "PIL" `
+            --collect-all "pypdfium2" `
             --collect-all "jmcomic" `
+            --collect-data "rapidocr" `
+            --hidden-import "rapidocr" `
+            --hidden-import "rapidocr.inference_engine.onnxruntime" `
+            --hidden-import "onnxruntime" `
+            --exclude-module "rapidocr.inference_engine.mnn" `
+            --exclude-module "rapidocr.inference_engine.openvino" `
+            --exclude-module "rapidocr.inference_engine.paddle" `
+            --exclude-module "rapidocr.inference_engine.pytorch" `
+            --exclude-module "rapidocr.inference_engine.tensorrt" `
+            --exclude-module "onnxruntime.quantization" `
+            --exclude-module "onnxruntime.tools" `
+            --exclude-module "onnxruntime.transformers" `
+            --exclude-module "torch" `
             --collect-all "common" `
             --collect-all "Crypto" `
             --hidden-import "yaml" `

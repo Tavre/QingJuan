@@ -80,6 +80,7 @@ Dependabot 只维护当前技术栈：
 - 日常调试和重复构建不得修改版本号；只有准备形成新的发布更新时才执行递增。
 - 修改版本后必须验证 FastAPI 元数据与 Windows 文件属性均来自同一版本源，禁止在
   Dart、Python、C++ 或发布脚本中新增独立硬编码版本。
+- 当前发布基线为 `1.2.0+11`；后续正式发布的 build 必须大于 `11`，不得回退版本或复用已发布 build。
 
 发布前：
 
@@ -92,6 +93,12 @@ Dependabot 只维护当前技术栈：
 7. 记录已知站点兼容性与实验功能。
 
 分发时打包整个 `release/qingjuan-windows/`，不能只提供单个 EXE。
+压缩包统一命名为 `QingJuan-v<语义版本>-windows-x64.zip`，发布前必须：
+
+- 验证 `qingjuan.exe` 的 `FileVersion` 与 `ProductVersion`；
+- 启动打包后的 `backend/qingjuan-desktop.exe`，检查 `/health` 与 OpenAPI 版本；
+- 确认压缩包包含 Flutter DLL、原生插件、`data/` 与独立后端；
+- 扫描 `.env`、数据库、日志、设置和凭据文件，并记录 SHA-256。
 
 ## 6. 技术栈迁移规则
 

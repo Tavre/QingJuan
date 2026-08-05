@@ -1,3 +1,4 @@
+import 'package:file_selector/file_selector.dart';
 import 'package:fluent_ui/fluent_ui.dart';
 
 import '../../app/app_scope.dart';
@@ -5,6 +6,7 @@ import '../../core/models/book.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
+import '../audiobook/audiobook_page.dart';
 import '../reader/reader_page.dart';
 
 class BookDetailPage extends StatefulWidget {
@@ -26,6 +28,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
   bool _initialized = false;
   String? _deleteError;
   final Set<int> _selected = <int>{};
+  final Set<int> _exportingChapters = <int>{};
 
   @override
   void didChangeDependencies() {
@@ -187,6 +190,259 @@ class _BookDetailPageState extends State<BookDetailPage> {
     );
   }
 
+  void _openAudiobook([int? chapterIndex]) {
+    final detail = _detail;
+    if (detail == null || detail.book.kind == '漫画') return;
+    Navigator.of(context).push<void>(
+      PageRouteBuilder<void>(
+        pageBuilder: (_, __, ___) => AudiobookPage(
+          detail: detail,
+          voice: _scope.appState.ttsVoice,
+          initialChapterIndex: chapterIndex ?? detail.progress.chapterIndex,
+          loadChapter: (index, mode) => _scope.api.fetchChapter(
+            detail.book.id,
+            index,
+            mode: mode,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _exportChapter(Chapter chapter) async {
+    final detail = _detail;
+    if (detail == null || _exportingChapters.contains(chapter.index)) return;
+
+    final option = await _showChapterExportFormatDialog(
+      detail.book.kind,
+      title: '导出本章',
+    );
+    if (option == null || !mounted) return;
+
+    String? targetPath;
+    if (option.format == 'images') {
+      targetPath = await getDirectoryPath(confirmButtonText: '选择文件夹');
+    } else {
+      final location = await getSaveLocation(
+        acceptedTypeGroups: <XTypeGroup>[option.typeGroup],
+        suggestedName:
+            _chapterExportFileName(detail, chapter, option.extension),
+        confirmButtonText: '保存',
+      );
+      targetPath = location?.path;
+    }
+    if (targetPath == null || targetPath.trim().isEmpty || !mounted) return;
+
+    setState(() => _exportingChapters.add(chapter.index));
+    try {
+      final result = await _scope.api.exportChapter(
+        bookId: widget.bookId,
+        chapterIndex: chapter.index,
+        format: option.format,
+        targetPath: targetPath,
+      );
+      if (!mounted) return;
+      final filePath = result['filePath'] as String? ?? targetPath;
+      final fileCount = result['fileCount'] as int? ?? 1;
+      await displayInfoBar(
+        context,
+        builder: (_, __) => InfoBar(
+          title: const Text('章节导出完成'),
+          content: Text(
+            option.format == 'images'
+                ? '已按顺序导出 $fileCount 张图片到：$filePath'
+                : '已保存到：$filePath',
+          ),
+          severity: InfoBarSeverity.success,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      await displayInfoBar(
+        context,
+        builder: (_, __) => InfoBar(
+          title: const Text('章节导出失败'),
+          content: Text('$error'),
+          severity: InfoBarSeverity.error,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _exportingChapters.remove(chapter.index));
+      }
+    }
+  }
+
+  Future<void> _exportSelectedChapters() async {
+    final detail = _detail;
+    if (detail == null || _actionRunning) return;
+    final chapters = _selected.isEmpty
+        ? detail.chapters
+        : detail.chapters
+            .where((chapter) => _selected.contains(chapter.index))
+            .toList();
+    final unavailable =
+        chapters.where((chapter) => !chapter.downloaded).toList();
+    if (unavailable.isNotEmpty) {
+      await displayInfoBar(
+        context,
+        builder: (_, __) => InfoBar(
+          title: const Text('存在尚未下载的章节'),
+          content: Text(
+              '请先下载第 ${unavailable.map((chapter) => chapter.index).join('、')} 章。'),
+          severity: InfoBarSeverity.warning,
+        ),
+      );
+      return;
+    }
+
+    final exportingAll = _selected.isEmpty;
+    final option = await _showChapterExportFormatDialog(
+      detail.book.kind,
+      title: exportingAll ? '导出全部章节' : '导出所选章节',
+    );
+    if (option == null || !mounted) return;
+
+    String? targetPath;
+    if (option.format == 'images') {
+      targetPath = await getDirectoryPath(confirmButtonText: '选择文件夹');
+    } else {
+      final location = await getSaveLocation(
+        acceptedTypeGroups: <XTypeGroup>[option.typeGroup],
+        suggestedName: _bookExportFileName(
+          detail,
+          option.extension,
+          exportingAll: exportingAll,
+          chapterCount: chapters.length,
+        ),
+        confirmButtonText: '保存',
+      );
+      targetPath = location?.path;
+    }
+    if (targetPath == null || targetPath.trim().isEmpty || !mounted) return;
+
+    setState(() => _actionRunning = true);
+    try {
+      final result = await _scope.api.exportBook(
+        bookId: widget.bookId,
+        chapterIndexes: chapters.map((chapter) => chapter.index).toList(),
+        format: option.format,
+        targetPath: targetPath,
+      );
+      if (!mounted) return;
+      final filePath = result['filePath'] as String? ?? targetPath;
+      final chapterCount = result['chapterCount'] as int? ?? chapters.length;
+      final fileCount = result['fileCount'] as int? ?? 1;
+      await displayInfoBar(
+        context,
+        builder: (_, __) => InfoBar(
+          title: const Text('章节导出完成'),
+          content: Text(
+            option.format == 'images'
+                ? '已导出 $chapterCount 章、$fileCount 张图片到：$filePath'
+                : '已将 $chapterCount 章保存到：$filePath',
+          ),
+          severity: InfoBarSeverity.success,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      await displayInfoBar(
+        context,
+        builder: (_, __) => InfoBar(
+          title: const Text('章节导出失败'),
+          content: Text('$error'),
+          severity: InfoBarSeverity.error,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _actionRunning = false);
+    }
+  }
+
+  Future<_ChapterExportOption?> _showChapterExportFormatDialog(
+    String bookKind, {
+    required String title,
+  }) {
+    final options = bookKind == '漫画'
+        ? _mangaChapterExportOptions
+        : _novelChapterExportOptions;
+    return showDialog<_ChapterExportOption>(
+      context: context,
+      builder: (dialogContext) => ContentDialog(
+        title: Text(title),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(minWidth: 360, maxWidth: 460),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const Text('选择保存格式。优先导出已有译文或译图，否则导出原始内容。'),
+              const SizedBox(height: 16),
+              for (final option in options) ...<Widget>[
+                SizedBox(
+                  width: double.infinity,
+                  child: Button(
+                    onPressed: () => Navigator.pop(dialogContext, option),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            Text(option.label),
+                            const SizedBox(height: 3),
+                            Text(
+                              option.description,
+                              style: FluentTheme.of(dialogContext)
+                                  .typography
+                                  .caption,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+            ],
+          ),
+        ),
+        actions: <Widget>[
+          Button(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _chapterExportFileName(
+    BookDetail detail,
+    Chapter chapter,
+    String extension,
+  ) {
+    final rawName =
+        '${detail.book.title}-${chapter.index.toString().padLeft(4, '0')}-${chapter.title}';
+    final safeName = rawName.replaceAll(RegExp(r'[\\/:*?"<>|]+'), '_').trim();
+    return '${safeName.isEmpty ? '章节' : safeName}.$extension';
+  }
+
+  String _bookExportFileName(
+    BookDetail detail,
+    String extension, {
+    required bool exportingAll,
+    required int chapterCount,
+  }) {
+    final scopeName = exportingAll ? '全部章节' : '所选$chapterCount章';
+    final rawName = '${detail.book.title}-$scopeName';
+    final safeName = rawName.replaceAll(RegExp(r'[\\/:*?"<>|]+'), '_').trim();
+    return '${safeName.isEmpty ? '作品导出' : safeName}.$extension';
+  }
+
   Widget _buildOverview(BookDetail detail, bool compact) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -212,8 +468,20 @@ class _BookDetailPageState extends State<BookDetailPage> {
               onPressed: () => _openReader(),
               child: const Text('继续阅读'),
             ),
+            if (detail.book.kind != '漫画' && detail.chapters.isNotEmpty)
+              Button(
+                onPressed: () => _openAudiobook(),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Icon(FluentIcons.headset, size: 16),
+                    SizedBox(width: 8),
+                    Text('听小说'),
+                  ],
+                ),
+              ),
             Button(
-              onPressed: _actionRunning ? null : () => _enqueue('download'),
+              onPressed: _actionRunning ? null : _exportSelectedChapters,
               child: Text(_selected.isEmpty ? '下载全部' : '下载所选'),
             ),
             Button(
@@ -297,6 +565,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
                       return _ChapterRow(
                         chapter: chapter,
                         selected: _selected.contains(chapter.index),
+                        exporting: _exportingChapters.contains(chapter.index),
                         onSelected: (value) => setState(() {
                           if (value) {
                             _selected.add(chapter.index);
@@ -305,6 +574,9 @@ class _BookDetailPageState extends State<BookDetailPage> {
                           }
                         }),
                         onOpen: () => _openReader(chapter.index),
+                        onExport: chapter.downloaded
+                            ? () => _exportChapter(chapter)
+                            : null,
                       );
                     },
                     childCount: detail.chapters.length,
@@ -386,14 +658,18 @@ class _ChapterRow extends StatelessWidget {
   const _ChapterRow({
     required this.chapter,
     required this.selected,
+    required this.exporting,
     required this.onSelected,
     required this.onOpen,
+    required this.onExport,
   });
 
   final Chapter chapter;
   final bool selected;
+  final bool exporting;
   final ValueChanged<bool> onSelected;
   final VoidCallback onOpen;
+  final VoidCallback? onExport;
 
   @override
   Widget build(BuildContext context) {
@@ -418,7 +694,20 @@ class _ChapterRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 10),
-          if (chapter.downloaded) const Icon(FluentIcons.download, size: 14),
+          Tooltip(
+            message: chapter.downloaded ? '导出本章' : '请先下载本章',
+            child: IconButton(
+              key: ValueKey<String>('chapter-export-${chapter.index}'),
+              onPressed: exporting ? null : onExport,
+              icon: exporting
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: ProgressRing(strokeWidth: 2),
+                    )
+                  : const Icon(FluentIcons.download, size: 14),
+            ),
+          ),
           if (chapter.translated) ...<Widget>[
             const SizedBox(width: 8),
             const Icon(FluentIcons.locale_language, size: 14),
@@ -428,3 +717,64 @@ class _ChapterRow extends StatelessWidget {
     );
   }
 }
+
+class _ChapterExportOption {
+  const _ChapterExportOption({
+    required this.format,
+    required this.label,
+    required this.description,
+    required this.extension,
+  });
+
+  final String format;
+  final String label;
+  final String description;
+  final String extension;
+
+  XTypeGroup get typeGroup => XTypeGroup(
+        label: '$label 文件',
+        extensions: <String>[extension],
+      );
+}
+
+const _novelChapterExportOptions = <_ChapterExportOption>[
+  _ChapterExportOption(
+    format: 'txt',
+    label: 'TXT',
+    description: '通用 UTF-8 纯文本，可重新导入青卷。',
+    extension: 'txt',
+  ),
+  _ChapterExportOption(
+    format: 'text',
+    label: 'TEXT',
+    description: '使用 .text 扩展名的 UTF-8 纯文本。',
+    extension: 'text',
+  ),
+  _ChapterExportOption(
+    format: 'docx',
+    label: 'DOCX',
+    description: 'Microsoft Word 文档，可重新导入青卷。',
+    extension: 'docx',
+  ),
+  _ChapterExportOption(
+    format: 'epub',
+    label: 'EPUB',
+    description: '标准电子书格式，可重新导入青卷。',
+    extension: 'epub',
+  ),
+];
+
+const _mangaChapterExportOptions = <_ChapterExportOption>[
+  _ChapterExportOption(
+    format: 'images',
+    label: '图片文件夹',
+    description: '按章节建立文件夹，页面按 001、002……顺序命名。',
+    extension: 'png',
+  ),
+  _ChapterExportOption(
+    format: 'pdf',
+    label: 'PDF',
+    description: '将所选章节页面依次合并为可重新导入青卷的 PDF。',
+    extension: 'pdf',
+  ),
+];

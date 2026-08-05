@@ -19,6 +19,94 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
 
+  test('posts the selected chapter export format and destination', () async {
+    late http.Request capturedRequest;
+    final api = ApiClient(
+      () => 'http://127.0.0.1:8000',
+      client: MockClient((request) async {
+        capturedRequest = request;
+        return http.Response(
+          jsonEncode(<String, Object?>{
+            'bookId': 'book-1',
+            'chapterIndex': 3,
+            'format': 'docx',
+            'fileName': '第三章.docx',
+            'filePath': r'D:\导出\第三章.docx',
+            'fileCount': 1,
+          }),
+          200,
+          headers: const <String, String>{
+            'content-type': 'application/json; charset=utf-8',
+          },
+        );
+      }),
+    );
+    addTearDown(api.close);
+
+    final result = await api.exportChapter(
+      bookId: 'book-1',
+      chapterIndex: 3,
+      format: 'docx',
+      targetPath: r'D:\导出\第三章.docx',
+    );
+
+    expect(capturedRequest.method, 'POST');
+    expect(capturedRequest.url.path, '/books/book-1/chapters/3/export');
+    expect(
+      jsonDecode(capturedRequest.body),
+      <String, Object?>{
+        'format': 'docx',
+        'targetPath': r'D:\导出\第三章.docx',
+      },
+    );
+    expect(result['fileCount'], 1);
+  });
+
+  test('posts selected chapters through the book export endpoint', () async {
+    late http.Request capturedRequest;
+    final api = ApiClient(
+      () => 'http://127.0.0.1:8000',
+      client: MockClient((request) async {
+        capturedRequest = request;
+        return http.Response(
+          jsonEncode(<String, Object?>{
+            'bookId': 'book-1',
+            'format': 'epub',
+            'fileName': '测试作品.epub',
+            'filePath': r'D:\导出\测试作品.epub',
+            'downloadUrl': '',
+            'chapterCount': 2,
+            'fileCount': 1,
+          }),
+          200,
+          headers: const <String, String>{
+            'content-type': 'application/json; charset=utf-8',
+          },
+        );
+      }),
+    );
+    addTearDown(api.close);
+
+    final result = await api.exportBook(
+      bookId: 'book-1',
+      chapterIndexes: const <int>[2, 4],
+      format: 'epub',
+      targetPath: r'D:\导出\测试作品.epub',
+    );
+
+    expect(capturedRequest.method, 'POST');
+    expect(capturedRequest.url.path, '/books/book-1/export');
+    expect(
+      jsonDecode(capturedRequest.body),
+      <String, Object?>{
+        'format': 'epub',
+        'targetPath': r'D:\导出\测试作品.epub',
+        'chapterIndexes': <int>[2, 4],
+      },
+    );
+    expect(result['chapterCount'], 2);
+  });
+
   testWidgets('loads detail after AppScope becomes available', (tester) async {
     final harness = await _Harness.create(
       MockClient((request) async {
@@ -39,6 +127,124 @@ void main() {
 
     expect(find.text('测试作品'), findsWidgets);
     expect(find.text('暂时无法加载'), findsNothing);
+    expect(find.text('听小说'), findsOneWidget);
+  });
+
+  testWidgets('hides audiobook action for manga books', (tester) async {
+    final payload = <String, Object?>{
+      ..._detailPayload,
+      'book': <String, Object?>{
+        ...(_detailPayload['book']! as Map<String, Object?>),
+        'bookKind': '漫画',
+      },
+    };
+    final harness = await _Harness.create(
+      MockClient((_) async => http.Response(
+            jsonEncode(payload),
+            200,
+            headers: const <String, String>{
+              'content-type': 'application/json; charset=utf-8',
+            },
+          )),
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('听小说'), findsNothing);
+  });
+
+  testWidgets('opens import-compatible novel chapter export formats',
+      (tester) async {
+    final harness = await _Harness.create(
+      MockClient((_) async => http.Response(
+            jsonEncode(_detailPayload),
+            200,
+            headers: const <String, String>{
+              'content-type': 'application/json; charset=utf-8',
+            },
+          )),
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(
+      find.byKey(const ValueKey<String>('chapter-export-1')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('导出本章'), findsOneWidget);
+    expect(find.text('TXT'), findsOneWidget);
+    expect(find.text('TEXT'), findsOneWidget);
+    expect(find.text('DOCX'), findsOneWidget);
+    expect(find.text('EPUB'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('TXT')).dx,
+      closeTo(
+        tester.getTopLeft(find.text('通用 UTF-8 纯文本，可重新导入青卷。')).dx,
+        0.5,
+      ),
+    );
+  });
+
+  testWidgets('top download action opens the same export format dialog',
+      (tester) async {
+    final harness = await _Harness.create(
+      MockClient((_) async => http.Response(
+            jsonEncode(_detailPayload),
+            200,
+            headers: const <String, String>{
+              'content-type': 'application/json; charset=utf-8',
+            },
+          )),
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(find.text('下载全部'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('导出全部章节'), findsOneWidget);
+    expect(find.text('TXT'), findsOneWidget);
+    expect(find.text('TEXT'), findsOneWidget);
+    expect(find.text('DOCX'), findsOneWidget);
+    expect(find.text('EPUB'), findsOneWidget);
+  });
+
+  testWidgets('opens ordered image folder and PDF formats for manga chapters',
+      (tester) async {
+    final payload = <String, Object?>{
+      ..._detailPayload,
+      'book': <String, Object?>{
+        ...(_detailPayload['book']! as Map<String, Object?>),
+        'bookKind': '漫画',
+      },
+    };
+    final harness = await _Harness.create(
+      MockClient((_) async => http.Response(
+            jsonEncode(payload),
+            200,
+            headers: const <String, String>{
+              'content-type': 'application/json; charset=utf-8',
+            },
+          )),
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(
+      find.byKey(const ValueKey<String>('chapter-export-1')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('导出本章'), findsOneWidget);
+    expect(find.text('图片文件夹'), findsOneWidget);
+    expect(find.text('PDF'), findsOneWidget);
+    expect(find.text('TXT'), findsNothing);
   });
 
   testWidgets('offers recovery and bookshelf deletion when detail fails',

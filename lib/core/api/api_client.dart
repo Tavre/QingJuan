@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 
 import '../models/book.dart';
+import '../models/link_job.dart';
 import '../models/settings.dart';
 import '../models/source.dart';
 import '../models/task.dart';
@@ -136,6 +137,22 @@ class ApiClient {
     return BookPreview.fromJson(_map(response));
   }
 
+  Future<LinkJob> startLinkJob(String mode, JsonMap payload) async {
+    final response = _decode(
+      await _request(
+        'POST',
+        '/books/link-jobs',
+        body: <String, dynamic>{'mode': mode, 'payload': payload},
+      ),
+    );
+    return LinkJob.fromJson(_map(response));
+  }
+
+  Future<LinkJob> fetchLinkJob(String jobId) async {
+    final response = _decode(await _request('GET', '/books/link-jobs/$jobId'));
+    return LinkJob.fromJson(_map(response));
+  }
+
   Future<Book> importBook(JsonMap payload) async {
     final response =
         _decode(await _request('POST', '/books/import', body: payload));
@@ -230,6 +247,45 @@ class ApiClient {
       ),
     );
     return BookTask.fromJson(_map(payload));
+  }
+
+  Future<JsonMap> exportChapter({
+    required String bookId,
+    required int chapterIndex,
+    required String format,
+    required String targetPath,
+  }) async {
+    final payload = _decode(
+      await _request(
+        'POST',
+        '/books/$bookId/chapters/$chapterIndex/export',
+        body: <String, dynamic>{
+          'format': format,
+          'targetPath': targetPath,
+        },
+      ),
+    );
+    return _map(payload);
+  }
+
+  Future<JsonMap> exportBook({
+    required String bookId,
+    required List<int> chapterIndexes,
+    required String format,
+    required String targetPath,
+  }) async {
+    final payload = _decode(
+      await _request(
+        'POST',
+        '/books/$bookId/export',
+        body: <String, dynamic>{
+          'format': format,
+          'targetPath': targetPath,
+          'chapterIndexes': chapterIndexes,
+        },
+      ),
+    );
+    return _map(payload);
   }
 
   Future<BookTask> retryTask(String taskId) async {

@@ -3147,11 +3147,21 @@ def _local_render_font_paths(*, bold: bool = False) -> list[Path]:
         windows_fonts_dir / "simsun.ttc",
         windows_fonts_dir / "NotoSansCJK-Regular.ttc",
         windows_fonts_dir / "arial.ttf",
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
+        Path("/System/Library/Fonts/PingFang.ttc"),
+        Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
     ]
     bold_paths = [
         windows_fonts_dir / "msyhbd.ttc",
         windows_fonts_dir / "simhei.ttf",
         windows_fonts_dir / "arialbd.ttf",
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"),
+        Path("/System/Library/Fonts/PingFang.ttc"),
+        Path("/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
     ]
     return bold_paths + regular_paths if bold else regular_paths + bold_paths
 
@@ -3165,7 +3175,21 @@ def _load_local_render_font(font_size: int, *, bold: bool = False) -> ImageFont.
             return ImageFont.truetype(str(font_path), safe_size, encoding="utf-8")
         except Exception:
             continue
-    return ImageFont.load_default()
+    # Pillow 在部分 Linux 发行版中可以通过 Fontconfig 按文件名解析
+    # DejaVu Sans；这能覆盖字体安装位置不同于上述常见目录的环境。
+    fallback_names = (
+        ("DejaVuSans-Bold.ttf", "DejaVuSans.ttf")
+        if bold
+        else ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf")
+    )
+    for font_name in fallback_names:
+        try:
+            return ImageFont.truetype(font_name, safe_size, encoding="utf-8")
+        except Exception:
+            continue
+    # Pillow 12 自带可缩放的默认字体。即使系统没有安装任何字体，仍必须
+    # 保留调用方请求的字号，否则样式估算和 OCR 图像证据都会退化到约 10px。
+    return ImageFont.load_default(size=safe_size)
 
 
 VERTICAL_PUNCTUATION_MAP: dict[str, str] = {

@@ -1,97 +1,97 @@
 import 'book.dart';
 
-const providerKeys = <String>[
-  'openai',
-  'newapi',
-  'anthropic',
-  'grok2api',
-  'custom'
-];
-
-class ProviderSettings {
-  const ProviderSettings({
+class TranslationModelSettings {
+  const TranslationModelSettings({
     required this.enabled,
     required this.baseUrl,
     required this.apiKey,
     required this.model,
+    required this.supportsVision,
   });
 
-  factory ProviderSettings.fromJson(JsonMap json) => ProviderSettings(
+  factory TranslationModelSettings.fromJson(JsonMap json) =>
+      TranslationModelSettings(
         enabled: json['enabled'] as bool? ?? false,
-        baseUrl: json['baseUrl'] as String? ?? '',
+        baseUrl: json['baseUrl'] as String? ?? 'https://api.openai.com/v1',
         apiKey: json['apiKey'] as String? ?? '',
-        model: json['model'] as String? ?? '',
+        model: json['model'] as String? ?? 'gpt-5.4',
+        supportsVision: json['supportsVision'] as bool? ?? false,
       );
 
-  const ProviderSettings.empty()
+  const TranslationModelSettings.defaults()
       : enabled = false,
-        baseUrl = '',
+        baseUrl = 'https://api.openai.com/v1',
         apiKey = '',
-        model = '';
+        model = 'gpt-5.4',
+        supportsVision = false;
 
   JsonMap toJson() => <String, dynamic>{
         'enabled': enabled,
         'baseUrl': baseUrl,
         'apiKey': apiKey,
         'model': model,
+        'supportsVision': supportsVision,
       };
 
-  ProviderSettings copyWith({
+  TranslationModelSettings copyWith({
     bool? enabled,
     String? baseUrl,
     String? apiKey,
     String? model,
+    bool? supportsVision,
   }) =>
-      ProviderSettings(
+      TranslationModelSettings(
         enabled: enabled ?? this.enabled,
         baseUrl: baseUrl ?? this.baseUrl,
         apiKey: apiKey ?? this.apiKey,
         model: model ?? this.model,
+        supportsVision: supportsVision ?? this.supportsVision,
       );
 
   final bool enabled;
   final String baseUrl;
   final String apiKey;
   final String model;
+  final bool supportsVision;
 }
 
 class TranslationSettings {
   const TranslationSettings({
-    required this.defaultProvider,
     required this.systemPrompt,
     required this.autoTranslateNextChapters,
     required this.downloadConcurrency,
-    required this.providers,
+    required this.translationModel,
     required this.mangaOcr,
     required this.bika,
   });
 
   factory TranslationSettings.fromJson(JsonMap json) {
+    final rawTranslationModel = json['translationModel'] as JsonMap?;
     final rawProviders = (json['providers'] as JsonMap?) ?? const {};
+    final selectedProvider = json['defaultProvider'] as String? ?? 'openai';
+    final legacySelected = rawProviders[selectedProvider] as JsonMap?;
+    final legacyOpenAi = rawProviders['openai'] as JsonMap?;
+    final migratedTranslationModel = rawTranslationModel ??
+        (selectedProvider != 'anthropic' ? legacySelected : null) ??
+        legacyOpenAi ??
+        const <String, dynamic>{};
     return TranslationSettings(
-      defaultProvider: json['defaultProvider'] as String? ?? 'openai',
       systemPrompt: json['systemPrompt'] as String? ?? '',
       autoTranslateNextChapters:
           (json['autoTranslateNextChapters'] as num?)?.toInt() ?? 2,
       downloadConcurrency: (json['downloadConcurrency'] as num?)?.toInt() ?? 4,
-      providers: <String, ProviderSettings>{
-        for (final key in providerKeys)
-          key: ProviderSettings.fromJson(
-              (rawProviders[key] as JsonMap?) ?? const {}),
-      },
+      translationModel:
+          TranslationModelSettings.fromJson(migratedTranslationModel),
       mangaOcr: (json['mangaOcr'] as JsonMap?) ?? <String, dynamic>{},
       bika: (json['bika'] as JsonMap?) ?? <String, dynamic>{},
     );
   }
 
-  factory TranslationSettings.defaults() => TranslationSettings(
-        defaultProvider: 'openai',
+  factory TranslationSettings.defaults() => const TranslationSettings(
         systemPrompt: '请准确翻译并保留原文段落结构。',
         autoTranslateNextChapters: 2,
         downloadConcurrency: 4,
-        providers: <String, ProviderSettings>{
-          for (final key in providerKeys) key: const ProviderSettings.empty(),
-        },
+        translationModel: TranslationModelSettings.defaults(),
         mangaOcr: <String, dynamic>{
           'enabled': false,
           'baseUrl': '',
@@ -101,39 +101,34 @@ class TranslationSettings {
       );
 
   JsonMap toJson() => <String, dynamic>{
-        'defaultProvider': defaultProvider,
         'systemPrompt': systemPrompt,
         'autoTranslateNextChapters': autoTranslateNextChapters,
         'downloadConcurrency': downloadConcurrency,
-        'providers':
-            providers.map((key, value) => MapEntry(key, value.toJson())),
+        'translationModel': translationModel.toJson(),
         'mangaOcr': mangaOcr,
         'bika': bika,
       };
 
   TranslationSettings copyWith({
-    String? defaultProvider,
     String? systemPrompt,
     int? autoTranslateNextChapters,
     int? downloadConcurrency,
-    Map<String, ProviderSettings>? providers,
+    TranslationModelSettings? translationModel,
   }) =>
       TranslationSettings(
-        defaultProvider: defaultProvider ?? this.defaultProvider,
         systemPrompt: systemPrompt ?? this.systemPrompt,
         autoTranslateNextChapters:
             autoTranslateNextChapters ?? this.autoTranslateNextChapters,
         downloadConcurrency: downloadConcurrency ?? this.downloadConcurrency,
-        providers: providers ?? this.providers,
+        translationModel: translationModel ?? this.translationModel,
         mangaOcr: mangaOcr,
         bika: bika,
       );
 
-  final String defaultProvider;
   final String systemPrompt;
   final int autoTranslateNextChapters;
   final int downloadConcurrency;
-  final Map<String, ProviderSettings> providers;
+  final TranslationModelSettings translationModel;
   final JsonMap mangaOcr;
   final JsonMap bika;
 }

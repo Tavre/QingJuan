@@ -4,6 +4,7 @@ import 'package:qingjuan/app/app_scope.dart';
 import 'package:qingjuan/app/app_state.dart';
 import 'package:qingjuan/core/api/api_client.dart';
 import 'package:qingjuan/core/backend/backend_process_manager.dart';
+import 'package:qingjuan/core/models/settings.dart';
 import 'package:qingjuan/core/models/tts_voice.dart';
 import 'package:qingjuan/features/audiobook/tts_voice_service.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
@@ -15,6 +16,30 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
+
+  test('legacy provider settings migrate to one OpenAI-compatible model', () {
+    final settings = TranslationSettings.fromJson(<String, dynamic>{
+      'defaultProvider': 'custom',
+      'providers': <String, dynamic>{
+        'openai': <String, dynamic>{'enabled': false},
+        'custom': <String, dynamic>{
+          'enabled': true,
+          'baseUrl': 'https://gateway.example.test/v1',
+          'apiKey': 'secret',
+          'model': 'vision-model',
+        },
+      },
+    });
+
+    expect(settings.translationModel.enabled, isTrue);
+    expect(
+        settings.translationModel.baseUrl, 'https://gateway.example.test/v1');
+    expect(settings.translationModel.model, 'vision-model');
+    expect(settings.translationModel.supportsVision, isFalse);
+    expect(settings.translationModel.toJson()['supportsVision'], isFalse);
+    expect(settings.toJson().containsKey('providers'), isFalse);
+    expect(settings.toJson().containsKey('defaultProvider'), isFalse);
+  });
 
   testWidgets('settings lists, persists and previews Windows voices',
       (tester) async {
@@ -46,6 +71,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('已发现 1 个系统声音。选择会立即保存，并用于之后打开的听书页面。'), findsOneWidget);
+    expect(find.text('OpenAI 兼容接口'), findsOneWidget);
+    expect(find.text('启用翻译模型'), findsOneWidget);
+    expect(find.text('使用模型辅助识图'), findsOneWidget);
+    expect(find.textContaining('纯文本模型也可以翻译'), findsOneWidget);
+    expect(find.text('启用当前提供商'), findsNothing);
+    expect(find.text('newapi'), findsNothing);
+    expect(find.text('anthropic'), findsNothing);
 
     await tester.tap(find.byType(ComboBox<String>));
     await tester.pumpAndSettle();

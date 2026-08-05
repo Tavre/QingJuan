@@ -29,8 +29,8 @@ class _SettingsPageState extends State<SettingsPage> {
   final _promptController = TextEditingController();
   final _autoTranslateController = TextEditingController();
   final _concurrencyController = TextEditingController();
-  String _provider = 'openai';
-  bool _providerEnabled = false;
+  bool _translationModelEnabled = false;
+  bool _translationModelSupportsVision = false;
   bool _initialized = false;
   late final TtsVoiceService _voiceService;
   List<TtsVoice> _voices = const <TtsVoice>[];
@@ -108,40 +108,31 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   void _loadModel(TranslationSettings settings) {
-    final provider =
-        settings.providers[_provider] ?? const ProviderSettings.empty();
-    _baseUrlController.text = provider.baseUrl;
-    _apiKeyController.text = provider.apiKey;
-    _modelController.text = provider.model;
+    final translationModel = settings.translationModel;
+    _baseUrlController.text = translationModel.baseUrl;
+    _apiKeyController.text = translationModel.apiKey;
+    _modelController.text = translationModel.model;
     _promptController.text = settings.systemPrompt;
     _autoTranslateController.text = '${settings.autoTranslateNextChapters}';
     _concurrencyController.text = '${settings.downloadConcurrency}';
-    _providerEnabled = provider.enabled;
+    _translationModelEnabled = translationModel.enabled;
+    _translationModelSupportsVision = translationModel.supportsVision;
   }
 
-  TranslationSettings _commitProvider(TranslationSettings settings) {
-    final providers = Map<String, ProviderSettings>.from(settings.providers);
-    providers[_provider] = ProviderSettings(
-      enabled: _providerEnabled,
+  TranslationSettings _commitTranslationModel(TranslationSettings settings) {
+    final translationModel = TranslationModelSettings(
+      enabled: _translationModelEnabled,
       baseUrl: _baseUrlController.text.trim(),
       apiKey: _apiKeyController.text.trim(),
       model: _modelController.text.trim(),
+      supportsVision: _translationModelSupportsVision,
     );
-    return settings.copyWith(providers: providers);
-  }
-
-  void _selectProvider(String provider) {
-    final controller = AppScope.of(context).settings;
-    controller.update(_commitProvider(controller.value));
-    setState(() {
-      _provider = provider;
-      _loadModel(controller.value);
-    });
+    return settings.copyWith(translationModel: translationModel);
   }
 
   Future<void> _save() async {
     final scope = AppScope.of(context);
-    var settings = _commitProvider(scope.settings.value);
+    var settings = _commitTranslationModel(scope.settings.value);
     settings = settings.copyWith(
       systemPrompt: _promptController.text,
       autoTranslateNextChapters:
@@ -242,60 +233,57 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             const SizedBox(height: 30),
             const SectionTitle('翻译服务'),
-            Flex(
-              direction: compact ? Axis.vertical : Axis.horizontal,
+            const InfoBar(
+              title: Text('OpenAI 兼容接口'),
+              content: Text(
+                '统一使用 /v1/chat/completions。漫画默认由本地 RapidOCR 与 Windows OCR 识字，纯文本模型也可以翻译。',
+              ),
+              severity: InfoBarSeverity.info,
+            ),
+            const SizedBox(height: 14),
+            Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                SizedBox(
-                  width: compact ? double.infinity : 210,
-                  child: Column(
-                    children: providerKeys
-                        .map(
-                          (provider) => Padding(
-                            padding: const EdgeInsets.only(bottom: 6),
-                            child: SizedBox(
-                              width: double.infinity,
-                              child: ToggleButton(
-                                checked: _provider == provider,
-                                onChanged: (_) => _selectProvider(provider),
-                                child: Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: Text(provider),
-                                ),
-                              ),
-                            ),
-                          ),
-                        )
-                        .toList(),
+                ToggleSwitch(
+                  checked: _translationModelEnabled,
+                  onChanged: (value) =>
+                      setState(() => _translationModelEnabled = value),
+                  content: const Text('启用翻译模型'),
+                ),
+                const SizedBox(height: 10),
+                ToggleSwitch(
+                  checked: _translationModelSupportsVision,
+                  onChanged: (value) =>
+                      setState(() => _translationModelSupportsVision = value),
+                  content: const Text('使用模型辅助识图'),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '仅当模型明确支持图片输入时开启；关闭后图片不会发送给模型。',
+                  style: FluentTheme.of(context).typography.caption,
+                ),
+                const SizedBox(height: 14),
+                InfoLabel(
+                  label: 'API 地址',
+                  child: TextBox(
+                    controller: _baseUrlController,
+                    placeholder: 'https://api.openai.com/v1',
                   ),
                 ),
-                SizedBox(width: compact ? 0 : 22, height: compact ? 18 : 0),
-                Expanded(
-                  flex: compact ? 0 : 1,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      ToggleSwitch(
-                        checked: _providerEnabled,
-                        onChanged: (value) =>
-                            setState(() => _providerEnabled = value),
-                        content: const Text('启用当前提供商'),
-                      ),
-                      const SizedBox(height: 14),
-                      InfoLabel(
-                          label: 'API 地址',
-                          child: TextBox(controller: _baseUrlController)),
-                      const SizedBox(height: 12),
-                      InfoLabel(
-                        label: 'API 密钥',
-                        child: TextBox(
-                            controller: _apiKeyController, obscureText: true),
-                      ),
-                      const SizedBox(height: 12),
-                      InfoLabel(
-                          label: '模型',
-                          child: TextBox(controller: _modelController)),
-                    ],
+                const SizedBox(height: 12),
+                InfoLabel(
+                  label: 'API 密钥',
+                  child: TextBox(
+                    controller: _apiKeyController,
+                    obscureText: true,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                InfoLabel(
+                  label: '模型',
+                  child: TextBox(
+                    controller: _modelController,
+                    placeholder: '文本模型名称',
                   ),
                 ),
               ],

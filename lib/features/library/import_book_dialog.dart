@@ -6,6 +6,15 @@ import '../../core/models/book.dart';
 import '../../core/models/link_job.dart';
 import 'library_controller.dart';
 
+const _localNovelFiles = XTypeGroup(
+  label: '小说文档',
+  extensions: <String>['txt', 'text', 'docx', 'epub'],
+);
+const _localMangaFiles = XTypeGroup(
+  label: 'PDF 漫画',
+  extensions: <String>['pdf'],
+);
+
 Future<Book?> showImportBookDialog(BuildContext context) {
   final controller = AppScope.of(context).library;
   return showDialog<Book>(
@@ -87,13 +96,23 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
   }
 
   Future<void> _importLocal() async {
-    const group = XTypeGroup(label: '文本', extensions: <String>['txt', 'text']);
-    final file = await openFile(acceptedTypeGroups: const <XTypeGroup>[group]);
+    final file = await openFile(
+      acceptedTypeGroups: const <XTypeGroup>[
+        _localNovelFiles,
+        _localMangaFiles,
+      ],
+    );
     if (file == null) return;
+    final suffix = file.name.split('.').last.toLowerCase();
+    final importKind = suffix == 'pdf'
+        ? '漫画'
+        : _kind == '漫画'
+            ? '长小说'
+            : _kind;
     await _run(() async {
       final book = await widget.controller.importLocal(
         filePath: file.path,
-        kind: _kind,
+        kind: importKind,
         language: _language,
         translate: _translate,
         title: _titleController.text,
@@ -132,7 +151,7 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
           title: Row(
             children: <Widget>[
               const Expanded(child: Text('添加书籍')),
-              if (job?.isActive ?? false)
+              if (busy)
                 const Padding(
                   padding: EdgeInsets.only(left: 12),
                   child: ProgressRing(strokeWidth: 3, value: null),
@@ -143,7 +162,7 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                const Text('导入网页地址，或选择本地 TXT/TEXT 文件。链接任务收起后会继续运行。'),
+                const Text('导入网页地址，或选择 TXT、DOCX、EPUB 小说与 PDF 漫画。链接任务收起后会继续运行。'),
                 const SizedBox(height: 18),
                 InfoLabel(
                   label: '作品地址',

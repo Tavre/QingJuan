@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sqlite3
@@ -12,7 +13,7 @@ from .models import (
     BookSourceRecord,
     ComicSourceConfig,
     MangaOcrConfig,
-    ProviderConfig,
+    OpenAICompatibleConfig,
     ReadingProgressRecord,
     TaskLogRecord,
     TaskRecord,
@@ -57,15 +58,13 @@ DB_PATH = DATA_DIR / "qingjuan.db"
 _DATA_DIR_READY = False
 
 DEFAULT_SETTINGS = TranslationSettings(
-    defaultProvider="openai",
     autoTranslateNextChapters=0,
-    providers={
-        "openai": ProviderConfig(enabled=True, baseUrl="https://api.openai.com/v1", model="gpt-5.4"),
-        "newapi": ProviderConfig(enabled=False, baseUrl="https://your-newapi-endpoint/v1", model="gpt-5.4"),
-        "anthropic": ProviderConfig(enabled=False, baseUrl="https://api.anthropic.com/v1", model="claude-3-7-sonnet-latest"),
-        "grok2api": ProviderConfig(enabled=False, baseUrl="http://127.0.0.1:8000/v1", model="grok-4"),
-        "custom": ProviderConfig(enabled=False, baseUrl="https://localhost:8001/v1", model="custom-model"),
-    },
+    translationModel=OpenAICompatibleConfig(
+        enabled=False,
+        baseUrl="https://api.openai.com/v1",
+        model="gpt-5.4",
+        supportsVision=False,
+    ),
     # 默认使用本机 Windows 系统 OCR（离线、免外部服务）；密钥留空即用默认语言优先级。
     mangaOcr=MangaOcrConfig(enabled=True, baseUrl="windows"),
     bika=ComicSourceConfig(),
@@ -332,10 +331,7 @@ def init_db() -> None:
 
 
 def _ensure_reading_progress_columns(conn: sqlite3.Connection) -> None:
-    existing_columns = {
-        row[1]
-        for row in conn.execute("PRAGMA table_info(reading_progress)").fetchall()
-    }
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(reading_progress)").fetchall()}
     required_columns = {
         "last_scroll_ratio": "ALTER TABLE reading_progress ADD COLUMN last_scroll_ratio REAL NOT NULL DEFAULT 0",
         "last_anchor_type": "ALTER TABLE reading_progress ADD COLUMN last_anchor_type TEXT NOT NULL DEFAULT 'top'",
@@ -348,10 +344,7 @@ def _ensure_reading_progress_columns(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_book_source_columns(conn: sqlite3.Connection) -> None:
-    existing_columns = {
-        row[1]
-        for row in conn.execute("PRAGMA table_info(book_sources)").fetchall()
-    }
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(book_sources)").fetchall()}
     if "rule_payload" not in existing_columns:
         conn.execute("ALTER TABLE book_sources ADD COLUMN rule_payload TEXT")
 
@@ -455,9 +448,7 @@ def list_builtin_book_source_base_urls() -> list[str]:
     此处单独提供内置 base_url，供导入流程跳过与内置站点 URL 冲突的条目。
     """
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT base_url FROM book_sources WHERE origin = 'builtin'"
-        ).fetchall()
+        rows = conn.execute("SELECT base_url FROM book_sources WHERE origin = 'builtin'").fetchall()
     return [row[0] for row in rows]
 
 
@@ -755,6 +746,26 @@ def list_task_logs(task_id: str, after_sequence: int = 0) -> list[TaskLogRecord]
     return [_row_to_task_log(row) for row in rows]
 
 
+def _migrate_settings_payload(payload: dict[str, object]) -> dict[str, object]:
+    migrated = dict(payload)
+    if not isinstance(migrated.get("translationModel"), dict):
+        providers = migrated.get("providers")
+        provider_map = providers if isinstance(providers, dict) else {}
+        selected = str(migrated.get("defaultProvider") or "openai").strip().lower()
+        selected_config = provider_map.get(selected)
+        openai_config = provider_map.get("openai")
+        if selected != "anthropic" and isinstance(selected_config, dict):
+            translation_model = dict(selected_config)
+        elif isinstance(openai_config, dict):
+            translation_model = dict(openai_config)
+        else:
+            translation_model = DEFAULT_SETTINGS.translationModel.model_dump()
+        migrated["translationModel"] = translation_model
+    migrated.pop("defaultProvider", None)
+    migrated.pop("providers", None)
+    return migrated
+
+
 def load_settings() -> TranslationSettings:
     with get_connection() as conn:
         row = conn.execute("SELECT payload FROM settings WHERE id = 1").fetchone()
@@ -762,7 +773,10 @@ def load_settings() -> TranslationSettings:
     if not row:
         return DEFAULT_SETTINGS.model_copy(deep=True)
 
-    loaded = TranslationSettings.model_validate_json(row[0])
+    raw_payload = json.loads(row[0])
+    if not isinstance(raw_payload, dict):
+        return DEFAULT_SETTINGS.model_copy(deep=True)
+    loaded = TranslationSettings.model_validate(_migrate_settings_payload(raw_payload))
     return _normalize_settings(loaded)
 
 
@@ -783,12 +797,10 @@ def save_settings(settings: TranslationSettings) -> TranslationSettings:
 
 def _normalize_settings(settings: TranslationSettings) -> TranslationSettings:
     normalized = DEFAULT_SETTINGS.model_copy(deep=True)
-    normalized.defaultProvider = settings.defaultProvider
     normalized.systemPrompt = settings.systemPrompt
     normalized.autoTranslateNextChapters = settings.autoTranslateNextChapters
     normalized.downloadConcurrency = settings.downloadConcurrency
-    normalized.providers.update(settings.providers)
-    normalized.providers[normalized.defaultProvider].enabled = True
+    normalized.translationModel = settings.translationModel.model_copy(deep=True)
     normalized.mangaOcr = settings.mangaOcr.model_copy(deep=True)
     normalized.bika = settings.bika.model_copy(deep=True)
     return normalized

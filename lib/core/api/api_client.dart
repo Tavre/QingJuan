@@ -249,6 +249,45 @@ class ApiClient {
     return BookTask.fromJson(_map(payload));
   }
 
+  Future<JsonMap> exportChapter({
+    required String bookId,
+    required int chapterIndex,
+    required String format,
+    required String targetPath,
+  }) async {
+    final payload = _decode(
+      await _request(
+        'POST',
+        '/books/$bookId/chapters/$chapterIndex/export',
+        body: <String, dynamic>{
+          'format': format,
+          'targetPath': targetPath,
+        },
+      ),
+    );
+    return _map(payload);
+  }
+
+  Future<JsonMap> exportBook({
+    required String bookId,
+    required List<int> chapterIndexes,
+    required String format,
+    required String targetPath,
+  }) async {
+    final payload = _decode(
+      await _request(
+        'POST',
+        '/books/$bookId/export',
+        body: <String, dynamic>{
+          'format': format,
+          'targetPath': targetPath,
+          'chapterIndexes': chapterIndexes,
+        },
+      ),
+    );
+    return _map(payload);
+  }
+
   Future<BookTask> retryTask(String taskId) async {
     final payload = _decode(await _request('POST', '/tasks/$taskId/retry'));
     return BookTask.fromJson(_map(payload));

@@ -49,6 +49,9 @@ void main() {
     await tester.pumpWidget(harness.widget);
     await tester.tap(find.text('添加书籍'));
     await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.textContaining('DOCX、EPUB 小说与 PDF 漫画'), findsOneWidget);
+
     await tester.enterText(
       find.byType(TextBox).at(1),
       'https://example.com/comic/1',

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from app import scraper
 from app.manga_download import fetch_image_with_retry, is_valid_image_file, write_image_atomic
@@ -113,6 +113,26 @@ def test_manga_style_estimator_reads_source_color_and_font_size() -> None:
     assert 24 <= style.font_size <= 40
     assert style.bold is True
     assert style.ink_mask.getbbox() is not None
+
+
+def test_local_render_font_fallback_preserves_requested_size(monkeypatch) -> None:
+    original_truetype = scraper.ImageFont.truetype
+
+    monkeypatch.setattr(scraper, "_local_render_font_paths", lambda **_: [])
+
+    def reject_named_fonts(font: object, *args: object, **kwargs: object) -> ImageFont.ImageFont:
+        if isinstance(font, str):
+            raise OSError("system font unavailable")
+        return original_truetype(font, *args, **kwargs)
+
+    monkeypatch.setattr(scraper.ImageFont, "truetype", reject_named_fonts)
+
+    small_font = scraper._load_local_render_font(12)
+    large_font = scraper._load_local_render_font(36)
+    small_bbox = small_font.getbbox("TEST")
+    large_bbox = large_font.getbbox("TEST")
+
+    assert large_bbox[3] - large_bbox[1] >= (small_bbox[3] - small_bbox[1]) * 2
 
 
 def test_manga_fill_sampler_prefers_bubble_color_over_page_background() -> None:

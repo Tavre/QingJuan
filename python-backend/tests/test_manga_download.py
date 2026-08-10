@@ -781,6 +781,7 @@ async def test_translation_response_surfaces_openai_error_message() -> None:
 
 @pytest.mark.asyncio
 async def test_default_manga_ocr_runs_vision_and_local_ocr_together(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(scraper.os, "name", "nt")
     image_path = tmp_path / "page.png"
     Image.new("RGB", (640, 960), "white").save(image_path)
     settings = TranslationSettings(
@@ -840,6 +841,7 @@ async def test_default_manga_ocr_runs_vision_and_local_ocr_together(monkeypatch,
 
 @pytest.mark.asyncio
 async def test_text_only_model_uses_local_ocr_without_sending_the_image(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(scraper.os, "name", "nt")
     image_path = tmp_path / "page.png"
     Image.new("RGB", (640, 960), "white").save(image_path)
     settings = TranslationSettings(

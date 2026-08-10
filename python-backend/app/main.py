@@ -15,6 +15,7 @@ import mimetypes
 import os
 import re
 import shutil
+import sys
 import unicodedata
 import warnings
 import zipfile
@@ -1203,6 +1204,21 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
+def _configure_unicode_stream(stream: Any) -> None:
+    reconfigure = getattr(stream, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (LookupError, OSError, ValueError):
+        return
+
+
+def _configure_standard_streams() -> None:
+    _configure_unicode_stream(sys.stdout)
+    _configure_unicode_stream(sys.stderr)
+
+
 def _startup_console_lines(host: str, port: int) -> tuple[str, ...]:
     public_url = os.getenv("QINGJUAN_PUBLIC_URL", "").strip().rstrip("/")
     if not public_url:
@@ -1227,6 +1243,7 @@ def _startup_console_lines(host: str, port: int) -> tuple[str, ...]:
 
 
 def main() -> None:
+    _configure_standard_streams()
     parser = argparse.ArgumentParser(description="青卷后端服务")
     parser.add_argument("command", nargs="?", default="serve")
     parser.add_argument("--host", default="127.0.0.1")

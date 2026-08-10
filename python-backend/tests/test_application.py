@@ -1,4 +1,5 @@
 import hashlib
+import io
 
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
@@ -115,6 +116,18 @@ def test_startup_console_outputs_connection_info_without_token(monkeypatch) -> N
     assert "业务 API：http://10.0.0.20:19453/api/v1" in output
     assert "Bearer 认证：已启用" in output
     assert raw_token not in output
+
+
+def test_console_stream_is_reconfigured_from_cp1252_to_utf8() -> None:
+    buffer = io.BytesIO()
+    stream = io.TextIOWrapper(buffer, encoding="cp1252")
+
+    main._configure_unicode_stream(stream)
+    stream.write("青卷 FastAPI 后端已启动")
+    stream.flush()
+
+    assert buffer.getvalue().decode("utf-8") == "青卷 FastAPI 后端已启动"
+    stream.detach()
 
 
 def test_read_app_version_uses_pubspec_semantic_version(tmp_path) -> None:

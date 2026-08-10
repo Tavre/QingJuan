@@ -173,6 +173,13 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 const Text('导入网页地址，或选择 TXT、DOCX、EPUB 小说与 PDF 漫画。链接任务收起后会继续运行。'),
+                if (controller.importProgress case final progress?) ...<Widget>[
+                  const SizedBox(height: 12),
+                  ProgressBar(value: (progress * 100).clamp(0, 100)),
+                  const SizedBox(height: 4),
+                  Text(
+                      '正在上传 ${(progress * 100).clamp(0, 100).toStringAsFixed(0)}%'),
+                ],
                 const SizedBox(height: 18),
                 InfoLabel(
                   label: '作品地址',

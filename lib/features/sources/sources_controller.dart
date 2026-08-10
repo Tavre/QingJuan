@@ -14,6 +14,15 @@ class SourcesController extends ChangeNotifier {
   bool searching = false;
   String? error;
 
+  void resetForBackendSwitch() {
+    sources = const [];
+    results = const [];
+    searching = false;
+    error = null;
+    state = LoadState.idle;
+    notifyListeners();
+  }
+
   Future<void> load() async {
     state = LoadState.loading;
     error = null;

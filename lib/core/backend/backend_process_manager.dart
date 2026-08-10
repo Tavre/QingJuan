@@ -8,18 +8,40 @@ import '../api/api_client.dart';
 enum BackendStatus { checking, starting, ready, remote, failed }
 
 class BackendProcessManager {
-  BackendProcessManager(this.api);
+  BackendProcessManager(
+    this.api, {
+    bool Function()? isRemote,
+  }) : _isRemote = isRemote ?? (() => false);
 
   final ApiClient api;
+  final bool Function() _isRemote;
   Process? _process;
   BackendStatus status = BackendStatus.checking;
   String message = '正在检查后端服务';
 
   Future<void> ensureReady() async {
     status = BackendStatus.checking;
+    if (_isRemote()) {
+      await _stopOwnedProcess();
+      try {
+        await api.fetchServiceMeta();
+        status = BackendStatus.ready;
+        message = '远程后端已连接';
+      } catch (error) {
+        status = BackendStatus.failed;
+        message = '远程后端连接失败：$error';
+      }
+      return;
+    }
     if (await api.health()) {
-      status = BackendStatus.ready;
-      message = '后端服务已连接';
+      try {
+        await api.fetchServiceMeta();
+        status = BackendStatus.ready;
+        message = '后端服务已连接';
+      } catch (error) {
+        status = BackendStatus.failed;
+        message = '本机端口不是兼容的青卷后端：$error';
+      }
       return;
     }
     if (!Platform.isWindows) {
@@ -49,9 +71,14 @@ class BackendProcessManager {
       unawaited(_process!.stderr.drain<void>());
       for (var attempt = 0; attempt < 30; attempt++) {
         if (await api.health()) {
-          status = BackendStatus.ready;
-          message = '本地后端已启动';
-          return;
+          try {
+            await api.fetchServiceMeta();
+            status = BackendStatus.ready;
+            message = '本地后端已启动';
+            return;
+          } catch (_) {
+            // 进程可能仍在初始化路由，继续有限轮询。
+          }
         }
         await Future<void>.delayed(const Duration(milliseconds: 300));
       }
@@ -106,6 +133,10 @@ class BackendProcessManager {
   }
 
   Future<void> dispose() async {
+    await _stopOwnedProcess();
+  }
+
+  Future<void> _stopOwnedProcess() async {
     final process = _process;
     _process = null;
     if (process != null) {

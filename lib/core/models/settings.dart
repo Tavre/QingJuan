@@ -7,6 +7,8 @@ class TranslationModelSettings {
     required this.apiKey,
     required this.model,
     required this.supportsVision,
+    required this.apiKeyConfigured,
+    this.clearApiKey = false,
   });
 
   factory TranslationModelSettings.fromJson(JsonMap json) =>
@@ -16,6 +18,7 @@ class TranslationModelSettings {
         apiKey: json['apiKey'] as String? ?? '',
         model: json['model'] as String? ?? 'gpt-5.4',
         supportsVision: json['supportsVision'] as bool? ?? false,
+        apiKeyConfigured: json['apiKeyConfigured'] as bool? ?? false,
       );
 
   const TranslationModelSettings.defaults()
@@ -23,12 +26,17 @@ class TranslationModelSettings {
         baseUrl = 'https://api.openai.com/v1',
         apiKey = '',
         model = 'gpt-5.4',
-        supportsVision = false;
+        supportsVision = false,
+        apiKeyConfigured = false,
+        clearApiKey = false;
 
   JsonMap toJson() => <String, dynamic>{
         'enabled': enabled,
         'baseUrl': baseUrl,
         'apiKey': apiKey,
+        'apiKeyAction': clearApiKey
+            ? 'clear'
+            : (apiKey.trim().isEmpty ? 'keep' : 'replace'),
         'model': model,
         'supportsVision': supportsVision,
       };
@@ -39,6 +47,8 @@ class TranslationModelSettings {
     String? apiKey,
     String? model,
     bool? supportsVision,
+    bool? apiKeyConfigured,
+    bool? clearApiKey,
   }) =>
       TranslationModelSettings(
         enabled: enabled ?? this.enabled,
@@ -46,6 +56,8 @@ class TranslationModelSettings {
         apiKey: apiKey ?? this.apiKey,
         model: model ?? this.model,
         supportsVision: supportsVision ?? this.supportsVision,
+        apiKeyConfigured: apiKeyConfigured ?? this.apiKeyConfigured,
+        clearApiKey: clearApiKey ?? this.clearApiKey,
       );
 
   final bool enabled;
@@ -53,6 +65,8 @@ class TranslationModelSettings {
   final String apiKey;
   final String model;
   final bool supportsVision;
+  final bool apiKeyConfigured;
+  final bool clearApiKey;
 }
 
 class TranslationSettings {

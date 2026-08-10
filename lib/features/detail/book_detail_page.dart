@@ -26,6 +26,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
   String? _error;
   bool _loading = true;
   bool _actionRunning = false;
+  double? _exportProgress;
   bool _initialized = false;
   String? _deleteError;
   final Set<int> _selected = <int>{};
@@ -226,30 +227,28 @@ class _BookDetailPageState extends State<BookDetailPage> {
     );
     if (option == null || !mounted) return;
 
-    String? targetPath;
-    if (option.format == 'images') {
-      targetPath = await getDirectoryPath(confirmButtonText: '选择文件夹');
-    } else {
-      final location = await getSaveLocation(
-        acceptedTypeGroups: <XTypeGroup>[option.typeGroup],
-        suggestedName:
-            _chapterExportFileName(detail, chapter, option.extension),
-        confirmButtonText: '保存',
-      );
-      targetPath = location?.path;
-    }
+    final location = await getSaveLocation(
+      acceptedTypeGroups: <XTypeGroup>[option.typeGroup],
+      suggestedName: _chapterExportFileName(detail, chapter, option.extension),
+      confirmButtonText: '保存',
+    );
+    final targetPath = location?.path;
     if (targetPath == null || targetPath.trim().isEmpty || !mounted) return;
 
-    setState(() => _exportingChapters.add(chapter.index));
+    setState(() {
+      _exportingChapters.add(chapter.index);
+      _exportProgress = 0;
+    });
     try {
       final result = await _scope.api.exportChapter(
         bookId: widget.bookId,
         chapterIndex: chapter.index,
         format: option.format,
         targetPath: targetPath,
+        onProgress: _updateExportProgress,
       );
       if (!mounted) return;
-      final filePath = result['filePath'] as String? ?? targetPath;
+      final filePath = result['localFilePath'] as String? ?? targetPath;
       final fileCount = result['fileCount'] as int? ?? 1;
       await displayInfoBar(
         context,
@@ -257,7 +256,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
           title: const Text('章节导出完成'),
           content: Text(
             option.format == 'images'
-                ? '已按顺序导出 $fileCount 张图片到：$filePath'
+                ? '已将 $fileCount 张图片打包保存到：$filePath'
                 : '已保存到：$filePath',
           ),
           severity: InfoBarSeverity.success,
@@ -276,6 +275,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
     } finally {
       if (mounted) {
         setState(() => _exportingChapters.remove(chapter.index));
+        setState(() => _exportProgress = null);
       }
     }
   }
@@ -310,34 +310,33 @@ class _BookDetailPageState extends State<BookDetailPage> {
     );
     if (option == null || !mounted) return;
 
-    String? targetPath;
-    if (option.format == 'images') {
-      targetPath = await getDirectoryPath(confirmButtonText: '选择文件夹');
-    } else {
-      final location = await getSaveLocation(
-        acceptedTypeGroups: <XTypeGroup>[option.typeGroup],
-        suggestedName: _bookExportFileName(
-          detail,
-          option.extension,
-          exportingAll: exportingAll,
-          chapterCount: chapters.length,
-        ),
-        confirmButtonText: '保存',
-      );
-      targetPath = location?.path;
-    }
+    final location = await getSaveLocation(
+      acceptedTypeGroups: <XTypeGroup>[option.typeGroup],
+      suggestedName: _bookExportFileName(
+        detail,
+        option.extension,
+        exportingAll: exportingAll,
+        chapterCount: chapters.length,
+      ),
+      confirmButtonText: '保存',
+    );
+    final targetPath = location?.path;
     if (targetPath == null || targetPath.trim().isEmpty || !mounted) return;
 
-    setState(() => _actionRunning = true);
+    setState(() {
+      _actionRunning = true;
+      _exportProgress = 0;
+    });
     try {
       final result = await _scope.api.exportBook(
         bookId: widget.bookId,
         chapterIndexes: chapters.map((chapter) => chapter.index).toList(),
         format: option.format,
         targetPath: targetPath,
+        onProgress: _updateExportProgress,
       );
       if (!mounted) return;
-      final filePath = result['filePath'] as String? ?? targetPath;
+      final filePath = result['localFilePath'] as String? ?? targetPath;
       final chapterCount = result['chapterCount'] as int? ?? chapters.length;
       final fileCount = result['fileCount'] as int? ?? 1;
       await displayInfoBar(
@@ -346,7 +345,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
           title: const Text('章节导出完成'),
           content: Text(
             option.format == 'images'
-                ? '已导出 $chapterCount 章、$fileCount 张图片到：$filePath'
+                ? '已将 $chapterCount 章、$fileCount 张图片打包保存到：$filePath'
                 : '已将 $chapterCount 章保存到：$filePath',
           ),
           severity: InfoBarSeverity.success,
@@ -363,7 +362,12 @@ class _BookDetailPageState extends State<BookDetailPage> {
         ),
       );
     } finally {
-      if (mounted) setState(() => _actionRunning = false);
+      if (mounted) {
+        setState(() {
+          _actionRunning = false;
+          _exportProgress = null;
+        });
+      }
     }
   }
 
@@ -469,6 +473,13 @@ class _BookDetailPageState extends State<BookDetailPage> {
           ),
         ),
         const SizedBox(height: 24),
+        if (_exportProgress case final progress?) ...<Widget>[
+          ProgressBar(value: (progress * 100).clamp(0, 100)),
+          const SizedBox(height: 6),
+          Text(
+              '正在接收导出文件 ${(progress * 100).clamp(0, 100).toStringAsFixed(0)}%'),
+          const SizedBox(height: 12),
+        ],
         Wrap(
           spacing: 10,
           runSpacing: 10,
@@ -521,6 +532,11 @@ class _BookDetailPageState extends State<BookDetailPage> {
         SectionTitle('章节', trailing: Text('已选择 ${_selected.length} 章')),
       ],
     );
+  }
+
+  void _updateExportProgress(int receivedBytes, int totalBytes) {
+    if (!mounted || totalBytes <= 0) return;
+    setState(() => _exportProgress = receivedBytes / totalBytes);
   }
 
   @override
@@ -780,9 +796,9 @@ const _novelChapterExportOptions = <_ChapterExportOption>[
 const _mangaChapterExportOptions = <_ChapterExportOption>[
   _ChapterExportOption(
     format: 'images',
-    label: '图片文件夹',
-    description: '按章节建立文件夹，页面按 001、002……顺序命名。',
-    extension: 'png',
+    label: '图片 ZIP',
+    description: '按章节建立目录并打包，页面按 001、002……顺序命名。',
+    extension: 'zip',
   ),
   _ChapterExportOption(
     format: 'pdf',

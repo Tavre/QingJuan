@@ -5,7 +5,7 @@ import os
 import shutil
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .models import (
@@ -186,7 +186,11 @@ DEFAULT_BOOK_SOURCES = [
 
 def get_connection() -> sqlite3.Connection:
     ensure_data_dir()
-    return sqlite3.connect(DB_PATH)
+    connection = sqlite3.connect(DB_PATH, timeout=5)
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA busy_timeout = 5000")
+    connection.execute("PRAGMA journal_mode = WAL")
+    return connection
 
 
 def ensure_data_dir() -> None:
@@ -969,7 +973,7 @@ def _seed_builtin_book_sources(conn: sqlite3.Connection) -> None:
                 source.lastCheckedAt,
                 json_dumps(source.rulePayload) if source.rulePayload else None,
                 source.createdAt,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             ),
         )
 

@@ -12,7 +12,8 @@
 青卷是一个仅适配 Windows 电脑端的开源应用。客户端使用 Flutter 与
 [`fluent_ui`](https://pub.dev/packages/fluent_ui)，遵循
 [Microsoft Fluent UI](https://github.com/microsoft/fluentui) 和 Windows 11 的简约设计语言；
-本地服务使用 Python、FastAPI 与 SQLite。桌面应用会自动探测并启动本地后端，退出时关闭由自己创建的后端进程。
+服务端使用 Python、FastAPI 与 SQLite。桌面应用既可以自动探测并启动本机后端，也可以通过
+HTTPS 连接部署在 Linux 服务器上的单用户青卷后端；退出时只关闭由自己创建的本机后端进程。
 ![青卷应用截图](./assets/应用截图.png)
 > 当前处于持续开发阶段。漫画译图、部分站点适配与第三方书源可能受目标站点变化影响，请勿将实验功能用于不可恢复的重要数据。
 
@@ -24,7 +25,7 @@
 - 导入 Legado / 阅读 App JSON 书源，搜索并管理启用状态
 - 导入本地 `TXT` / `TEXT`、Word `DOCX`、`EPUB` 小说并自动拆章，也可将 `PDF` 导入为漫画
 - 下载章节、创建翻译任务、查看进度与失败重试
-- 单章、所选章节或全部章节可导出为 `TXT` / `TEXT` / `DOCX` / `EPUB`；漫画可导出为 `PDF` 或按章节、`001`、`002`……编号的图片文件夹
+- 单章、所选章节或全部章节可导出为 `TXT` / `TEXT` / `DOCX` / `EPUB`；漫画可导出为 `PDF` 或按章节、`001`、`002`……编号的图片压缩包
 - 阅读原文或译文，支持章节跳转、字号调整和阅读进度保存
 - 在小说详情页使用 Windows TTS 听书，支持自然叙述、温柔陪伴、沉浸小说、活力对白和安静夜读风格，以及连续播章、暂停、语速和音量调节
 - 配置单一 OpenAI 兼容翻译模型，启用状态会被下载与翻译任务严格遵守
@@ -43,9 +44,11 @@ Pixiv Comic、Hameln、Alphapolis、18Comic、Bika，以及 Webtoon、漫画柜�
 ## 数据与隐私
 
 - 开发模式默认数据目录：`python-backend/data/`
-- 打包后端默认数据目录：`backend/data/`
+- Windows 打包后端默认数据目录：`backend/data/`
+- Linux 原生服务默认将持久化数据保存到 `/var/lib/qingjuan`
 - 可在启动前设置 `QINGJUAN_DATA_DIR` 覆盖位置
-- API 密钥保存在本地 SQLite 设置中，不应提交、截图或分享
+- 远程后端必须通过私有网络或 HTTPS 访问，并为业务 API 启用 Bearer Token 认证
+- 翻译 API 密钥保存在后端 SQLite 设置中，连接 Token 保存在 Windows 安全凭据存储中；两者都不应提交、截图或分享
 - 不要提交数据库、下载内容、账号、Cookie、密钥、日志或受版权保护的正文
 - 仅导入可信书源；网络内容和第三方脚本均应视为不可信输入
 

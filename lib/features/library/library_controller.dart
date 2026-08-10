@@ -21,8 +21,22 @@ class LibraryController extends ChangeNotifier {
   Timer? _linkJobPoller;
   bool _linkJobLoadInProgress = false;
   bool _disposed = false;
+  double? importProgress;
 
   bool get hasActiveLinkJob => linkJob?.isActive ?? false;
+
+  void resetForBackendSwitch() {
+    _linkJobPoller?.cancel();
+    _linkJobPoller = null;
+    books = const [];
+    query = '';
+    error = null;
+    linkJob = null;
+    linkJobPayload = null;
+    linkJobConnectionError = null;
+    state = LoadState.idle;
+    notifyListeners();
+  }
 
   List<Book> get filteredBooks {
     final needle = query.trim().toLowerCase();
@@ -130,15 +144,27 @@ class LibraryController extends ChangeNotifier {
     required bool translate,
     String? title,
   }) async {
-    final book = await api.importLocalBook(
-      filePath: filePath,
-      kind: kind,
-      language: language,
-      translate: translate,
-      title: title,
-    );
-    await load(silent: true);
-    return book;
+    importProgress = 0;
+    notifyListeners();
+    try {
+      final book = await api.importLocalBook(
+        filePath: filePath,
+        kind: kind,
+        language: language,
+        translate: translate,
+        title: title,
+        onProgress: (sentBytes, totalBytes) {
+          if (_disposed || totalBytes <= 0) return;
+          importProgress = sentBytes / totalBytes;
+          notifyListeners();
+        },
+      );
+      await load(silent: true);
+      return book;
+    } finally {
+      importProgress = null;
+      if (!_disposed) notifyListeners();
+    }
   }
 
   Future<void> delete(String bookId) async {

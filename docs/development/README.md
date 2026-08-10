@@ -4,10 +4,10 @@
 
 ## 当前发布基线
 
-- 当前已发布基线：`1.2.0+11`，对外版本为 `v1.2.0`；本次发布目标为
-  `1.3.0+12` / `v1.3.0`。
+- 当前已发布基线：`1.3.0+12`，对外版本为 `V1.3.0`；本次发布目标为
+  `1.3.1+13` / `v1.3.1`。
 - 当前唯一客户端是 Flutter Windows；Vue/Vite、Web、PWA 与移动端实现均属于已移除的遗留技术。
-- v1.2.0 的功能基线包括：本地 `TXT` / `TEXT` / `DOCX` / `EPUB` 小说和 `PDF` 漫画导入、单章与多章导出、Windows TTS、可收起的链接任务与实时日志、单一 OpenAI 兼容翻译配置，以及 RapidOCR + Windows OCR 漫画翻译链路。
+- V1.3.0 的功能基线包括：本地 `TXT` / `TEXT` / `DOCX` / `EPUB` 小说和 `PDF` 漫画导入、单章与多章导出、Windows TTS、可收起的链接任务与实时日志、单一 OpenAI 兼容翻译配置，以及 RapidOCR + Windows OCR 漫画翻译链路。
 - 后续版本不得破坏现有导入导出格式、阅读进度、设置迁移和无 Python 环境启动能力；确需不兼容变更时必须提供迁移说明和测试。
 
 ## 产品与平台边界
@@ -15,8 +15,9 @@
 - 产品形态：仅 Windows 电脑端。
 - 客户端：Flutter + Dart + `fluent_ui`。
 - UI 基线：Microsoft Fluent UI 与 Windows 11，简约、清晰、可访问。
-- 后端：Python + FastAPI；仅监听本机回环地址。
-- 存储：SQLite 与本地文件。
+- 后端：Python + FastAPI；支持 Windows 本机伴随后端与 Linux 单用户远程后端。
+- 连接：本机模式使用回环地址；远程模式必须使用私有网络或 HTTPS，并启用 Bearer Token 认证。
+- 存储：后端持有 SQLite、书籍文件、任务与凭据；Windows 客户端只保存非敏感偏好和安全连接凭据。
 - 不支持：Android、iOS、Web、PWA、Electron、Capacitor、Vue/Vite 客户端。
 
 `fluent_ui` 是 Flutter 社区维护的 Fluent 组件库，不是
@@ -40,7 +41,8 @@
 
 | 工具 | 支持基线 | 用途与要求 |
 | --- | --- | --- |
-| Windows | Windows 10 1809 或更高版本，推荐 Windows 11 x64 | 唯一支持的开发、构建和运行平台 |
+| Windows | Windows 10 1809 或更高版本，推荐 Windows 11 x64 | 客户端开发、构建和本机模式运行平台 |
+| Linux | x86_64、systemd、CPython 3.11+ | 可选远程后端运行平台；使用原生虚拟环境，不承载 Flutter 客户端 |
 | Flutter | `3.24.3` stable | 必须使用 stable 版本；正式包禁止使用 master、beta 或其他未验证版本 |
 | Dart | `3.5.3` | 随 Flutter `3.24.3` 提供，不单独安装或升级 |
 | Visual Studio | Visual Studio 2022 | 安装“使用 C++ 的桌面开发”工作负载、MSVC v143 x64/x86、C++ CMake 工具和 Windows 10/11 SDK |
@@ -94,6 +96,7 @@ python -m pip check
 
 - Windows TTS 使用系统已安装的语音；Natural / Neural 音色需要在 Windows 语言与语音设置中另行安装。
 - Windows OCR 依赖相应系统语言能力；本地 RapidOCR 及 ONNX Runtime 由 Python 依赖安装。
+- Linux 后端只使用 RapidOCR，并通过已配置的 Chromium 可执行文件提供浏览器会话回退；不得调用 Windows OCR。
 - 翻译和可选视觉识别需要用户自行配置 OpenAI 兼容 API，不是本地开发、测试或启动的前置条件。
 - `QINGJUAN_DATA_DIR` 只用于覆盖开发数据目录，不应写入全局环境或指向仓库外未确认的生产数据。
 
@@ -108,6 +111,10 @@ flutter run -d windows
 开发模式会从仓库中启动 `python -m app.main serve`；若服务原本已由用户启动，客户端只复用服务，
 退出时不会终止外部进程。
 
+远程模式由用户显式选择并配置 FastAPI 根地址与连接 Token。远程连接失败时客户端不得回退启动本机后端，
+切换服务器后必须清空旧的页面状态并从新服务器重新加载。Linux 部署入口、认证和数据目录约束见
+[后端与桌面集成](./04-backend-and-desktop.md)。
+
 静态检查、测试命令和三轮验证要求见[质量与测试](./05-quality-and-testing.md)，
 完整 Windows 发布流程见[后端与桌面集成](./04-backend-and-desktop.md)。
 
@@ -121,6 +128,7 @@ flutter run -d windows
 6. 改动同步补充测试，提交前完成格式化、静态分析、测试和 Windows 构建。
 7. 根目录只保留 `README.md`；其他 Markdown 必须进入 `docs/development/` 的对应区块。
 8. 不提交密钥、数据库、缓存、下载内容、日志、构建产物和个人数据。
+9. 无认证服务不得监听非回环地址；客户端不得向非青卷同源地址发送连接 Token。
 
 ## 规范优先级
 
@@ -138,4 +146,4 @@ flutter run -d windows
 - 架构、依赖、构建或 UI 基线改变时，必须在同一个 PR 更新对应文档。
 - 不为一次性讨论创建新的 Markdown；将结论合并到现有章节。
 - 重复规则只保留一个权威位置，其他地方使用链接。
-- 文档中的命令必须能在 Windows PowerShell 执行。
+- 客户端与开发命令必须能在 Windows PowerShell 执行；Linux 部署命令使用明确标注的 Bash 代码块。

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -20,18 +21,30 @@ void main() {
   setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
 
   test('posts the selected chapter export format and destination', () async {
+    final directory = await Directory.systemTemp.createTemp('qingjuan-export-');
+    addTearDown(() => directory.delete(recursive: true));
+    final targetPath = '${directory.path}${Platform.pathSeparator}第三章.docx';
     late http.Request capturedRequest;
     final api = ApiClient(
       () => 'http://127.0.0.1:8000',
       client: MockClient((request) async {
+        if (request.method == 'GET') {
+          return http.Response.bytes(<int>[1, 2, 3], 200);
+        }
         capturedRequest = request;
         return http.Response(
           jsonEncode(<String, Object?>{
             'bookId': 'book-1',
             'chapterIndex': 3,
             'format': 'docx',
+            'artifactId': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
             'fileName': '第三章.docx',
-            'filePath': r'D:\导出\第三章.docx',
+            'downloadUrl':
+                '/books/book-1/exports/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'contentType':
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'sizeBytes': 3,
+            'expiresAt': '2026-08-11T00:00:00Z',
             'fileCount': 1,
           }),
           200,
@@ -47,34 +60,44 @@ void main() {
       bookId: 'book-1',
       chapterIndex: 3,
       format: 'docx',
-      targetPath: r'D:\导出\第三章.docx',
+      targetPath: targetPath,
     );
 
     expect(capturedRequest.method, 'POST');
-    expect(capturedRequest.url.path, '/books/book-1/chapters/3/export');
+    expect(capturedRequest.url.path, '/api/v1/books/book-1/chapters/3/export');
     expect(
       jsonDecode(capturedRequest.body),
       <String, Object?>{
         'format': 'docx',
-        'targetPath': r'D:\导出\第三章.docx',
       },
     );
     expect(result['fileCount'], 1);
+    expect(await File(targetPath).readAsBytes(), <int>[1, 2, 3]);
   });
 
   test('posts selected chapters through the book export endpoint', () async {
+    final directory = await Directory.systemTemp.createTemp('qingjuan-export-');
+    addTearDown(() => directory.delete(recursive: true));
+    final targetPath = '${directory.path}${Platform.pathSeparator}测试作品.epub';
     late http.Request capturedRequest;
     final api = ApiClient(
       () => 'http://127.0.0.1:8000',
       client: MockClient((request) async {
+        if (request.method == 'GET') {
+          return http.Response.bytes(<int>[4, 5, 6], 200);
+        }
         capturedRequest = request;
         return http.Response(
           jsonEncode(<String, Object?>{
             'bookId': 'book-1',
             'format': 'epub',
+            'artifactId': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
             'fileName': '测试作品.epub',
-            'filePath': r'D:\导出\测试作品.epub',
-            'downloadUrl': '',
+            'downloadUrl':
+                '/books/book-1/exports/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            'contentType': 'application/epub+zip',
+            'sizeBytes': 3,
+            'expiresAt': '2026-08-11T00:00:00Z',
             'chapterCount': 2,
             'fileCount': 1,
           }),
@@ -91,26 +114,26 @@ void main() {
       bookId: 'book-1',
       chapterIndexes: const <int>[2, 4],
       format: 'epub',
-      targetPath: r'D:\导出\测试作品.epub',
+      targetPath: targetPath,
     );
 
     expect(capturedRequest.method, 'POST');
-    expect(capturedRequest.url.path, '/books/book-1/export');
+    expect(capturedRequest.url.path, '/api/v1/books/book-1/export');
     expect(
       jsonDecode(capturedRequest.body),
       <String, Object?>{
         'format': 'epub',
-        'targetPath': r'D:\导出\测试作品.epub',
         'chapterIndexes': <int>[2, 4],
       },
     );
     expect(result['chapterCount'], 2);
+    expect(await File(targetPath).readAsBytes(), <int>[4, 5, 6]);
   });
 
   testWidgets('loads detail after AppScope becomes available', (tester) async {
     final harness = await _Harness.create(
       MockClient((request) async {
-        expect(request.url.path, '/books/book-1');
+        expect(request.url.path, '/api/v1/books/book-1');
         return http.Response(
           jsonEncode(_detailPayload),
           200,
@@ -214,7 +237,7 @@ void main() {
     expect(find.text('EPUB'), findsOneWidget);
   });
 
-  testWidgets('opens ordered image folder and PDF formats for manga chapters',
+  testWidgets('opens ordered image ZIP and PDF formats for manga chapters',
       (tester) async {
     final payload = <String, Object?>{
       ..._detailPayload,
@@ -242,7 +265,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('导出本章'), findsOneWidget);
-    expect(find.text('图片文件夹'), findsOneWidget);
+    expect(find.text('图片 ZIP'), findsOneWidget);
     expect(find.text('PDF'), findsOneWidget);
     expect(find.text('TXT'), findsNothing);
   });
@@ -254,7 +277,7 @@ void main() {
       MockClient((request) async {
         if (request.method == 'DELETE') {
           deleteRequested = true;
-          expect(request.url.path, '/books/book-1');
+          expect(request.url.path, '/api/v1/books/book-1');
           return http.Response(
             jsonEncode(<String, String>{
               'status': 'ok',
@@ -266,7 +289,7 @@ void main() {
             },
           );
         }
-        expect(request.url.path, '/books/book-1');
+        expect(request.url.path, '/api/v1/books/book-1');
         return http.Response(
           jsonEncode(<String, String>{
             'detail': '本地书籍目录不存在：C:/QingJuan/data/library/测试',

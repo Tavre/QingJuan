@@ -21,6 +21,15 @@ class TasksController extends ChangeNotifier {
       .where((task) => task.status == 'running' || task.status == 'queued')
       .length;
 
+  void resetForBackendSwitch() {
+    _poller?.cancel();
+    _poller = null;
+    tasks = const [];
+    error = null;
+    state = LoadState.idle;
+    notifyListeners();
+  }
+
   Future<void> load({bool silent = false}) async {
     if (_loadInProgress || _disposed) return;
     _loadInProgress = true;

@@ -4,20 +4,32 @@ import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../core/models/tts_voice.dart';
+import '../core/backend/connection_secret_store.dart';
 import '../core/models/tts_speech_style.dart';
+import '../core/models/tts_voice.dart';
 
 enum AppSection { library, search, sources, tasks, settings, about }
 
 enum AppThemeMode { system, light, dark }
 
+enum BackendConnectionMode { local, remote }
+
 class AppState extends ChangeNotifier {
-  AppState(this._preferences)
-      : _themeMode = AppThemeMode.values.firstWhere(
+  AppState(
+    this._preferences, {
+    ConnectionSecretStore? secretStore,
+    String initialBackendToken = '',
+  })  : _secretStore = secretStore,
+        _themeMode = AppThemeMode.values.firstWhere(
           (mode) => mode.name == _preferences.getString(_themeKey),
           orElse: () => AppThemeMode.system,
         ),
+        _connectionMode = BackendConnectionMode.values.firstWhere(
+          (mode) => mode.name == _preferences.getString(_backendModeKey),
+          orElse: () => BackendConnectionMode.local,
+        ),
         _backendUrl = _preferences.getString(_backendKey) ?? _defaultBackendUrl,
+        _backendToken = initialBackendToken,
         _ttsVoice = _readTtsVoice(_preferences),
         _ttsSpeechStyle = parseTtsSpeechStyle(
           _preferences.getString(_ttsSpeechStyleKey),
@@ -27,15 +39,19 @@ class AppState extends ChangeNotifier {
 
   static const _themeKey = 'qingjuan.theme';
   static const _backendKey = 'qingjuan.backendUrl';
+  static const _backendModeKey = 'qingjuan.backendMode';
   static const _ttsVoiceKey = 'qingjuan.ttsVoice';
   static const _ttsSpeechStyleKey = 'qingjuan.ttsSpeechStyle';
   static const _defaultBackendUrl = 'http://127.0.0.1:19453';
 
   final SharedPreferences _preferences;
+  final ConnectionSecretStore? _secretStore;
   AppSection _section = AppSection.library;
   AppThemeMode _themeMode;
   late final ValueNotifier<ThemeMode> _themeModeListenable;
   String _backendUrl;
+  String _backendToken;
+  BackendConnectionMode _connectionMode;
   TtsVoice? _ttsVoice;
   TtsSpeechStyle _ttsSpeechStyle;
   String? _notice;
@@ -43,6 +59,8 @@ class AppState extends ChangeNotifier {
   AppSection get section => _section;
   AppThemeMode get themeMode => _themeMode;
   String get backendUrl => _backendUrl;
+  String get backendToken => _backendToken;
+  BackendConnectionMode get connectionMode => _connectionMode;
   TtsVoice? get ttsVoice => _ttsVoice;
   TtsSpeechStyle get ttsSpeechStyle => _ttsSpeechStyle;
   String? get notice => _notice;
@@ -73,6 +91,31 @@ class AppState extends ChangeNotifier {
     if (normalized.isEmpty || normalized == _backendUrl) return;
     _backendUrl = normalized;
     await _preferences.setString(_backendKey, normalized);
+    notifyListeners();
+  }
+
+  Future<void> setBackendConnection({
+    required BackendConnectionMode mode,
+    required String url,
+    required String token,
+  }) async {
+    final normalized = url.trim().replaceAll(RegExp(r'/+$'), '');
+    if (normalized.isEmpty) return;
+    final normalizedToken =
+        mode == BackendConnectionMode.remote ? token.trim() : '';
+    _connectionMode = mode;
+    _backendUrl = normalized;
+    _backendToken = normalizedToken;
+    await _preferences.setString(_backendModeKey, mode.name);
+    await _preferences.setString(_backendKey, normalized);
+    final secretStore = _secretStore;
+    if (secretStore != null) {
+      if (normalizedToken.isEmpty) {
+        await secretStore.deleteToken();
+      } else {
+        await secretStore.writeToken(normalizedToken);
+      }
+    }
     notifyListeners();
   }
 

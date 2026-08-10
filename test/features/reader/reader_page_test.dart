@@ -23,7 +23,7 @@ void main() {
   testWidgets('loads chapter after AppScope becomes available', (tester) async {
     final harness = await _Harness.create(
       MockClient((request) async {
-        expect(request.url.path, '/books/book-1/chapters/1');
+        expect(request.url.path, '/api/v1/books/book-1/chapters/1');
         return http.Response(
           jsonEncode(_chapterPayload),
           200,

@@ -1,0 +1,36 @@
+[Unit]
+Description=QingJuan FastAPI backend
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=qingjuan
+Group=qingjuan
+WorkingDirectory=/opt/qingjuan/app/python-backend
+EnvironmentFile=/etc/qingjuan/backend.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/qingjuan/venv/bin/python -m app.main serve --host ${QINGJUAN_BIND_HOST} --port ${QINGJUAN_PORT}
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/qingjuan
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qingjuan-backend
+
+[Install]
+WantedBy=multi-user.target

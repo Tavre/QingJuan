@@ -134,8 +134,8 @@ async def test_local_import_route_persists_epub_metadata_and_removes_cache(
 ) -> None:
     source = tmp_path / "接口导入.epub"
     _write_test_epub(source)
-    library_root = tmp_path / "library"
     data_dir = tmp_path / "data"
+    library_root = data_dir / "library"
     saved_records = []
     monkeypatch.setattr(main_module, "LIBRARY_ROOT", library_root)
     monkeypatch.setattr(main_module, "DATA_DIR", data_dir)
@@ -150,7 +150,7 @@ async def test_local_import_route_persists_epub_metadata_and_removes_cache(
         title="",
     )
 
-    manifest_path = Path(record.localPath) / "manifest.json"
+    manifest_path = data_dir / record.localPath / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert record.title == "EPUB 书名"
     assert record.chapterCount == 2
@@ -165,21 +165,21 @@ async def test_local_import_route_persists_epub_metadata_and_removes_cache(
     [("txt", ".txt"), ("text", ".text"), ("docx", ".docx"), ("epub", ".epub")],
 )
 def test_single_novel_chapter_exports_to_importable_formats(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     export_format: str,
     extension: str,
 ) -> None:
     book, book_dir = _write_export_book(tmp_path, book_kind="长小说")
-    target = tmp_path / "exports" / f"第一章{extension}"
+    monkeypatch.setattr(main_module, "EXPORT_ROOT", tmp_path / "exports")
 
     exported_path, file_count = main_module._export_chapter(
         book,
         chapter_index=1,
         export_format=export_format,
-        target_path=str(target),
     )
 
-    assert exported_path == target
+    assert exported_path.suffix == extension
     assert exported_path.is_file()
     assert exported_path.stat().st_size > 0
     assert file_count == 1
@@ -195,8 +195,11 @@ def test_single_novel_chapter_exports_to_importable_formats(
     assert "第一章正文" in plan.chapters[0].content
 
 
-def test_single_manga_chapter_exports_ordered_images_and_importable_pdf(tmp_path: Path) -> None:
+def test_single_manga_chapter_exports_ordered_images_and_importable_pdf(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     book, book_dir = _write_export_book(tmp_path, book_kind="漫画")
+    monkeypatch.setattr(main_module, "EXPORT_ROOT", tmp_path / "exports")
     images_dir = book_dir / "images"
     images_dir.mkdir(parents=True)
     Image.new("RGB", (80, 120), "red").save(images_dir / "page-b.jpg")
@@ -211,37 +214,29 @@ def test_single_manga_chapter_exports_ordered_images_and_importable_pdf(tmp_path
     )
     main_module.save_manifest(book_dir, manifest)
 
-    exported_dir, image_count = main_module._export_chapter(
+    exported_zip, image_count = main_module._export_chapter(
         book,
         chapter_index=1,
         export_format="images",
-        target_path=str(tmp_path / "image-exports"),
     )
 
-    assert exported_dir.is_dir()
+    assert exported_zip.is_file()
     assert image_count == 2
-    assert [path.name for path in sorted(exported_dir.iterdir())] == ["001.jpg", "002.png"]
-    with Image.open(exported_dir / "001.jpg") as first:
-        assert first.getpixel((10, 10))[0] > first.getpixel((10, 10))[2]
-    with Image.open(exported_dir / "002.png") as second:
-        assert second.getpixel((10, 10))[2] > second.getpixel((10, 10))[0]
+    with zipfile.ZipFile(exported_zip) as archive:
+        assert [Path(name).name for name in archive.namelist()] == ["001.jpg", "002.png"]
 
-    repeated_dir, repeated_count = main_module._export_chapter(
+    repeated_zip, repeated_count = main_module._export_chapter(
         book,
         chapter_index=1,
         export_format="images",
-        target_path=str(tmp_path / "image-exports"),
     )
-    assert repeated_dir.name == f"{exported_dir.name}-2"
+    assert repeated_zip != exported_zip
     assert repeated_count == 2
-    assert [path.name for path in sorted(repeated_dir.iterdir())] == ["001.jpg", "002.png"]
 
-    pdf_target = tmp_path / "exports" / "第一话.pdf"
     exported_pdf, page_count = main_module._export_chapter(
         book,
         chapter_index=1,
         export_format="pdf",
-        target_path=str(pdf_target),
     )
     plan = inspect_local_document(
         exported_pdf,
@@ -258,21 +253,21 @@ def test_single_manga_chapter_exports_ordered_images_and_importable_pdf(tmp_path
     [("txt", ".txt"), ("text", ".text"), ("docx", ".docx"), ("epub", ".epub")],
 )
 def test_selected_novel_chapters_export_as_one_importable_document(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     export_format: str,
     extension: str,
 ) -> None:
     book, _ = _write_export_book(tmp_path, book_kind="长小说", chapter_count=2)
-    target = tmp_path / "exports" / f"所选章节{extension}"
+    monkeypatch.setattr(main_module, "EXPORT_ROOT", tmp_path / "exports")
 
     exported_path, chapter_count, file_count = main_module._export_book(
         book,
         export_format=export_format,
-        target_path=str(target),
         chapter_indexes=[2],
     )
 
-    assert exported_path == target
+    assert exported_path.suffix == extension
     assert chapter_count == 1
     assert file_count == 1
     plan = inspect_local_document(
@@ -291,25 +286,29 @@ async def test_book_export_route_reports_selected_chapter_and_file_counts(
     tmp_path: Path,
 ) -> None:
     book, _ = _write_export_book(tmp_path, book_kind="长小说", chapter_count=2)
-    target = tmp_path / "exports" / "所选章节.docx"
     monkeypatch.setattr(main_module, "_get_book_or_404", lambda _: book)
+    monkeypatch.setattr(main_module, "EXPORT_ROOT", tmp_path / "exports")
 
     response = await main_module.post_book_export(
         book.id,
         BookExportPayload(
             format="docx",
-            targetPath=str(target),
             chapterIndexes=[2],
         ),
     )
 
-    assert response.filePath == str(target)
+    assert response.artifactId
+    assert response.downloadUrl.endswith(response.artifactId)
+    assert response.sizeBytes > 0
     assert response.chapterCount == 1
     assert response.fileCount == 1
 
 
-def test_selected_manga_chapters_export_as_book_folder_and_pdf(tmp_path: Path) -> None:
+def test_selected_manga_chapters_export_as_zip_and_pdf(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     book, book_dir = _write_export_book(tmp_path, book_kind="漫画", chapter_count=2)
+    monkeypatch.setattr(main_module, "EXPORT_ROOT", tmp_path / "exports")
     images_dir = book_dir / "images"
     images_dir.mkdir(parents=True)
     image_specs = (
@@ -335,23 +334,21 @@ def test_selected_manga_chapters_export_as_book_folder_and_pdf(tmp_path: Path) -
     )
     main_module.save_manifest(book_dir, manifest)
 
-    exported_dir, chapter_count, image_count = main_module._export_book(
+    exported_zip, chapter_count, image_count = main_module._export_book(
         book,
         export_format="images",
-        target_path=str(tmp_path / "image-exports"),
         chapter_indexes=[2],
     )
     assert chapter_count == 1
     assert image_count == 2
-    chapter_dirs = list(exported_dir.iterdir())
-    assert [path.name for path in chapter_dirs] == ["0002-第二章"]
-    assert [path.name for path in sorted(chapter_dirs[0].iterdir())] == ["001.png", "002.jpg"]
+    with zipfile.ZipFile(exported_zip) as archive:
+        names = archive.namelist()
+    assert [Path(name).name for name in names] == ["001.png", "002.jpg"]
+    assert all("0002-第二章" in name for name in names)
 
-    pdf_target = tmp_path / "exports" / "漫画所选章节.pdf"
     exported_pdf, chapter_count, page_count = main_module._export_book(
         book,
         export_format="pdf",
-        target_path=str(pdf_target),
         chapter_indexes=[1, 2],
     )
     plan = inspect_local_document(

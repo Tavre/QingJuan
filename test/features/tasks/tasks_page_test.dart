@@ -1,5 +1,9 @@
+import 'dart:convert';
+
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:qingjuan/app/app_scope.dart';
 import 'package:qingjuan/app/app_state.dart';
 import 'package:qingjuan/app/app_theme.dart';
@@ -33,6 +37,9 @@ void main() {
     expect(find.byKey(const ValueKey('task-tile-running')), findsOneWidget);
     expect(find.byKey(const ValueKey('task-tile-failed')), findsOneWidget);
     expect(find.text('08-09 12:30'), findsOneWidget);
+    expect(
+        find.byKey(const ValueKey('task-page-text-running')), findsOneWidget);
+    expect(find.textContaining('こんにちは → 你好'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('task-summary-failed')));
     await tester.pumpAndSettle();
@@ -57,6 +64,75 @@ void main() {
 
     expect(find.text('任务'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  test('task controller appends page results from the last sequence', () async {
+    final requestedAfter = <String?>[];
+    var logRequest = 0;
+    final api = ApiClient(
+      () => 'https://qingjuan.example.test',
+      client: MockClient((request) async {
+        if (request.url.path == '/api/v1/tasks') {
+          return http.Response(
+            jsonEncode(<Map<String, Object?>>[
+              <String, Object?>{
+                'id': 'translate-1',
+                'bookId': 'book-1',
+                'taskType': 'translate',
+                'status': 'running',
+                'totalCount': 1,
+                'completedCount': 0,
+                'progress': 0,
+                'message': '正在翻译',
+                'attempts': 1,
+                'updatedAt': '2026-08-10T08:00:00Z',
+              },
+            ]),
+            200,
+            headers: <String, String>{'content-type': 'application/json'},
+          );
+        }
+        requestedAfter.add(request.url.queryParameters['after']);
+        logRequest += 1;
+        return http.Response(
+          jsonEncode(<Map<String, Object?>>[
+            <String, Object?>{
+              'sequence': logRequest,
+              'taskId': 'translate-1',
+              'chapterIndex': 1,
+              'chapterTitle': '第一话',
+              'pageNumber': logRequest,
+              'totalPages': 2,
+              'texts': <Map<String, Object?>>[
+                <String, Object?>{
+                  'order': 1,
+                  'sourceText': '原文 $logRequest',
+                  'translation': '译文 $logRequest',
+                },
+              ],
+            },
+          ]),
+          200,
+          headers: <String, String>{'content-type': 'application/json'},
+        );
+      }),
+    );
+    final controller = TasksController(api);
+    addTearDown(() {
+      controller.dispose();
+      api.close();
+    });
+
+    await controller.load();
+    await controller.load(silent: true);
+
+    expect(requestedAfter, <String?>['0', '1']);
+    expect(
+      controller
+          .pageResultsForTask('translate-1')
+          .map((entry) => entry.sequence),
+      <int>[1, 2],
+    );
   });
 }
 
@@ -109,6 +185,23 @@ class _Harness {
           message: '下载完成',
           attempts: 1,
           updatedAt: '2026-08-08T18:20:00',
+        ),
+      ]
+      ..taskPageResults['running'] = const <TaskPageResult>[
+        TaskPageResult(
+          sequence: 1,
+          taskId: 'running',
+          chapterIndex: 1,
+          chapterTitle: '第一话',
+          pageNumber: 1,
+          totalPages: 10,
+          texts: <TaskPageText>[
+            TaskPageText(
+              order: 1,
+              sourceText: 'こんにちは',
+              translation: '你好',
+            ),
+          ],
         ),
       ];
     final scope = AppScope(

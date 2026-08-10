@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/models/book.dart';
 import '../../core/models/tts_speech_style.dart';
@@ -135,9 +136,15 @@ class AudiobookController extends ChangeNotifier {
     if (!_initialized) await initialize();
     if (state == AudiobookPlaybackState.error || chunks.isEmpty) return;
     if (isPaused) {
-      await engine.resume();
-      state = AudiobookPlaybackState.playing;
-      _notify();
+      try {
+        await engine.resume();
+        if (_disposed) return;
+        state = AudiobookPlaybackState.playing;
+        error = null;
+        _notify();
+      } catch (exception) {
+        await _handleControlError(exception);
+      }
       return;
     }
     if (state == AudiobookPlaybackState.completed) chunkIndex = 0;
@@ -181,45 +188,68 @@ class AudiobookController extends ChangeNotifier {
 
   Future<void> pause() async {
     if (!isPlaying) return;
-    await engine.pause();
-    state = AudiobookPlaybackState.paused;
-    _notify();
+    try {
+      await engine.pause();
+      if (_disposed) return;
+      state = AudiobookPlaybackState.paused;
+      _notify();
+    } catch (exception) {
+      await _handleControlError(exception);
+    }
   }
 
   Future<void> stop() async {
     _playbackToken += 1;
-    await engine.stop();
-    chunkIndex = 0;
-    state = AudiobookPlaybackState.stopped;
-    _notify();
+    try {
+      await engine.stop();
+      if (_disposed) return;
+      chunkIndex = 0;
+      state = AudiobookPlaybackState.stopped;
+      error = null;
+      _notify();
+    } catch (exception) {
+      _setError(exception);
+    }
   }
 
   Future<void> moveChapter(int delta, {bool autoplay = false}) async {
     final target = _adjacentChapter(delta);
     if (target == null) return;
     _playbackToken += 1;
-    await engine.stop();
-    chapterIndex = target.index;
-    chunkIndex = 0;
-    await _loadCurrentChapter();
-    if (autoplay && state != AudiobookPlaybackState.error) {
-      await play();
+    try {
+      await engine.stop();
+      chapterIndex = target.index;
+      chunkIndex = 0;
+      await _loadCurrentChapter();
+      if (autoplay && state != AudiobookPlaybackState.error) {
+        await play();
+      }
+    } catch (exception) {
+      _setError(exception);
     }
   }
 
   Future<void> setMode(String value) async {
     if (value == mode) return;
     _playbackToken += 1;
-    await engine.stop();
-    mode = value;
-    chunkIndex = 0;
-    await _loadCurrentChapter();
+    try {
+      await engine.stop();
+      mode = value;
+      chunkIndex = 0;
+      await _loadCurrentChapter();
+    } catch (exception) {
+      _setError(exception);
+    }
   }
 
   Future<void> setRate(double value) async {
     rate = value.clamp(0.2, 1);
     _notify();
-    await engine.setRate(rate);
+    try {
+      await engine.setRate(rate);
+    } catch (exception) {
+      await _handleControlError(exception);
+    }
   }
 
   Future<void> setStyle(TtsSpeechStyle value) async {
@@ -227,14 +257,32 @@ class AudiobookController extends ChangeNotifier {
     style = value;
     rate = value.defaultRate;
     _notify();
-    await engine.setRate(rate);
-    await engine.setPitch(value.basePitch);
+    try {
+      await engine.setRate(rate);
+      await engine.setPitch(value.basePitch);
+    } catch (exception) {
+      await _handleControlError(exception);
+    }
   }
 
   Future<void> setVolume(double value) async {
     volume = value.clamp(0, 1);
     _notify();
-    await engine.setVolume(volume);
+    try {
+      await engine.setVolume(volume);
+    } catch (exception) {
+      await _handleControlError(exception);
+    }
+  }
+
+  Future<void> _handleControlError(Object exception) async {
+    _playbackToken += 1;
+    try {
+      await engine.stop();
+    } catch (_) {
+      // 原始控制错误更有诊断价值；停止失败不应再形成未处理异步异常。
+    }
+    _setError(exception);
   }
 
   Future<void> _loadCurrentChapter() async {
@@ -272,9 +320,23 @@ class AudiobookController extends ChangeNotifier {
   }
 
   void _setError(Object exception) {
-    error = '$exception';
+    if (_disposed) return;
+    error = _readableTtsError(exception);
     state = AudiobookPlaybackState.error;
     _notify();
+  }
+
+  String _readableTtsError(Object exception) {
+    if (exception is StateError) {
+      return exception.message.toString();
+    }
+    if (exception is PlatformException) {
+      final message = exception.message?.trim();
+      return message == null || message.isEmpty
+          ? 'Windows 朗读服务调用失败，请检查系统语音后重试'
+          : 'Windows 朗读失败：$message';
+    }
+    return 'Windows 朗读服务暂时不可用，请停止后重试';
   }
 
   void _notify() {
@@ -291,8 +353,9 @@ class AudiobookController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _playbackToken += 1;
-    unawaited(engine.stop());
-    unawaited(engine.dispose());
+    unawaited(engine.dispose().catchError((Object _) {
+      // Widget 已销毁，TTS 关闭只能尽力完成，不能再向界面发送错误状态。
+    }));
     super.dispose();
   }
 }

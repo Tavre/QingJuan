@@ -1196,6 +1196,13 @@ async def test_manga_translation_resumes_completed_pages_from_checkpoint(
                 source_image_file=str(kwargs["source_image_file"]),
                 translated_image_file=str(kwargs["translated_image_file"]),
                 page_translation=translation,
+                regions=[
+                    MangaTranslatedRegion(
+                        order=1,
+                        source_text=f"source-{page_number}",
+                        translation=translation,
+                    )
+                ],
             ),
         )
 
@@ -1216,6 +1223,12 @@ async def test_manga_translation_resumes_completed_pages_from_checkpoint(
     assert calls == [1, 2]
     assert first_progress == [1]
     assert checkpoint_path.exists()
+    partial_pages = scraper.load_manga_translation_page_payloads(
+        tmp_path,
+        "chapter.txt",
+    )
+    assert [page.page_number for page in partial_pages] == [1]
+    assert partial_pages[0].regions[0].source_text == "source-1"
 
     logs: list[str] = []
     resumed_progress: list[int] = []
@@ -1244,6 +1257,14 @@ async def test_manga_translation_resumes_completed_pages_from_checkpoint(
     ]
     assert [page.page_number for page in translated_pages] == [1, 2]
     assert any("断点恢复" in message for message in logs)
+    completed_pages = scraper.load_manga_translation_page_payloads(
+        tmp_path,
+        "chapter.txt",
+    )
+    assert [page.page_translation for page in completed_pages] == [
+        "translation-1",
+        "translation-2",
+    ]
 
 
 @pytest.mark.asyncio

@@ -1962,6 +1962,37 @@ def _load_translated_page_payload_models(book_dir: Path, filename: str) -> list[
     return parsed_pages
 
 
+def load_manga_translation_page_payloads(
+    book_dir: Path,
+    filename: str,
+    *,
+    include_final: bool = True,
+) -> list[MangaTranslatedPagePayload]:
+    """Return completed page results from an active checkpoint or final metadata."""
+    checkpoint_path = translated_checkpoint_path(book_dir, filename)
+    if checkpoint_path.exists():
+        try:
+            checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            checkpoint = {}
+        raw_pages = checkpoint.get("pages") if isinstance(checkpoint, dict) else None
+        if isinstance(raw_pages, list):
+            pages: list[MangaTranslatedPagePayload] = []
+            for expected_page_number, item in enumerate(raw_pages, start=1):
+                if not isinstance(item, dict):
+                    break
+                try:
+                    page = MangaTranslatedPagePayload.model_validate(item)
+                except Exception:
+                    break
+                if page.page_number != expected_page_number:
+                    break
+                pages.append(page)
+            if pages:
+                return pages
+    return _load_translated_page_payload_models(book_dir, filename) if include_final else []
+
+
 def load_translated_page_payload(book_dir: Path, filename: str) -> list[str]:
     payload = _load_translated_page_metadata(book_dir, filename)
     page_translations = payload.get("page_translations")

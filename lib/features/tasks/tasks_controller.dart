@@ -12,6 +12,8 @@ class TasksController extends ChangeNotifier {
   final ApiClient api;
   LoadState state = LoadState.idle;
   List<BookTask> tasks = const [];
+  final Map<String, List<TaskPageResult>> taskPageResults =
+      <String, List<TaskPageResult>>{};
   String? error;
   Timer? _poller;
   bool _loadInProgress = false;
@@ -25,6 +27,7 @@ class TasksController extends ChangeNotifier {
     _poller?.cancel();
     _poller = null;
     tasks = const [];
+    taskPageResults.clear();
     error = null;
     state = LoadState.idle;
     notifyListeners();
@@ -42,9 +45,13 @@ class TasksController extends ChangeNotifier {
     try {
       final nextTasks = await api.fetchTasks();
       if (_disposed) return;
+      final pageResultsChanged = await _loadIncrementalPageResults(nextTasks);
+      if (_disposed) return;
       final nextState = nextTasks.isEmpty ? LoadState.empty : LoadState.ready;
-      shouldNotify =
-          !_sameTasks(tasks, nextTasks) || state != nextState || error != null;
+      shouldNotify = pageResultsChanged ||
+          !_sameTasks(tasks, nextTasks) ||
+          state != nextState ||
+          error != null;
       if (shouldNotify) {
         tasks = nextTasks;
         state = nextState;
@@ -75,6 +82,50 @@ class TasksController extends ChangeNotifier {
     await api.retryTask(taskId);
     await load(silent: true);
   }
+
+  List<TaskPageResult> pageResultsForTask(String taskId) =>
+      taskPageResults[taskId] ?? const <TaskPageResult>[];
+
+  Future<bool> _loadIncrementalPageResults(List<BookTask> nextTasks) async {
+    final previousActiveIds = tasks
+        .where((task) => task.type == 'translate' && _isActive(task))
+        .map((task) => task.id)
+        .toSet();
+    final watchedIds = nextTasks
+        .where(
+          (task) =>
+              task.type == 'translate' &&
+              (_isActive(task) || previousActiveIds.contains(task.id)),
+        )
+        .map((task) => task.id)
+        .toSet();
+    var changed = false;
+    for (final taskId in watchedIds) {
+      final current = taskPageResults[taskId] ?? const <TaskPageResult>[];
+      final after = current.isEmpty ? 0 : current.last.sequence;
+      try {
+        final additions = await api.fetchTaskPageResults(taskId, after: after);
+        if (additions.isEmpty || _disposed) continue;
+        final seen = current.map((entry) => entry.sequence).toSet();
+        final merged = <TaskPageResult>[
+          ...current,
+          ...additions.where((entry) => seen.add(entry.sequence)),
+        ];
+        taskPageResults[taskId] =
+            merged.length <= 200 ? merged : merged.sublist(merged.length - 200);
+        changed = true;
+      } catch (_) {
+        // 逐页结果是增量增强信息；单次获取失败不应遮蔽任务主进度。
+      }
+    }
+    final liveTaskIds = nextTasks.map((task) => task.id).toSet();
+    final beforeCleanup = taskPageResults.length;
+    taskPageResults.removeWhere((taskId, _) => !liveTaskIds.contains(taskId));
+    return changed || taskPageResults.length != beforeCleanup;
+  }
+
+  bool _isActive(BookTask task) =>
+      task.status == 'running' || task.status == 'queued';
 
   void _updatePolling() {
     if (activeCount > 0 && _poller == null) {

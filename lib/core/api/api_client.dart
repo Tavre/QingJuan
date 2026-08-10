@@ -301,6 +301,16 @@ class ApiClient {
     return _list(payload).map(BookTask.fromJson).toList();
   }
 
+  Future<List<TaskPageResult>> fetchTaskPageResults(
+    String taskId, {
+    int after = 0,
+  }) async {
+    final payload = _decode(
+      await _request('GET', '/tasks/$taskId/page-results?after=$after'),
+    );
+    return _list(payload).map(TaskPageResult.fromJson).toList();
+  }
+
   Future<BookTask> enqueueTask(
       String bookId, String action, List<int> chapters) async {
     final payload = _decode(

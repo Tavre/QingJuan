@@ -285,7 +285,7 @@ BIKA_SIGNATURE_KEY = "~d}$Q7$eIni=V)9\\RK/P.RM4;9[7|@/CA}b~OW!3?EV`:<>M7pddUBL5n
 _BIKA_TOKEN_CACHE: dict[str, str] = {}
 _COMIC_18_SCRAMBLE_ID_CACHE: dict[str, int] = {}
 _PIXIV_COMIC_PAGE_KEYS: dict[str, tuple[str, int]] = {}
-MANGA_RENDERER_VERSION = 8
+MANGA_RENDERER_VERSION = 9
 
 
 @dataclass
@@ -3531,6 +3531,9 @@ def _erase_manga_source_text(
     text_bbox: tuple[int, int, int, int],
     style: MangaTextStyle,
     fill_color: tuple[int, int, int],
+    *,
+    limit_bbox: tuple[int, int, int, int] | None = None,
+    limit_mask: Image.Image | None = None,
 ) -> tuple[int, str]:
     clipped_bbox = _normalize_region_bbox(text_bbox, canvas.size)
     if clipped_bbox is None or style.ink_mask.getbbox() is None:
@@ -3542,6 +3545,35 @@ def _erase_manga_source_text(
     dilation_radius = max(1, min(5, int(round(style.font_size * 0.08))))
     kernel_size = dilation_radius * 2 + 1
     removal_mask = mask.filter(ImageFilter.MaxFilter(kernel_size))
+    if limit_bbox is not None and limit_mask is not None:
+        normalized_limit = _normalize_region_bbox(limit_bbox, canvas.size)
+        intersection = _intersect_region_bboxes(clipped_bbox, normalized_limit)
+        if normalized_limit is None or intersection is None:
+            return 0, "none"
+        normalized_mask = limit_mask.convert("L")
+        expected_size = (
+            normalized_limit[2] - normalized_limit[0],
+            normalized_limit[3] - normalized_limit[1],
+        )
+        if normalized_mask.size != expected_size:
+            normalized_mask = normalized_mask.resize(expected_size, Image.Resampling.NEAREST)
+        permitted_mask = Image.new("L", crop.size, 0)
+        permitted_crop = normalized_mask.crop(
+            (
+                intersection[0] - normalized_limit[0],
+                intersection[1] - normalized_limit[1],
+                intersection[2] - normalized_limit[0],
+                intersection[3] - normalized_limit[1],
+            )
+        )
+        permitted_mask.paste(
+            permitted_crop,
+            (
+                intersection[0] - clipped_bbox[0],
+                intersection[1] - clipped_bbox[1],
+            ),
+        )
+        removal_mask = ImageChops.multiply(removal_mask, permitted_mask)
     erased_pixels = sum(1 for value in _image_pixels(removal_mask) if value > 0)
     if erased_pixels <= 0:
         return 0, "none"
@@ -4921,6 +4953,43 @@ def _render_text_layout(
         stroke_width=resolved_stroke_width,
         stroke_fill=stroke_color,
     )
+
+
+def _render_text_layout_to_bubble_layer(
+    body_bbox: tuple[int, int, int, int],
+    content_box: tuple[int, int, int, int],
+    layout: dict[str, Any],
+    text_color: tuple[int, int, int],
+    stroke_color: tuple[int, int, int] | None,
+    stroke_width: int | None,
+    safe_mask: Image.Image,
+) -> tuple[Image.Image, int]:
+    body_width = max(1, body_bbox[2] - body_bbox[0])
+    body_height = max(1, body_bbox[3] - body_bbox[1])
+    layer = Image.new("RGBA", (body_width, body_height), (0, 0, 0, 0))
+    layer_draw = ImageDraw.Draw(layer)
+    _render_text_layout(
+        layer_draw,
+        content_box[0] - body_bbox[0],
+        content_box[1] - body_bbox[1],
+        (
+            max(1, content_box[2] - content_box[0]),
+            max(1, content_box[3] - content_box[1]),
+        ),
+        layout,
+        text_color,
+        stroke_color,
+        stroke_width,
+    )
+
+    normalized_mask = safe_mask.convert("L")
+    if normalized_mask.size != layer.size:
+        normalized_mask = normalized_mask.resize(layer.size, Image.Resampling.NEAREST)
+    alpha = layer.getchannel("A")
+    outside_mask = ImageChops.subtract(alpha, ImageChops.multiply(alpha, normalized_mask))
+    outside_pixel_count = sum(1 for value in _image_pixels(outside_mask) if value > 0)
+    layer.putalpha(ImageChops.multiply(alpha, normalized_mask))
+    return layer, outside_pixel_count
 
 
 def _normalize_manga_text_direction(value: Any) -> str | None:
@@ -6601,7 +6670,6 @@ def _render_translated_manga_page_to_image(
     with Image.open(image_path) as source_image:
         canvas = source_image.convert("RGBA")
 
-    draw = ImageDraw.Draw(canvas)
     rendered_translations: list[str] = []
     rendered_region_count = 0
     skipped_empty_region_count = 0
@@ -6613,7 +6681,10 @@ def _render_translated_manga_page_to_image(
     rendered_horizontal_count = 0
     layout_retry_count = 0
     overflow_region_count = 0
+    skipped_overflow_region_count = 0
+    mask_layout_retry_count = 0
     max_overflow = 0.0
+    max_masked_outside_pixels = 0
     style_estimated_region_count = 0
     source_text_erased_region_count = 0
     solid_cleanup_region_count = 0
@@ -6621,7 +6692,7 @@ def _render_translated_manga_page_to_image(
     source_font_size_total = 0
 
     for region in page_payload.regions:
-        bbox = region.bbox
+        bbox = _normalize_region_bbox(region.bbox, canvas.size) if region.bbox is not None else None
         translation = str(region.translation or "").strip()
         if bbox is None:
             skipped_bbox_region_count += 1
@@ -6641,7 +6712,10 @@ def _render_translated_manga_page_to_image(
             continue
 
         region_payload = region.model_dump(exclude_none=True)
-        body_bbox = region.body_bbox or bbox
+        body_bbox = _normalize_region_bbox(region.body_bbox or bbox, canvas.size)
+        if body_bbox is None:
+            skipped_bbox_region_count += 1
+            continue
         fill_color = _sample_region_fill_color(
             canvas,
             body_bbox,
@@ -6679,15 +6753,6 @@ def _render_translated_manga_page_to_image(
         fill_shape = _resolve_region_fill_shape(region_payload, body_bbox, resolved_direction)
         bubble_outline_mask = _extract_precise_bubble_mask(canvas, body_bbox, fill_color, fill_shape)
         bubble_fill_mask = _build_region_fill_area_mask(bubble_outline_mask, fill_shape, resolved_direction)
-        erased_pixels, cleanup_method = _erase_manga_source_text(canvas, bbox, style, fill_color)
-        if erased_pixels > 0:
-            source_text_erased_region_count += 1
-        if cleanup_method == "solid":
-            solid_cleanup_region_count += 1
-        elif cleanup_method == "inpaint":
-            inpaint_cleanup_region_count += 1
-        draw = ImageDraw.Draw(canvas)
-
         safe_text_mask = _build_region_safe_text_mask(bubble_fill_mask, fill_shape, resolved_direction)
         content_box = _resolve_region_text_box(
             region_payload,
@@ -6697,8 +6762,6 @@ def _render_translated_manga_page_to_image(
             fill_shape=fill_shape,
             direction=resolved_direction,
         )
-        text_left = content_box[0]
-        text_top = content_box[1]
         box_width = max(8, content_box[2] - content_box[0])
         box_height = max(8, content_box[3] - content_box[1])
 
@@ -6745,6 +6808,11 @@ def _render_translated_manga_page_to_image(
         # 当最终渲染方向与初始方向不一致时，重新计算文本框以匹配实际方向
         final_direction = str(layout.get("direction") or "horizontal")
         if final_direction != resolved_direction:
+            safe_text_mask = _build_region_safe_text_mask(
+                bubble_fill_mask,
+                fill_shape,
+                final_direction,
+            )
             content_box = _resolve_region_text_box(
                 region_payload,
                 image_size=canvas.size,
@@ -6753,8 +6821,6 @@ def _render_translated_manga_page_to_image(
                 fill_shape=fill_shape,
                 direction=final_direction,
             )
-            text_left = content_box[0]
-            text_top = content_box[1]
             box_width = max(8, content_box[2] - content_box[0])
             box_height = max(8, content_box[3] - content_box[1])
             layout = _fit_text_layout_for_render(
@@ -6765,19 +6831,78 @@ def _render_translated_manga_page_to_image(
                 bold=style.bold,
             )
         overflow_value = float(layout.get("overflow") or 0.0)
-        if overflow_value > 0:
+        if not bool(layout.get("fits")) or overflow_value > 0:
             overflow_region_count += 1
             max_overflow = max(max_overflow, overflow_value)
-        _render_text_layout(
-            draw,
-            text_left,
-            text_top,
-            (box_width, box_height),
+            skipped_overflow_region_count += 1
+            continue
+
+        text_layer, outside_pixel_count = _render_text_layout_to_bubble_layer(
+            body_bbox,
+            content_box,
             layout,
             style.text_color,
             style.stroke_color,
             style.stroke_width,
+            safe_text_mask,
         )
+        max_masked_outside_pixels = max(max_masked_outside_pixels, outside_pixel_count)
+        for _ in range(4):
+            if outside_pixel_count <= 0:
+                break
+            retry_box = _shrink_absolute_bbox(
+                content_box,
+                max(2, min(10, (content_box[2] - content_box[0]) // 24)),
+                max(2, min(10, (content_box[3] - content_box[1]) // 24)),
+            )
+            if retry_box is None:
+                break
+            content_box = retry_box
+            box_width = max(8, content_box[2] - content_box[0])
+            box_height = max(8, content_box[3] - content_box[1])
+            layout = _fit_text_layout_for_render(
+                translation,
+                (box_width, box_height),
+                final_direction,
+                preferred_font_size=max(10, int(layout.get("font_size") or style.font_size) - 1),
+                bold=style.bold,
+            )
+            mask_layout_retry_count += 1
+            overflow_value = float(layout.get("overflow") or 0.0)
+            if not bool(layout.get("fits")) or overflow_value > 0:
+                break
+            text_layer, outside_pixel_count = _render_text_layout_to_bubble_layer(
+                body_bbox,
+                content_box,
+                layout,
+                style.text_color,
+                style.stroke_color,
+                style.stroke_width,
+                safe_text_mask,
+            )
+            max_masked_outside_pixels = max(max_masked_outside_pixels, outside_pixel_count)
+
+        if not bool(layout.get("fits")) or overflow_value > 0 or outside_pixel_count > 0:
+            overflow_region_count += 1
+            skipped_overflow_region_count += 1
+            max_overflow = max(max_overflow, overflow_value)
+            continue
+
+        erased_pixels, cleanup_method = _erase_manga_source_text(
+            canvas,
+            bbox,
+            style,
+            fill_color,
+            limit_bbox=body_bbox,
+            limit_mask=bubble_fill_mask,
+        )
+        if erased_pixels > 0:
+            source_text_erased_region_count += 1
+        if cleanup_method == "solid":
+            solid_cleanup_region_count += 1
+        elif cleanup_method == "inpaint":
+            inpaint_cleanup_region_count += 1
+        canvas.alpha_composite(text_layer, (body_bbox[0], body_bbox[1]))
         rendered_translations.append(translation)
         rendered_region_count += 1
         if str(layout.get("direction") or "horizontal") == "vertical":
@@ -6803,8 +6928,11 @@ def _render_translated_manga_page_to_image(
             "rendered_vertical_count": rendered_vertical_count,
             "rendered_horizontal_count": rendered_horizontal_count,
             "layout_retry_count": layout_retry_count,
+            "mask_layout_retry_count": mask_layout_retry_count,
             "overflow_region_count": overflow_region_count,
+            "skipped_overflow_region_count": skipped_overflow_region_count,
             "max_overflow": round(max_overflow, 3),
+            "max_masked_outside_pixels": max_masked_outside_pixels,
             "style_estimated_region_count": style_estimated_region_count,
             "source_text_erased_region_count": source_text_erased_region_count,
             "solid_cleanup_region_count": solid_cleanup_region_count,

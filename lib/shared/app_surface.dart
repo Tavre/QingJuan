@@ -68,8 +68,10 @@ class _SurfaceBody extends StatelessWidget {
             ? theme.resources.controlStrokeColorSecondary
             : theme.resources.cardStrokeColorDefault;
     return AnimatedContainer(
-      duration: theme.fasterAnimationDuration,
-      curve: theme.animationCurve,
+      duration: MediaQuery.maybeOf(context)?.disableAnimations ?? false
+          ? Duration.zero
+          : theme.fasterAnimationDuration,
+      curve: Curves.easeOutCubic,
       width: double.infinity,
       margin: margin,
       padding: padding,

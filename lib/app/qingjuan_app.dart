@@ -95,6 +95,7 @@ class _QingJuanAppState extends State<QingJuanApp> {
     widget.settings.dispose();
     widget.api.close();
     unawaited(widget.backend.dispose());
+    widget.appState.dispose();
     super.dispose();
   }
 

@@ -15,6 +15,11 @@ FluentThemeData buildQingJuanTheme(Brightness brightness) {
   return FluentThemeData(
     brightness: brightness,
     accentColor: qingJuanAccent,
+    fasterAnimationDuration: const Duration(milliseconds: 60),
+    fastAnimationDuration: const Duration(milliseconds: 110),
+    mediumAnimationDuration: const Duration(milliseconds: 170),
+    slowAnimationDuration: const Duration(milliseconds: 240),
+    animationCurve: Curves.easeOutCubic,
     visualDensity: VisualDensity.standard,
     fontFamily: 'Segoe UI Variable Text',
     scaffoldBackgroundColor:
@@ -28,6 +33,8 @@ FluentThemeData buildQingJuanTheme(Brightness brightness) {
         isDark ? const Color(0xFF303030) : const Color(0xFFEAEAEA),
     cardColor: isDark ? const Color(0xFF292929) : const Color(0xFFFBFBFB),
     navigationPaneTheme: NavigationPaneThemeData(
+      animationDuration: const Duration(milliseconds: 110),
+      animationCurve: Curves.easeOutCubic,
       backgroundColor:
           isDark ? const Color(0xFF202020) : const Color(0xFFF7F7F7),
       overlayBackgroundColor:

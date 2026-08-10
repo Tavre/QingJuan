@@ -349,10 +349,8 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
     _visibleLogCount = count;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_logScrollController.hasClients) return;
-      _logScrollController.animateTo(
+      _logScrollController.jumpTo(
         _logScrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOut,
       );
     });
   }

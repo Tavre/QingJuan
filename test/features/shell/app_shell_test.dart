@@ -53,6 +53,11 @@ void main() {
     expect(find.byKey(const ValueKey('window-maximize')), findsOneWidget);
     expect(find.byKey(const ValueKey('window-close')), findsOneWidget);
     expect(find.byType(Image), findsNothing);
+    final transition = expandedView.transitionBuilder!(
+      const SizedBox.shrink(),
+      const AlwaysStoppedAnimation<double>(0.5),
+    );
+    expect(transition, isA<SuppressPageTransition>());
   });
 
   testWidgets('keyboard shortcuts switch primary workspaces', (tester) async {

@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:fluent_ui/fluent_ui.dart';
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart' show ValueListenable, ValueNotifier;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/backend/connection_secret_store.dart';
@@ -47,6 +47,8 @@ class AppState extends ChangeNotifier {
   final SharedPreferences _preferences;
   final ConnectionSecretStore? _secretStore;
   AppSection _section = AppSection.library;
+  final ValueNotifier<AppSection> _sectionListenable =
+      ValueNotifier<AppSection>(AppSection.library);
   AppThemeMode _themeMode;
   late final ValueNotifier<ThemeMode> _themeModeListenable;
   String _backendUrl;
@@ -64,6 +66,7 @@ class AppState extends ChangeNotifier {
   TtsVoice? get ttsVoice => _ttsVoice;
   TtsSpeechStyle get ttsSpeechStyle => _ttsSpeechStyle;
   String? get notice => _notice;
+  ValueListenable<AppSection> get sectionListenable => _sectionListenable;
   ValueListenable<ThemeMode> get themeModeListenable => _themeModeListenable;
 
   ThemeMode get fluentThemeMode => switch (_themeMode) {
@@ -75,7 +78,15 @@ class AppState extends ChangeNotifier {
   void selectSection(AppSection value) {
     if (_section == value) return;
     _section = value;
+    _sectionListenable.value = value;
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _sectionListenable.dispose();
+    _themeModeListenable.dispose();
+    super.dispose();
   }
 
   Future<void> setThemeMode(AppThemeMode value) async {

@@ -63,6 +63,19 @@ void main() {
     expect(state.themeModeListenable.value, ThemeMode.dark);
   });
 
+  test('section listenable ignores unrelated application updates', () async {
+    final state = AppState(await SharedPreferences.getInstance());
+    var sectionNotifications = 0;
+    state.sectionListenable.addListener(() => sectionNotifications++);
+
+    state.showNotice('后端已连接');
+    await state.setBackendUrl('http://127.0.0.1:20000');
+    state.selectSection(AppSection.tasks);
+
+    expect(sectionNotifications, 1);
+    expect(state.sectionListenable.value, AppSection.tasks);
+  });
+
   test('AppState persists and restores the selected TTS voice', () async {
     const voice = TtsVoice(
       name: 'Microsoft Xiaoxiao',

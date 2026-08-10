@@ -123,9 +123,9 @@ class _AppShellState extends State<AppShell> {
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context).appState;
-    return AnimatedBuilder(
-      animation: app,
-      builder: (context, _) {
+    return ValueListenableBuilder<AppSection>(
+      valueListenable: app.sectionListenable,
+      builder: (context, section, _) {
         final theme = FluentTheme.of(context);
         final windowClass = windowClassOf(context);
         final isExpanded = windowClass == WindowClass.expanded;
@@ -134,7 +134,7 @@ class _AppShellState extends State<AppShell> {
             .toDouble();
         final paneWidth =
             _paneWidth.clamp(_minimumPaneWidth, maximumPaneWidth).toDouble();
-        final selectedIndex = _sections.indexOf(app.section);
+        final selectedIndex = _sections.indexOf(section);
         final displayMode = isExpanded && !_paneCollapsed
             ? PaneDisplayMode.open
             : PaneDisplayMode.compact;
@@ -142,6 +142,8 @@ class _AppShellState extends State<AppShell> {
         return Stack(
           children: <Widget>[
             NavigationView(
+              transitionBuilder: (child, animation) =>
+                  SuppressPageTransition(child: child),
               appBar: NavigationAppBar(
                 automaticallyImplyLeading: false,
                 height: desktopTitleBarHeight,

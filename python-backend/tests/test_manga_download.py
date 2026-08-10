@@ -224,6 +224,96 @@ def test_manga_render_uses_detected_style_and_reports_cleanup(tmp_path) -> None:
     assert diagnostics["rendered_vertical_count"] == 0
 
 
+def test_manga_render_never_changes_pixels_outside_original_bubble(tmp_path) -> None:
+    source = tmp_path / "bounded-bubble.png"
+    image = Image.new("RGB", (300, 190), (238, 238, 238))
+    draw = ImageDraw.Draw(image)
+    body_bbox = (20, 15, 280, 175)
+    draw.ellipse(body_bbox, fill="white", outline="black", width=4)
+    font = scraper._load_local_render_font(28, bold=True)
+    draw.text((74, 76), "ORIGINAL", font=font, fill="black")
+    text_bbox = draw.textbbox((74, 76), "ORIGINAL", font=font)
+    image.save(source)
+    payload = MangaTranslatedPagePayload(
+        page_number=1,
+        image_size=image.size,
+        target_language="Chinese",
+        regions=[
+            MangaTranslatedRegion(
+                order=1,
+                bbox=text_bbox,
+                body_bbox=body_bbox,
+                safe_box=body_bbox,
+                source_text="ORIGINAL",
+                source_direction="horizontal",
+                direction="horizontal",
+                translation="这是必须完整限制在原对话气泡以内的译文",
+                shape="ellipse",
+            )
+        ],
+    )
+
+    translated_bytes, _, diagnostics = scraper._render_translated_manga_page_to_image(source, payload)
+
+    allowed_mask = Image.new("L", image.size, 0)
+    ImageDraw.Draw(allowed_mask).ellipse(body_bbox, fill=255)
+    with Image.open(BytesIO(translated_bytes)) as translated:
+        source_pixels = list(image.convert("RGB").get_flattened_data())
+        translated_pixels = list(translated.convert("RGB").get_flattened_data())
+    outside_changes = sum(
+        1
+        for before, after, allowed in zip(
+            source_pixels,
+            translated_pixels,
+            allowed_mask.get_flattened_data(),
+            strict=True,
+        )
+        if allowed == 0 and before != after
+    )
+    assert diagnostics["rendered_region_count"] == 1
+    assert diagnostics["overflow_region_count"] == 0
+    assert outside_changes == 0
+
+
+def test_manga_render_preserves_source_when_translation_cannot_fit(tmp_path) -> None:
+    source = tmp_path / "overflow-bubble.png"
+    image = Image.new("RGB", (120, 90), "white")
+    draw = ImageDraw.Draw(image)
+    body_bbox = (20, 15, 100, 75)
+    draw.ellipse(body_bbox, outline="black", width=3)
+    font = scraper._load_local_render_font(20, bold=True)
+    draw.text((38, 34), "TEXT", font=font, fill="black")
+    text_bbox = draw.textbbox((38, 34), "TEXT", font=font)
+    image.save(source)
+    payload = MangaTranslatedPagePayload(
+        page_number=1,
+        image_size=image.size,
+        target_language="Chinese",
+        regions=[
+            MangaTranslatedRegion(
+                order=1,
+                bbox=text_bbox,
+                body_bbox=body_bbox,
+                safe_box=(28, 22, 92, 68),
+                source_text="TEXT",
+                direction="horizontal",
+                translation="无法容纳的超长翻译文本" * 20,
+                shape="ellipse",
+            )
+        ],
+    )
+
+    translated_bytes, _, diagnostics = scraper._render_translated_manga_page_to_image(source, payload)
+
+    assert diagnostics["rendered_region_count"] == 0
+    assert diagnostics["skipped_overflow_region_count"] == 1
+    assert diagnostics["source_text_erased_region_count"] == 0
+    with Image.open(BytesIO(translated_bytes)) as translated:
+        assert list(translated.convert("RGB").get_flattened_data()) == list(
+            image.get_flattened_data()
+        )
+
+
 def test_manga_render_skips_effectively_unchanged_text(tmp_path) -> None:
     source = tmp_path / "unchanged.png"
     image = Image.new("RGB", (180, 80), "white")

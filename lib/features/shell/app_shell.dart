@@ -1,7 +1,9 @@
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter/services.dart';
 
 import '../../app/app_scope.dart';
 import '../../app/app_state.dart';
+import '../../shared/desktop_title_bar.dart';
 import '../../shared/responsive.dart';
 import '../about/about_page.dart';
 import '../library/library_page.dart';
@@ -18,8 +20,7 @@ class AppShell extends StatefulWidget {
 }
 
 class _AppShellState extends State<AppShell> {
-  static const _appBarHeight = 48.0;
-  static const _defaultPaneWidth = 280.0;
+  static const _defaultPaneWidth = 256.0;
   static const _minimumPaneWidth = 220.0;
   static const _maximumPaneWidth = 420.0;
 
@@ -35,6 +36,35 @@ class _AppShellState extends State<AppShell> {
   double _paneWidth = _defaultPaneWidth;
   bool _paneCollapsed = false;
   bool _resizeHandleHovered = false;
+
+  @override
+  void initState() {
+    super.initState();
+    HardwareKeyboard.instance.addHandler(_handleKeyEvent);
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
+    super.dispose();
+  }
+
+  bool _handleKeyEvent(KeyEvent event) {
+    if (event is! KeyDownEvent || !HardwareKeyboard.instance.isControlPressed) {
+      return false;
+    }
+    int? index;
+    for (var candidate = 0; candidate < _sections.length; candidate++) {
+      if (event.logicalKey == _shortcutKey(candidate) ||
+          event.physicalKey == _shortcutPhysicalKey(candidate)) {
+        index = candidate;
+        break;
+      }
+    }
+    if (index == null) return false;
+    AppScope.of(context).appState.selectSection(_sections[index]);
+    return true;
+  }
 
   Widget _page(AppSection section) => switch (section) {
         AppSection.library => const LibraryPage(),
@@ -96,6 +126,7 @@ class _AppShellState extends State<AppShell> {
     return AnimatedBuilder(
       animation: app,
       builder: (context, _) {
+        final theme = FluentTheme.of(context);
         final windowClass = windowClassOf(context);
         final isExpanded = windowClass == WindowClass.expanded;
         final maximumPaneWidth = (MediaQuery.sizeOf(context).width * 0.36)
@@ -111,10 +142,11 @@ class _AppShellState extends State<AppShell> {
         return Stack(
           children: <Widget>[
             NavigationView(
-              appBar: const NavigationAppBar(
+              appBar: NavigationAppBar(
                 automaticallyImplyLeading: false,
-                height: _appBarHeight,
-                title: Text('青卷'),
+                height: desktopTitleBarHeight,
+                backgroundColor: theme.micaBackgroundColor,
+                title: const DesktopTitleBar(),
               ),
               pane: NavigationPane(
                 selected: selectedIndex,
@@ -126,7 +158,13 @@ class _AppShellState extends State<AppShell> {
                   openMaxWidth: maximumPaneWidth,
                 ),
                 menuButton: isExpanded ? _paneToggleButton() : null,
-                header: const Text('阅读工作台'),
+                header: Text(
+                  '工作区',
+                  style: theme.typography.caption?.copyWith(
+                    color: theme.resources.textFillColorSecondary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
                 items: <NavigationPaneItem>[
                   for (final section
                       in _sections.where((item) => item != AppSection.about))
@@ -149,7 +187,7 @@ class _AppShellState extends State<AppShell> {
             if (isExpanded && !_paneCollapsed)
               PositionedDirectional(
                 start: paneWidth - 4,
-                top: _appBarHeight,
+                top: desktopTitleBarHeight,
                 bottom: 0,
                 width: 8,
                 child: Semantics(
@@ -182,4 +220,22 @@ class _AppShellState extends State<AppShell> {
       },
     );
   }
+
+  LogicalKeyboardKey _shortcutKey(int index) => switch (index) {
+        0 => LogicalKeyboardKey.digit1,
+        1 => LogicalKeyboardKey.digit2,
+        2 => LogicalKeyboardKey.digit3,
+        3 => LogicalKeyboardKey.digit4,
+        4 => LogicalKeyboardKey.digit5,
+        _ => LogicalKeyboardKey.digit6,
+      };
+
+  PhysicalKeyboardKey _shortcutPhysicalKey(int index) => switch (index) {
+        0 => PhysicalKeyboardKey.digit1,
+        1 => PhysicalKeyboardKey.digit2,
+        2 => PhysicalKeyboardKey.digit3,
+        3 => PhysicalKeyboardKey.digit4,
+        4 => PhysicalKeyboardKey.digit5,
+        _ => PhysicalKeyboardKey.digit6,
+      };
 }

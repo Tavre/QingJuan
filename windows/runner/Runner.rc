@@ -87,7 +87,7 @@ VS_VERSION_INFO VERSIONINFO
 BEGIN
     BLOCK "StringFileInfo"
     BEGIN
-        BLOCK "040904e4"
+        BLOCK "080404b0"
         BEGIN
             VALUE "CompanyName", "Tavre" "\0"
             VALUE "FileDescription", "青卷阅读与翻译工作台" "\0"
@@ -101,7 +101,7 @@ BEGIN
     END
     BLOCK "VarFileInfo"
     BEGIN
-        VALUE "Translation", 0x409, 1252
+        VALUE "Translation", 0x0804, 1200
     END
 END
 

@@ -3,6 +3,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 
 import '../../app/app_scope.dart';
 import '../../core/models/book.dart';
+import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
@@ -134,9 +135,13 @@ class _BookDetailPageState extends State<BookDetailPage> {
     return NavigationView(
       appBar: NavigationAppBar(
         automaticallyImplyLeading: false,
-        leading: IconButton(
-          icon: const Icon(FluentIcons.back),
-          onPressed: () => Navigator.maybePop(context),
+        backgroundColor: FluentTheme.of(context).micaBackgroundColor,
+        leading: Tooltip(
+          message: '返回',
+          child: IconButton(
+            icon: const Icon(FluentIcons.back, semanticLabel: '返回'),
+            onPressed: () => Navigator.maybePop(context),
+          ),
         ),
         title: const Text('作品详情'),
       ),
@@ -198,6 +203,8 @@ class _BookDetailPageState extends State<BookDetailPage> {
         pageBuilder: (_, __, ___) => AudiobookPage(
           detail: detail,
           voice: _scope.appState.ttsVoice,
+          style: _scope.appState.ttsSpeechStyle,
+          onStyleChanged: _scope.appState.setTtsSpeechStyle,
           initialChapterIndex: chapterIndex ?? detail.progress.chapterIndex,
           loadChapter: (index, mode) => _scope.api.fetchChapter(
             detail.book.id,
@@ -447,17 +454,19 @@ class _BookDetailPageState extends State<BookDetailPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        Flex(
-          direction: compact ? Axis.vertical : Axis.horizontal,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            _BookSummary(detail: detail),
-            SizedBox(width: compact ? 0 : 24, height: compact ? 20 : 0),
-            if (!compact)
-              Expanded(child: _Stats(detail: detail))
-            else
-              _Stats(detail: detail),
-          ],
+        AppSurface(
+          child: Flex(
+            direction: compact ? Axis.vertical : Axis.horizontal,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              _BookSummary(detail: detail),
+              SizedBox(width: compact ? 0 : 28, height: compact ? 20 : 0),
+              if (!compact)
+                Expanded(child: _Stats(detail: detail))
+              else
+                _Stats(detail: detail),
+            ],
+          ),
         ),
         const SizedBox(height: 24),
         Wrap(
@@ -533,9 +542,13 @@ class _BookDetailPageState extends State<BookDetailPage> {
     return NavigationView(
       appBar: NavigationAppBar(
         automaticallyImplyLeading: false,
-        leading: IconButton(
-          icon: const Icon(FluentIcons.back),
-          onPressed: () => Navigator.pop(context),
+        backgroundColor: FluentTheme.of(context).micaBackgroundColor,
+        leading: Tooltip(
+          message: '返回',
+          child: IconButton(
+            icon: const Icon(FluentIcons.back, semanticLabel: '返回'),
+            onPressed: () => Navigator.pop(context),
+          ),
         ),
         title: Text(detail.book.title),
       ),

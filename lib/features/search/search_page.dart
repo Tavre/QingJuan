@@ -2,6 +2,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 
 import '../../app/app_scope.dart';
 import '../../core/models/source.dart';
+import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/page_frame.dart';
 import '../detail/book_detail_page.dart';
@@ -115,44 +116,76 @@ class _SearchResultTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
-    return Container(
+    return AppSurface(
       margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: theme.cardColor,
-        border: Border.all(color: theme.resources.cardStrokeColorDefault),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Expanded(
-            child: Column(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 560;
+          final details = Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const AccentIcon(FluentIcons.book_answers),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      result.title,
+                      style: theme.typography.bodyLarge
+                          ?.copyWith(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: <Widget>[
+                        if (result.author.isNotEmpty) StatusPill(result.author),
+                        StatusPill(result.sourceName, accented: true),
+                        StatusPill(result.kind),
+                      ],
+                    ),
+                    if (result.synopsis.isNotEmpty) ...<Widget>[
+                      const SizedBox(height: 9),
+                      Text(
+                        result.synopsis,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.typography.body?.copyWith(
+                          color: theme.resources.textFillColorSecondary,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          );
+          if (compact) {
+            return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                Text(result.title,
-                    style: theme.typography.bodyLarge
-                        ?.copyWith(fontWeight: FontWeight.w600)),
-                const SizedBox(height: 5),
-                Text(
-                  [
-                    if (result.author.isNotEmpty) result.author,
-                    result.sourceName,
-                    result.kind
-                  ].join(' · '),
-                  style: theme.typography.caption,
+                details,
+                const SizedBox(height: 14),
+                FilledButton(
+                  onPressed: onImport,
+                  child: const Text('加入书架'),
                 ),
-                if (result.synopsis.isNotEmpty) ...<Widget>[
-                  const SizedBox(height: 9),
-                  Text(result.synopsis,
-                      maxLines: 2, overflow: TextOverflow.ellipsis),
-                ],
               ],
-            ),
-          ),
-          const SizedBox(width: 16),
-          FilledButton(onPressed: onImport, child: const Text('加入书架')),
-        ],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: <Widget>[
+              Expanded(child: details),
+              const SizedBox(width: 20),
+              FilledButton(
+                onPressed: onImport,
+                child: const Text('加入书架'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }

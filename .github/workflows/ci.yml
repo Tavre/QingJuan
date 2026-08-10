@@ -15,7 +15,7 @@ jobs:
     # build on the matching Visual Studio 2022 runner instead of a moving image.
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.24.3'
@@ -35,8 +35,8 @@ jobs:
       run:
         working-directory: python-backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
           cache: pip

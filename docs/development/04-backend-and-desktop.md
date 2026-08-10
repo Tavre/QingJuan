@@ -44,6 +44,7 @@
 - 站点 HTML 变化视为正常故障，错误应指出站点和阶段，不吞异常。
 - 翻译和 OCR 请求不得记录原始密钥；正文日志要限制长度。
 - 尊重目标站点条款、robots、版权与用户所在地区法律。
+- 番茄小说作品页解析服务端渲染的 `window.__INITIAL_STATE__`，目录以 `chapterListWithVolume` 为准。`isChapterLock`、`needPay` 等字段作为访问状态提示保留在目录中。导入请求通过 `downloadMode` 明确选择 `all`（全部下载）或 `on_demand`（边看边下）；旧客户端未传该字段时保持 `all`，桌面导入界面对番茄小说默认推荐 `on_demand`。章节下载时交叉校验正文字符数与章节声明字数；正文为空或仅有试读片段时返回可执行错误，完整正文则记录内容来源、访问方式和校验结果。
 - Pixiv Comic 作品页通过同源作品与章节接口解析；阅读页签名只能使用页面下发的临时盐值生成，图片按接口提供的网格参数在本地无缩放复原。登录、购买或已结束公开的章节不得绕过访问限制。
 - 翻译服务只维护一份 OpenAI 兼容配置，通过 `Authorization: Bearer` 调用 `/v1/chat/completions`；禁止重新引入按品牌区分的提供商分支。模型禁用时任何翻译任务都必须立即停止并返回可操作错误。
 
@@ -118,11 +119,20 @@ Flutter 客户端启动时：
 
 `tool/build_windows.ps1` 是唯一完整发布入口：
 
-1. `flutter pub get`；
-2. `flutter build windows --release`；
-3. 复制完整 Runner 目录；
-4. PyInstaller 构建单文件后端；
-5. 将后端放入 `backend/`。
+执行前先完成[开发环境与依赖基线](./README.md#开发环境与依赖基线)，激活
+`python-backend/.venv`，并确认 `Get-Command python` 指向虚拟环境。脚本会使用当前
+`PATH` 中的 Python 和由 `requirements-dev.txt` 固定的 PyInstaller；不能用仅安装了
+运行依赖的系统 Python 生成正式包。
+
+1. 校验 Flutter `3.24.3`，缺少 NuGet 时下载固定版本并验证 Microsoft 数字签名；
+2. `flutter pub get`；
+3. `flutter build windows --release`；
+4. 复制完整 Runner 目录；
+5. PyInstaller 构建单文件后端；
+6. 将后端放入 `backend/`。
+
+默认拒绝使用其他 Flutter 版本生成正式发布包。仅为迁移验证新工具链时，才可显式传入
+`-AllowFlutterVersionMismatch`；该参数生成的结果不能直接作为正式发布包。
 
 发布目录必须整体分发。Flutter DLL、插件 DLL、`data/` 和后端可执行文件缺一不可。
 发布前在干净 Windows 环境测试首次启动、数据写入、退出清理和无 Python 环境运行。
@@ -137,3 +147,13 @@ Flutter 客户端启动时：
 - [ ] 客户端只终止自己创建的进程。
 - [ ] 发布包不包含数据库、测试数据或开发密钥。
 - [ ] 依赖许可证与 GPL-3.0 分发要求已复核。
+
+### 番茄章节解析
+
+- `python-backend/app/fanqie_parser.py` 负责网页 `__INITIAL_STATE__`、目录锁定状态、正文 HTML 和自绘字体反混淆；未知字体映射保留原字符。
+- 受限章节由 `python-backend/app/fanqie_app.py` 调用番茄阅读 APP 的全文接口，`fanqie_crypto.py` 实现请求签名、密钥注册响应解密和正文 AES-CBC 解密。密钥只保存在单次后端进程的内存中。
+- 抓取顺序为网页完整正文优先，网页返回试读片段或限制提示时回退 APP 全文接口；两条路径都失败时章节保留为未下载并记录错误，不写入错误占位正文。
+- `on_demand` 导入只保存元数据、封面和完整章节目录，不能在导入任务中抓取正文；首次打开章节时同步缓存当前章，响应成功后在后台顺序预取后续 20 章。预取失败只记录诊断，不阻断当前阅读，删除书籍或关闭后端时必须回收相关任务。
+- `all` 导入保持逐章下载全部正文的离线流程。界面必须提示长篇作品可能耗时较久，且用户选择不能被章节数量自动覆盖。
+- 设备参数可通过 `QINGJUAN_FANQIE_DEVICE_ID` 和 `QINGJUAN_FANQIE_INSTALL_ID` 覆盖；默认值仅用于匿名接口请求，不记录账号 Cookie。
+- 固定样本验证命令：`Set-Location python-backend; python -m pytest tests/test_fanqie_parser.py tests/test_fanqie_app.py`。

@@ -22,7 +22,11 @@ class PageFrame extends StatelessWidget {
   Widget build(BuildContext context) {
     final compact = windowClassOf(context) == WindowClass.compact;
     final padding = EdgeInsets.fromLTRB(
-        compact ? 18 : 30, compact ? 18 : 26, compact ? 18 : 30, 28);
+      compact ? 18 : 32,
+      compact ? 18 : 28,
+      compact ? 18 : 32,
+      32,
+    );
     final body = Align(
       alignment: Alignment.topCenter,
       child: ConstrainedBox(
@@ -32,29 +36,52 @@ class PageFrame extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Expanded(
-                    child: Column(
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final stackCommand = command != null &&
+                      (compact || constraints.maxWidth < 680);
+                  final heading = Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        title,
+                        style: FluentTheme.of(context).typography.title,
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        subtitle,
+                        style:
+                            FluentTheme.of(context).typography.body?.copyWith(
+                                  color: FluentTheme.of(context)
+                                      .resources
+                                      .textFillColorSecondary,
+                                ),
+                      ),
+                    ],
+                  );
+                  if (stackCommand) {
+                    return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
-                        Text(title,
-                            style:
-                                FluentTheme.of(context).typography.titleLarge),
-                        const SizedBox(height: 7),
-                        Text(subtitle,
-                            style: FluentTheme.of(context).typography.body),
+                        heading,
+                        const SizedBox(height: 16),
+                        command!,
                       ],
-                    ),
-                  ),
-                  if (command != null) ...<Widget>[
-                    const SizedBox(width: 16),
-                    command!
-                  ],
-                ],
+                    );
+                  }
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Expanded(child: heading),
+                      if (command != null) ...<Widget>[
+                        const SizedBox(width: 20),
+                        command!,
+                      ],
+                    ],
+                  );
+                },
               ),
-              const SizedBox(height: 26),
+              const SizedBox(height: 24),
               child,
             ],
           ),
@@ -78,8 +105,11 @@ class SectionTitle extends StatelessWidget {
       child: Row(
         children: <Widget>[
           Expanded(
-              child: Text(title,
-                  style: FluentTheme.of(context).typography.subtitle)),
+            child: Text(
+              title,
+              style: FluentTheme.of(context).typography.subtitle,
+            ),
+          ),
           if (trailing != null) trailing!,
         ],
       ),

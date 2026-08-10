@@ -11,6 +11,7 @@ TaskType = Literal["download", "translate"]
 TaskStatus = Literal["queued", "running", "completed", "failed"]
 TaskLogLevel = Literal["info", "warning", "error"]
 LinkJobMode = Literal["preview", "import"]
+DownloadMode = Literal["all", "on_demand"]
 SourceOrigin = Literal["builtin", "manual", "file", "remote"]
 SourceStatus = Literal["unknown", "online", "slow", "offline", "unsupported"]
 MangaTextDirection = Literal["vertical", "horizontal"]
@@ -64,12 +65,14 @@ class AddBookPayload(BaseModel):
     sourceId: str | None = None
     synopsis: str | None = None
     cover: str | None = None
+    downloadMode: DownloadMode = "all"
 
 
 class ChapterPreview(BaseModel):
     title: str
     url: str
     pageCount: int = 0
+    accessRestricted: bool = False
 
 
 class PreviewResponse(BaseModel):

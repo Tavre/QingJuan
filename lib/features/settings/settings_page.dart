@@ -5,10 +5,12 @@ import 'package:fluent_ui/fluent_ui.dart';
 import '../../app/app_scope.dart';
 import '../../app/app_state.dart';
 import '../../core/models/settings.dart';
+import '../../core/models/tts_speech_style.dart';
 import '../../core/models/tts_voice.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
 import '../audiobook/tts_voice_service.dart';
+import 'widgets/settings_section_card.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({this.voiceService, super.key});
@@ -83,13 +85,16 @@ class _SettingsPageState extends State<SettingsPage> {
     await appState.setTtsVoice(voice);
   }
 
-  Future<void> _previewVoice(TtsVoice voice) async {
+  Future<void> _previewVoice(
+    TtsVoice voice,
+    TtsSpeechStyle style,
+  ) async {
     setState(() {
       _previewingVoiceKey = voice.stableKey;
       _voiceError = null;
     });
     try {
-      await _voiceService.preview(voice);
+      await _voiceService.preview(voice, style: style);
     } catch (error) {
       if (mounted) setState(() => _voiceError = '$error');
     } finally {
@@ -198,118 +203,142 @@ class _SettingsPageState extends State<SettingsPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
             const SectionTitle('界面主题'),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: AppThemeMode.values.map((mode) {
-                final label = switch (mode) {
-                  AppThemeMode.system => '跟随系统',
-                  AppThemeMode.light => '浅色',
-                  AppThemeMode.dark => '深色',
-                };
-                return ToggleButton(
-                  checked: scope.appState.themeMode == mode,
-                  onChanged: (_) => scope.appState.setThemeMode(mode),
-                  child: Text(label),
-                );
-              }).toList(),
+            SettingsSectionCard(
+              icon: FluentIcons.color,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    '外观模式',
+                    style: FluentTheme.of(context)
+                        .typography
+                        .bodyLarge
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '跟随系统可自动响应 Windows 的浅色与深色设置。',
+                    style: FluentTheme.of(context).typography.caption,
+                  ),
+                  const SizedBox(height: 14),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: AppThemeMode.values.map((mode) {
+                      final label = switch (mode) {
+                        AppThemeMode.system => '跟随系统',
+                        AppThemeMode.light => '浅色',
+                        AppThemeMode.dark => '深色',
+                      };
+                      return ToggleButton(
+                        checked: scope.appState.themeMode == mode,
+                        onChanged: (_) => scope.appState.setThemeMode(mode),
+                        child: Text(label),
+                      );
+                    }).toList(),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 30),
             const SectionTitle('听书声音'),
-            _buildVoiceSettings(scope.appState, compact),
+            SettingsSectionCard(
+              icon: FluentIcons.volume3,
+              child: _buildVoiceSettings(scope.appState, compact),
+            ),
             const SizedBox(height: 30),
             const SectionTitle('后端连接'),
-            InfoLabel(
-              label: 'FastAPI 地址',
-              child: TextBox(
-                controller: _backendController,
-                placeholder: 'http://127.0.0.1:19453',
+            SettingsSectionCard(
+              icon: FluentIcons.plug_connected,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  InfoLabel(
+                    label: 'FastAPI 地址',
+                    child: TextBox(
+                      controller: _backendController,
+                      placeholder: 'http://127.0.0.1:19453',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '应用会优先启动本地后端，也可以填写其他可信 FastAPI 服务地址。',
+                    style: FluentTheme.of(context).typography.caption,
+                  ),
+                ],
               ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '应用会优先启动本地后端，也可以填写其他可信 FastAPI 服务地址。',
-              style: FluentTheme.of(context).typography.caption,
             ),
             const SizedBox(height: 30),
             const SectionTitle('翻译服务'),
-            const InfoBar(
-              title: Text('OpenAI 兼容接口'),
-              content: Text(
-                '统一使用 /v1/chat/completions。漫画默认由本地 RapidOCR 与 Windows OCR 识字，纯文本模型也可以翻译。',
+            SettingsSectionCard(
+              icon: FluentIcons.locale_language,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  const InfoBar(
+                    title: Text('OpenAI 兼容接口'),
+                    content: Text(
+                      '统一使用 /v1/chat/completions。漫画默认由本地 RapidOCR 与 Windows OCR 识字，纯文本模型也可以翻译。',
+                    ),
+                    severity: InfoBarSeverity.info,
+                  ),
+                  const SizedBox(height: 14),
+                  ToggleSwitch(
+                    checked: _translationModelEnabled,
+                    onChanged: (value) => setState(
+                      () => _translationModelEnabled = value,
+                    ),
+                    content: const Text('启用翻译模型'),
+                  ),
+                  const SizedBox(height: 10),
+                  ToggleSwitch(
+                    checked: _translationModelSupportsVision,
+                    onChanged: (value) => setState(
+                      () => _translationModelSupportsVision = value,
+                    ),
+                    content: const Text('使用模型辅助识图'),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '仅当模型明确支持图片输入时开启；关闭后图片不会发送给模型。',
+                    style: FluentTheme.of(context).typography.caption,
+                  ),
+                  const SizedBox(height: 14),
+                  InfoLabel(
+                    label: 'API 地址',
+                    child: TextBox(
+                      controller: _baseUrlController,
+                      placeholder: 'https://api.openai.com/v1',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  InfoLabel(
+                    label: 'API 密钥',
+                    child: TextBox(
+                      controller: _apiKeyController,
+                      obscureText: true,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  InfoLabel(
+                    label: '模型',
+                    child: TextBox(
+                      controller: _modelController,
+                      placeholder: '文本模型名称',
+                    ),
+                  ),
+                  const SizedBox(height: 26),
+                  InfoLabel(
+                    label: '系统提示词',
+                    child: TextBox(
+                      controller: _promptController,
+                      maxLines: 5,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  _buildNumberSettings(compact),
+                ],
               ),
-              severity: InfoBarSeverity.info,
-            ),
-            const SizedBox(height: 14),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                ToggleSwitch(
-                  checked: _translationModelEnabled,
-                  onChanged: (value) =>
-                      setState(() => _translationModelEnabled = value),
-                  content: const Text('启用翻译模型'),
-                ),
-                const SizedBox(height: 10),
-                ToggleSwitch(
-                  checked: _translationModelSupportsVision,
-                  onChanged: (value) =>
-                      setState(() => _translationModelSupportsVision = value),
-                  content: const Text('使用模型辅助识图'),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  '仅当模型明确支持图片输入时开启；关闭后图片不会发送给模型。',
-                  style: FluentTheme.of(context).typography.caption,
-                ),
-                const SizedBox(height: 14),
-                InfoLabel(
-                  label: 'API 地址',
-                  child: TextBox(
-                    controller: _baseUrlController,
-                    placeholder: 'https://api.openai.com/v1',
-                  ),
-                ),
-                const SizedBox(height: 12),
-                InfoLabel(
-                  label: 'API 密钥',
-                  child: TextBox(
-                    controller: _apiKeyController,
-                    obscureText: true,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                InfoLabel(
-                  label: '模型',
-                  child: TextBox(
-                    controller: _modelController,
-                    placeholder: '文本模型名称',
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 26),
-            InfoLabel(
-              label: '系统提示词',
-              child: TextBox(controller: _promptController, maxLines: 5),
-            ),
-            const SizedBox(height: 14),
-            Row(
-              children: <Widget>[
-                Expanded(
-                  child: InfoLabel(
-                    label: '自动翻译后续章节数',
-                    child: TextBox(controller: _autoTranslateController),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: InfoLabel(
-                    label: '下载并发数',
-                    child: TextBox(controller: _concurrencyController),
-                  ),
-                ),
-              ],
             ),
             if (settings.error != null) ...<Widget>[
               const SizedBox(height: 16),
@@ -322,6 +351,33 @@ class _SettingsPageState extends State<SettingsPage> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildNumberSettings(bool compact) {
+    final autoTranslate = InfoLabel(
+      label: '自动翻译后续章节数',
+      child: TextBox(controller: _autoTranslateController),
+    );
+    final concurrency = InfoLabel(
+      label: '下载并发数',
+      child: TextBox(controller: _concurrencyController),
+    );
+    if (compact) {
+      return Column(
+        children: <Widget>[
+          autoTranslate,
+          const SizedBox(height: 12),
+          concurrency,
+        ],
+      );
+    }
+    return Row(
+      children: <Widget>[
+        Expanded(child: autoTranslate),
+        const SizedBox(width: 12),
+        Expanded(child: concurrency),
+      ],
     );
   }
 
@@ -355,6 +411,7 @@ class _SettingsPageState extends State<SettingsPage> {
               value: voice.stableKey,
               child: Text(
                 '${voice.name} · ${voice.description}'
+                ' · ${voice.qualityLabel}'
                 '${!selectedAvailable && voice == selected ? '（当前不可用）' : ''}',
                 overflow: TextOverflow.ellipsis,
               ),
@@ -373,6 +430,33 @@ class _SettingsPageState extends State<SettingsPage> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         InfoLabel(
+          label: '默认朗读风格',
+          child: SizedBox(
+            width: compact ? double.infinity : 320,
+            child: ComboBox<TtsSpeechStyle>(
+              value: appState.ttsSpeechStyle,
+              isExpanded: true,
+              items: TtsSpeechStyle.values
+                  .map(
+                    (style) => ComboBoxItem<TtsSpeechStyle>(
+                      value: style,
+                      child: Text(
+                        '${style.label} · ${style.description}',
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (style) {
+                if (style != null) {
+                  unawaited(appState.setTtsSpeechStyle(style));
+                }
+              },
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        InfoLabel(
           label: '系统声线',
           child: Wrap(
             spacing: 10,
@@ -386,12 +470,24 @@ class _SettingsPageState extends State<SettingsPage> {
                         _previewingVoiceKey != null ||
                         !selectedAvailable
                     ? null
-                    : () => unawaited(_previewVoice(selectedVoice)),
+                    : () => unawaited(
+                          _previewVoice(
+                            selectedVoice,
+                            appState.ttsSpeechStyle,
+                          ),
+                        ),
                 child: Text(previewing ? '试听中…' : '试听'),
               ),
-              IconButton(
-                icon: const Icon(FluentIcons.refresh, size: 16),
-                onPressed: _voicesLoading ? null : _loadVoices,
+              Tooltip(
+                message: '重新扫描系统声音',
+                child: IconButton(
+                  icon: const Icon(
+                    FluentIcons.refresh,
+                    size: 16,
+                    semanticLabel: '重新扫描系统声音',
+                  ),
+                  onPressed: _voicesLoading ? null : _loadVoices,
+                ),
               ),
             ],
           ),
@@ -403,6 +499,24 @@ class _SettingsPageState extends State<SettingsPage> {
               : '已发现 ${_voices.length} 个系统声音。选择会立即保存，并用于之后打开的听书页面。',
           style: FluentTheme.of(context).typography.caption,
         ),
+        if (!_voicesLoading) ...<Widget>[
+          const SizedBox(height: 10),
+          InfoBar(
+            title: Text(
+              _voices.any((voice) => voice.isNatural)
+                  ? '已检测到自然声线'
+                  : '建议安装 Natural / Neural 声线',
+            ),
+            content: Text(
+              _voices.any((voice) => voice.isNatural)
+                  ? '自然声线配合朗读风格，可获得更接近真人的节奏和语调。'
+                  : '朗读风格会改善节奏、停顿和语调，但基础音色仍由 Windows 声线决定；标准声线可能保留机械感。',
+            ),
+            severity: _voices.any((voice) => voice.isNatural)
+                ? InfoBarSeverity.success
+                : InfoBarSeverity.warning,
+          ),
+        ],
         if (_voicesLoading) ...<Widget>[
           const SizedBox(height: 10),
           const ProgressBar(),

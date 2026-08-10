@@ -20,6 +20,7 @@ import threading
 import time
 import unicodedata
 import urllib.request
+import weakref
 from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -77,6 +78,30 @@ except ImportError:
         PreviewResponse,
         TranslationSettings,
     )
+
+try:
+    from .fanqie_parser import (
+        canonical_fanqie_book_url,
+        fanqie_book_id_from_url,
+        fanqie_item_id_from_url,
+        is_fanqie_url,
+        parse_fanqie_book_page,
+        parse_fanqie_reader_page,
+    )
+except ImportError:
+    from app.fanqie_parser import (
+        canonical_fanqie_book_url,
+        fanqie_book_id_from_url,
+        fanqie_item_id_from_url,
+        is_fanqie_url,
+        parse_fanqie_book_page,
+        parse_fanqie_reader_page,
+    )
+
+try:
+    from .fanqie_app import FanqieAppClient
+except ImportError:
+    from app.fanqie_app import FanqieAppClient
 
 try:
     from curl_cffi import requests as curl_requests
@@ -191,7 +216,14 @@ NOISE_LINE_MARKERS = (
 LINOVELIB_MIN_REQUEST_INTERVAL = 1.2
 LINOVELIB_MAX_RETRIES = 5
 LINOVELIB_RETRYABLE_STATUS_CODES = {403, 429, 500, 502, 503, 504}
+FANQIE_MIN_REQUEST_INTERVAL = 0.6
+FANQIE_MAX_RETRIES = 3
+FANQIE_MAX_REDIRECTS = 3
+FANQIE_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _HOST_LAST_REQUEST_AT: dict[str, float] = {}
+_FANQIE_APP_CLIENTS: weakref.WeakKeyDictionary[httpx.AsyncClient, FanqieAppClient] = (
+    weakref.WeakKeyDictionary()
+)
 EDGE_BROWSER_PATHS = tuple(
     path
     for path in (
@@ -257,6 +289,9 @@ class ChapterFetchResult:
     image_urls: list[str]
     illustration: bool = False
     image_files: list[str] | None = None
+    content_source: str | None = None
+    authorization_method: str | None = None
+    access_restricted: bool = False
 
 
 @dataclass
@@ -279,6 +314,10 @@ def _host_matches(url: str, keywords: tuple[str, ...]) -> bool:
 
 def _is_kakuyomu_url(url: str) -> bool:
     return _host_matches(url, KAKUYOMU_HOST_KEYWORDS)
+
+
+def _is_fanqie_url(url: str) -> bool:
+    return is_fanqie_url(url)
 
 
 def _is_syosetu_url(url: str) -> bool:
@@ -394,6 +433,10 @@ def _is_linovelib_url(url: str) -> bool:
 
 def _normalize_source_url(url: str) -> str:
     parsed = urlparse(url)
+    if _is_fanqie_url(url):
+        book_id = fanqie_book_id_from_url(url)
+        return canonical_fanqie_book_url(book_id) if book_id else url
+
     if _is_linovelib_url(url):
         match = LINOVELIB_BOOK_PATH_PATTERN.match(parsed.path)
         if not match:
@@ -1979,6 +2022,10 @@ async def download_selected_chapters(
                 ]
                 chapter["page_count"] = payload["page_count"]
                 chapter["images_repaired"] = payload.get("images_repaired", chapter.get("images_repaired"))
+                chapter["content_source"] = payload.get("content_source")
+                chapter["authorization_method"] = payload.get("authorization_method")
+                chapter["access_restricted"] = bool(payload.get("access_restricted"))
+                chapter["download_error"] = None
                 chapter["translated_file_name"] = chapter.get(
                     "translated_file_name"
                 ) or build_translated_filename(payload["file_name"])
@@ -2048,6 +2095,9 @@ async def _download_single_chapter(
                 or 0
             ),
             "images_repaired": bool(chapter.get("images_repaired")),
+            "content_source": chapter.get("content_source"),
+            "authorization_method": chapter.get("authorization_method"),
+            "access_restricted": bool(chapter.get("access_restricted")),
         }
 
     result = await _fetch_chapter_data(client, source_url, chapter_title)
@@ -2070,6 +2120,9 @@ async def _download_single_chapter(
         "translated_image_files": [],
         "page_count": len(image_files) or len(result.image_urls),
         "images_repaired": _is_18comic_url(source_url),
+        "content_source": result.content_source,
+        "authorization_method": result.authorization_method,
+        "access_restricted": result.access_restricted,
     }
 
 
@@ -2191,12 +2244,16 @@ def _normalize_openai_compatible_base_url(value: str) -> str:
         normalized_path = normalized_path[: -len(endpoint_suffix)].rstrip("/")
     if not normalized_path:
         normalized_path = "/v1"
-    return parsed._replace(
-        path=normalized_path,
-        params="",
-        query="",
-        fragment="",
-    ).geturl().rstrip("/")
+    return (
+        parsed._replace(
+            path=normalized_path,
+            params="",
+            query="",
+            fragment="",
+        )
+        .geturl()
+        .rstrip("/")
+    )
 
 
 def _resolve_openai_compatible_model_config(
@@ -2661,8 +2718,7 @@ def _merge_hybrid_manga_ocr_payloads(
             key=lambda region: _manga_ocr_text_score(region.source_text),
         )
         if (
-            _manga_ocr_text_score(text_region.source_text)
-            > _manga_ocr_text_score(layout_region.source_text)
+            _manga_ocr_text_score(text_region.source_text) > _manga_ocr_text_score(layout_region.source_text)
             and _bbox_area(text_region.body_bbox or text_region.bbox)
             >= _bbox_area(layout_region.body_bbox or layout_region.bbox)
             and _bbox_smaller_overlap_ratio(text_region.bbox, layout_region.bbox) >= 0.45
@@ -3178,9 +3234,7 @@ def _load_local_render_font(font_size: int, *, bold: bool = False) -> ImageFont.
     # Pillow 在部分 Linux 发行版中可以通过 Fontconfig 按文件名解析
     # DejaVu Sans；这能覆盖字体安装位置不同于上述常见目录的环境。
     fallback_names = (
-        ("DejaVuSans-Bold.ttf", "DejaVuSans.ttf")
-        if bold
-        else ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf")
+        ("DejaVuSans-Bold.ttf", "DejaVuSans.ttf") if bold else ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf")
     )
     for font_name in fallback_names:
         try:
@@ -5995,6 +6049,13 @@ def _mask_coverage_ratio(mask: Image.Image) -> float:
     return sum(1 for value in pixels if value > 0) / max(1, len(pixels))
 
 
+def _manga_ink_mask_is_unsafe(mask: Image.Image) -> bool:
+    # Tight OCR boxes around bold glyphs can legitimately reach roughly 55%
+    # coverage (notably DejaVu Sans on Ubuntu). Reserve the safety stop for
+    # masks that are genuinely close to an opaque artwork-sized block.
+    return _mask_coverage_ratio(mask) >= 0.72
+
+
 def _render_translated_manga_page_to_image(
     image_path: Path,
     page_payload: MangaTranslatedPagePayload,
@@ -6062,7 +6123,7 @@ def _render_translated_manga_page_to_image(
         )
         style_estimated_region_count += 1
         source_font_size_total += style.font_size
-        if _mask_coverage_ratio(style.ink_mask) >= 0.55:
+        if _manga_ink_mask_is_unsafe(style.ink_mask):
             # A mask covering most of its rectangle is not a credible glyph mask;
             # it usually means textured artwork was mistaken for a flat background.
             # Editing such a region creates an opaque block, so preserve the source
@@ -7949,9 +8010,33 @@ async def _preview_alphapolis(source_url: str, payload: AddBookPayload) -> Previ
     )
 
 
+async def _preview_fanqie(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    html, resolved_url = await _fetch_fanqie_html(source_url)
+    book = parse_fanqie_book_page(html, resolved_url)
+    return PreviewResponse(
+        title=book.title,
+        author=book.author,
+        synopsis=book.synopsis,
+        cover=book.cover_url,
+        chapterCount=len(book.chapters),
+        chapters=[
+            ChapterPreview(
+                title=chapter.title,
+                url=chapter.url,
+                accessRestricted=chapter.is_locked,
+            )
+            for chapter in book.chapters
+        ],
+    )
+
+
 async def preview_from_url(payload: AddBookPayload) -> PreviewResponse:
     source_url = _normalize_source_url(str(payload.sourceUrl))
     result: PreviewResponse
+    if _is_fanqie_url(source_url):
+        result = await _preview_fanqie(source_url, payload)
+        result = result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
+        return _apply_payload_metadata_to_preview(result, payload)
     if _is_18comic_url(source_url):
         result = await _preview_18comic(source_url, payload)
         return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
@@ -8036,6 +8121,11 @@ async def download_book(payload: AddBookPayload, preview: PreviewResponse, root_
         if preview.chapters and _is_linovelib_url(preview.chapters[0].url):
             await _prime_linovelib_session(client, preview.chapters[0].url)
         for index, chapter in enumerate(preview.chapters, start=1):
+            safe_chapter_title = re.sub(r'[\\/:*?"<>|]', "_", chapter.title)[:80]
+            filename = f"{index:04d}-{safe_chapter_title}.txt"
+            result: ChapterFetchResult | None = None
+            image_files: list[str] = []
+            download_error: str | None = None
             try:
                 result = await _fetch_chapter_data(client, chapter.url, chapter.title)
                 image_files = await _download_chapter_images(
@@ -8049,32 +8139,40 @@ async def download_book(payload: AddBookPayload, preview: PreviewResponse, root_
             except Exception as exc:
                 if _is_manga_source_url(chapter.url):
                     raise RuntimeError(f"漫画章节下载失败：{chapter.title}：{exc}") from exc
-                result = ChapterFetchResult(
-                    text=f"章节抓取失败：{exc}\n原始链接：{chapter.url}",
-                    image_urls=[],
-                    illustration=False,
-                )
-                image_files = []
+                if _is_fanqie_url(chapter.url):
+                    download_error = str(exc)
+                    result = None
+                else:
+                    result = ChapterFetchResult(
+                        text=f"章节抓取失败：{exc}\n原始链接：{chapter.url}",
+                        image_urls=[],
+                        illustration=False,
+                    )
 
-            safe_chapter_title = re.sub(r'[\\/:*?"<>|]', "_", chapter.title)[:80]
-            filename = f"{index:04d}-{safe_chapter_title}.txt"
-            (book_dir / filename).write_text(result.text, encoding="utf-8")
+            if result is not None:
+                (book_dir / filename).write_text(result.text, encoding="utf-8")
             chapter_manifest.append(
                 {
                     "index": index,
                     "title": chapter.title,
                     "url": chapter.url,
                     "file_name": filename,
-                    "downloaded": True,
+                    "downloaded": result is not None,
                     "translated": False,
                     "translated_file_name": None,
                     "translated_meta_file_name": None,
-                    "illustration": result.illustration,
-                    "image_urls": result.image_urls,
+                    "illustration": result.illustration if result is not None else False,
+                    "image_urls": result.image_urls if result is not None else [],
                     "image_files": image_files,
                     "translated_image_files": [],
-                    "page_count": chapter.pageCount or len(image_files) or len(result.image_urls),
+                    "page_count": chapter.pageCount
+                    or len(image_files)
+                    or (len(result.image_urls) if result is not None else 0),
                     "images_repaired": _is_18comic_url(chapter.url),
+                    "content_source": result.content_source if result is not None else None,
+                    "authorization_method": (result.authorization_method if result is not None else None),
+                    "access_restricted": chapter.accessRestricted,
+                    "download_error": download_error,
                 }
             )
 
@@ -8088,6 +8186,7 @@ async def download_book(payload: AddBookPayload, preview: PreviewResponse, root_
         "synopsis": preview.synopsis,
         "cover_url": preview.cover,
         "cover_file": cover_file,
+        "download_mode": "all",
         "chapter_count": len(chapter_manifest),
         "chapters": chapter_manifest,
     }
@@ -8135,6 +8234,10 @@ async def create_book_manifest_only(
                 "translated_image_files": [],
                 "page_count": chapter.pageCount,
                 "images_repaired": False,
+                "content_source": None,
+                "authorization_method": None,
+                "access_restricted": chapter.accessRestricted,
+                "download_error": None,
             }
         )
 
@@ -8148,6 +8251,7 @@ async def create_book_manifest_only(
         "synopsis": preview.synopsis,
         "cover_url": preview.cover,
         "cover_file": cover_file,
+        "download_mode": "on_demand",
         "chapter_count": len(chapter_manifest),
         "chapters": chapter_manifest,
     }
@@ -8614,10 +8718,48 @@ async def _fetch_alphapolis_chapter_data(
     return ChapterFetchResult(text=text, image_urls=image_urls, illustration=illustration)
 
 
+async def _fetch_fanqie_chapter_data(
+    client: httpx.AsyncClient,
+    chapter_url: str,
+    chapter_title: str = "",
+) -> ChapterFetchResult:
+    response = await _get_fanqie_html_response(client, chapter_url, referer="https://fanqienovel.com/")
+    try:
+        chapter = parse_fanqie_reader_page(response.text, str(response.url))
+    except Exception as web_error:
+        item_id = fanqie_item_id_from_url(str(response.url))
+        if not item_id:
+            raise
+        app_client = _FANQIE_APP_CLIENTS.get(client)
+        if app_client is None:
+            app_client = FanqieAppClient(client)
+            _FANQIE_APP_CLIENTS[client] = app_client
+        try:
+            app_chapter = await app_client.fetch_chapter(
+                item_id,
+                title=chapter_title,
+                source_url=str(response.url),
+                access_restricted=True,
+            )
+        except Exception as app_error:
+            raise ValueError(f"网页正文不可用，番茄 APP 全文接口也未返回完整内容：{app_error}") from web_error
+        chapter = app_chapter.chapter
+    return ChapterFetchResult(
+        text=chapter.text,
+        image_urls=list(chapter.image_urls),
+        illustration=False,
+        content_source=chapter.content_source,
+        authorization_method=chapter.authorization_method,
+        access_restricted=chapter.access_restricted,
+    )
+
+
 async def _fetch_chapter_data(
     client: httpx.AsyncClient, chapter_url: str, chapter_title: str = ""
 ) -> ChapterFetchResult:
     try:
+        if _is_fanqie_url(chapter_url):
+            return await _fetch_fanqie_chapter_data(client, chapter_url, chapter_title)
         if _is_18comic_url(chapter_url):
             return await _fetch_18comic_chapter_data(client, chapter_url, chapter_title)
         if _is_bikawebapp_url(chapter_url):
@@ -8665,7 +8807,7 @@ async def _fetch_chapter_data(
             text=soup.get_text("\n", strip=True)[:15000], image_urls=[], illustration=False
         )
     except Exception as exc:
-        if _is_manga_source_url(chapter_url):
+        if _is_manga_source_url(chapter_url) or _is_fanqie_url(chapter_url):
             raise
         return ChapterFetchResult(
             text=f"章节抓取失败：{exc}\n原始链接：{chapter_url}",
@@ -8734,6 +8876,17 @@ async def _throttle_linovelib_request(url: str) -> None:
     _HOST_LAST_REQUEST_AT[host] = time.monotonic()
 
 
+async def _throttle_fanqie_request(url: str) -> None:
+    host = (urlparse(url).hostname or "").lower()
+    last_request_at = _HOST_LAST_REQUEST_AT.get(host)
+    now = time.monotonic()
+    if last_request_at is not None:
+        wait_seconds = FANQIE_MIN_REQUEST_INTERVAL - (now - last_request_at)
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
+    _HOST_LAST_REQUEST_AT[host] = time.monotonic()
+
+
 def _retry_wait_seconds(response: httpx.Response, attempt: int) -> float:
     retry_after = response.headers.get("Retry-After", "").strip()
     if retry_after:
@@ -8749,6 +8902,83 @@ def _retry_wait_seconds(response: httpx.Response, attempt: int) -> float:
                 pass
 
     return min(12.0, 1.5 * (2**attempt))
+
+
+def _fanqie_target_identity(url: str) -> tuple[str, str]:
+    book_id = fanqie_book_id_from_url(url)
+    if book_id:
+        return "book", book_id
+    item_id = fanqie_item_id_from_url(url)
+    if item_id:
+        return "reader", item_id
+    raise ValueError("番茄小说链接无效：只支持作品页 /page/编号 和章节页 /reader/编号")
+
+
+async def _get_fanqie_html_response(
+    client: httpx.AsyncClient,
+    url: str,
+    referer: str | None = None,
+) -> httpx.Response:
+    expected_identity = _fanqie_target_identity(url)
+    current_url = url
+    for _ in range(FANQIE_MAX_REDIRECTS + 1):
+        if _fanqie_target_identity(current_url) != expected_identity:
+            raise ValueError("番茄小说重定向改变了作品或章节编号，已拒绝继续请求")
+
+        response: httpx.Response | None = None
+        last_transport_error: httpx.TransportError | None = None
+        for attempt in range(FANQIE_MAX_RETRIES):
+            await _throttle_fanqie_request(current_url)
+            try:
+                response = await client.get(
+                    current_url,
+                    headers=_request_headers(current_url, referer=referer),
+                    follow_redirects=False,
+                )
+                last_transport_error = None
+            except httpx.TransportError as exc:
+                last_transport_error = exc
+                if attempt < FANQIE_MAX_RETRIES - 1:
+                    await asyncio.sleep(min(6.0, 1.5 * (2**attempt)))
+                    continue
+                raise
+
+            if response.status_code in FANQIE_RETRYABLE_STATUS_CODES and attempt < FANQIE_MAX_RETRIES - 1:
+                await asyncio.sleep(_retry_wait_seconds(response, attempt))
+                continue
+            break
+
+        if response is None:
+            if last_transport_error is not None:
+                raise last_transport_error
+            raise ValueError("番茄小说网络请求未返回响应")
+
+        if response.is_redirect:
+            location = response.headers.get("Location", "").strip()
+            if not location:
+                raise ValueError("番茄小说返回了缺少 Location 的重定向")
+            candidate = urljoin(str(response.url), location)
+            if not is_fanqie_url(candidate) or _fanqie_target_identity(candidate) != expected_identity:
+                raise ValueError("番茄小说返回了不受信任的跨站或跨资源重定向")
+            current_url = candidate
+            continue
+
+        response.raise_for_status()
+        if _fanqie_target_identity(str(response.url)) != expected_identity:
+            raise ValueError("番茄小说响应地址与请求资源不一致")
+        return response
+
+    raise ValueError(f"番茄小说重定向次数超过上限 {FANQIE_MAX_REDIRECTS}")
+
+
+async def _fetch_fanqie_html(source_url: str) -> tuple[str, str]:
+    async with _create_async_http_client(
+        timeout=20.0,
+        headers=DEFAULT_HEADERS,
+        follow_redirects=False,
+    ) as client:
+        response = await _get_fanqie_html_response(client, source_url)
+        return response.text, str(response.url)
 
 
 async def _prime_linovelib_session(client: httpx.AsyncClient, url: str) -> None:
@@ -9321,9 +9551,7 @@ def _decode_translation_json_response(response: httpx.Response) -> dict[str, Any
         ) from exc
 
     if not isinstance(data, dict):
-        raise ValueError(
-            f"翻译服务返回了无法识别的数据结构（HTTP {status_code}，应为 JSON 对象）"
-        )
+        raise ValueError(f"翻译服务返回了无法识别的数据结构（HTTP {status_code}，应为 JSON 对象）")
 
     service_error = _translation_service_error_message(data)
     if response.is_error or data.get("error"):

@@ -27,7 +27,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1360, 860);
-  if (!window.Create(L"青卷", origin, size)) {
+  // Use Unicode escapes so the native title stays correct even when a local
+  // toolchain ignores the source encoding option.
+  if (!window.Create(L"\u9752\u5377", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);

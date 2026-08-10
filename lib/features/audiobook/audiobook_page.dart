@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:fluent_ui/fluent_ui.dart';
 
 import '../../core/models/book.dart';
+import '../../core/models/tts_speech_style.dart';
 import '../../core/models/tts_voice.dart';
 import '../../shared/feedback_widgets.dart';
 import 'audiobook_controller.dart';
@@ -15,6 +16,8 @@ class AudiobookPage extends StatefulWidget {
     this.initialChapterIndex,
     this.engine,
     this.voice,
+    this.style = TtsSpeechStyle.natural,
+    this.onStyleChanged,
     super.key,
   });
 
@@ -23,6 +26,8 @@ class AudiobookPage extends StatefulWidget {
   final int? initialChapterIndex;
   final TtsEngine? engine;
   final TtsVoice? voice;
+  final TtsSpeechStyle style;
+  final Future<void> Function(TtsSpeechStyle style)? onStyleChanged;
 
   @override
   State<AudiobookPage> createState() => _AudiobookPageState();
@@ -39,6 +44,7 @@ class _AudiobookPageState extends State<AudiobookPage> {
       engine: widget.engine ?? FlutterTtsEngine(voice: widget.voice),
       loadChapter: widget.loadChapter,
       initialChapterIndex: widget.initialChapterIndex,
+      initialStyle: widget.style,
     );
     unawaited(_controller.initialize());
   }
@@ -58,9 +64,15 @@ class _AudiobookPageState extends State<AudiobookPage> {
         return NavigationView(
           appBar: NavigationAppBar(
             automaticallyImplyLeading: false,
-            leading: IconButton(
-              icon: const Icon(FluentIcons.back),
-              onPressed: () => Navigator.pop(context),
+            leading: Tooltip(
+              message: '返回作品详情',
+              child: IconButton(
+                icon: const Icon(
+                  FluentIcons.back,
+                  semanticLabel: '返回作品详情',
+                ),
+                onPressed: () => Navigator.pop(context),
+              ),
             ),
             title: Text('听书 · ${widget.detail.book.title}'),
           ),
@@ -117,7 +129,13 @@ class _AudiobookPageState extends State<AudiobookPage> {
                     const SizedBox(height: 20),
                     _PlaybackControls(controller: _controller),
                     const SizedBox(height: 18),
-                    _SpeechSettings(controller: _controller),
+                    _SpeechSettings(
+                      controller: _controller,
+                      onStyleChanged: (style) async {
+                        await _controller.setStyle(style);
+                        await widget.onStyleChanged?.call(style);
+                      },
+                    ),
                   ],
                 ),
               ),
@@ -163,10 +181,18 @@ class _PlaybackControls extends StatelessWidget {
               : null,
           child: const Text('上一章'),
         ),
-        IconButton(
-          icon: const Icon(FluentIcons.stop, size: 20),
-          onPressed:
-              controller.isLoading ? null : () => unawaited(controller.stop()),
+        Tooltip(
+          message: '停止播放',
+          child: IconButton(
+            icon: const Icon(
+              FluentIcons.stop,
+              size: 20,
+              semanticLabel: '停止播放',
+            ),
+            onPressed: controller.isLoading
+                ? null
+                : () => unawaited(controller.stop()),
+          ),
         ),
         FilledButton(
           onPressed: controller.isLoading
@@ -211,9 +237,13 @@ class _PlaybackControls extends StatelessWidget {
 }
 
 class _SpeechSettings extends StatelessWidget {
-  const _SpeechSettings({required this.controller});
+  const _SpeechSettings({
+    required this.controller,
+    required this.onStyleChanged,
+  });
 
   final AudiobookController controller;
+  final Future<void> Function(TtsSpeechStyle style) onStyleChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -222,6 +252,32 @@ class _SpeechSettings extends StatelessWidget {
       spacing: 18,
       runSpacing: 12,
       children: <Widget>[
+        SizedBox(
+          width: 230,
+          child: InfoLabel(
+            label: '朗读风格',
+            child: ComboBox<TtsSpeechStyle>(
+              value: controller.style,
+              isExpanded: true,
+              items: TtsSpeechStyle.values
+                  .map(
+                    (style) => ComboBoxItem<TtsSpeechStyle>(
+                      value: style,
+                      child: Text(
+                        style.label,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  )
+                  .toList(),
+              onChanged: controller.isLoading
+                  ? null
+                  : (style) {
+                      if (style != null) unawaited(onStyleChanged(style));
+                    },
+            ),
+          ),
+        ),
         Row(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
@@ -254,7 +310,7 @@ class _SpeechSettings extends StatelessWidget {
                   onChanged: (value) => unawaited(controller.setRate(value)),
                 ),
               ),
-              Text('${controller.rate.toStringAsFixed(1)}×'),
+              Text('${controller.rate.toStringAsFixed(2)}×'),
             ],
           ),
         ),
@@ -274,6 +330,13 @@ class _SpeechSettings extends StatelessWidget {
               ),
               Text('${(controller.volume * 100).round()}%'),
             ],
+          ),
+        ),
+        SizedBox(
+          width: 320,
+          child: Text(
+            controller.style.description,
+            style: FluentTheme.of(context).typography.caption,
           ),
         ),
       ],

@@ -1,6 +1,7 @@
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qingjuan/core/models/book.dart';
+import 'package:qingjuan/core/models/tts_speech_style.dart';
 import 'package:qingjuan/features/audiobook/audiobook_controller.dart';
 import 'package:qingjuan/features/audiobook/audiobook_page.dart';
 
@@ -31,13 +32,57 @@ void main() {
     expect(find.text('播放'), findsOneWidget);
     expect(find.text('语速'), findsOneWidget);
     expect(find.text('音量'), findsOneWidget);
+    expect(find.text('朗读风格'), findsOneWidget);
+    expect(find.text('自然叙述'), findsOneWidget);
     expect(find.textContaining('用于测试听书功能'), findsOneWidget);
+
+    await tester.tap(find.byType(ComboBox<TtsSpeechStyle>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('温柔陪伴').last);
+    await tester.pumpAndSettle();
+
+    expect(engine.rates.last, closeTo(0.42, 0.001));
+    expect(engine.pitches.last, closeTo(1.01, 0.001));
 
     await tester.tap(find.widgetWithText(FilledButton, '播放'));
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(engine.spoken, <String>['这是一段用于测试听书功能的正文。']);
     expect(find.textContaining('本书播放完成'), findsOneWidget);
+  });
+
+  testWidgets('audiobook styles remain usable at 200 percent text scaling',
+      (tester) async {
+    tester.view.physicalSize = const Size(960, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final detail = _singleChapterDetail();
+
+    await tester.pumpWidget(
+      FluentApp(
+        home: MediaQuery(
+          data: const MediaQueryData(textScaler: TextScaler.linear(2)),
+          child: AudiobookPage(
+            detail: detail,
+            engine: _PageTestTtsEngine(),
+            loadChapter: (index, mode) async => ChapterContent(
+              chapter: detail.chapters.single,
+              content: '这是一段用于测试听书功能的正文。',
+              paragraphs: const <String>['这是一段用于测试听书功能的正文。'],
+              mode: mode,
+              translatedAvailable: false,
+              imageSources: const <String>[],
+              pageTranslations: const <String>[],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('朗读风格'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }
 
@@ -74,6 +119,8 @@ BookDetail _singleChapterDetail() => const BookDetail(
 
 class _PageTestTtsEngine implements TtsEngine {
   final List<String> spoken = <String>[];
+  final List<double> rates = <double>[];
+  final List<double> pitches = <double>[];
 
   @override
   Future<void> initialize(String language) async {}
@@ -91,7 +138,10 @@ class _PageTestTtsEngine implements TtsEngine {
   Future<void> stop() async {}
 
   @override
-  Future<void> setRate(double value) async {}
+  Future<void> setRate(double value) async => rates.add(value);
+
+  @override
+  Future<void> setPitch(double value) async => pitches.add(value);
 
   @override
   Future<void> setVolume(double value) async {}

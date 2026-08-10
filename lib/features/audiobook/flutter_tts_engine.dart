@@ -54,6 +54,11 @@ class FlutterTtsEngine implements TtsEngine {
   }
 
   @override
+  Future<void> setPitch(double value) async {
+    await _flutterTts.setPitch(value);
+  }
+
+  @override
   Future<void> setVolume(double value) async {
     await _flutterTts.setVolume(value);
   }

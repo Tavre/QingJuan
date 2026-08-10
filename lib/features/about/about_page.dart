@@ -1,6 +1,7 @@
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter/services.dart';
 
+import '../../shared/app_surface.dart';
 import '../../shared/page_frame.dart';
 
 class AboutPage extends StatefulWidget {
@@ -38,43 +39,57 @@ class _AboutPageState extends State<AboutPage> {
             const SizedBox(height: 24),
           ],
           const SectionTitle('项目'),
-          _InformationRow(
-            icon: FluentIcons.open_source,
-            label: 'GitHub 仓库',
-            value: _repositoryUrl,
-            copyTooltip: '复制 GitHub 地址',
-            onCopy: () => _copy('GitHub 地址', _repositoryUrl),
-          ),
-          const Divider(),
-          _InformationRow(
-            icon: FluentIcons.group,
-            label: '讨论群',
-            value: _discussionGroup,
-            description: 'QQ 讨论群',
-            copyTooltip: '复制讨论群号',
-            onCopy: () => _copy('讨论群号', _discussionGroup),
+          AppSurface(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Column(
+              children: <Widget>[
+                _InformationRow(
+                  icon: FluentIcons.open_source,
+                  label: 'GitHub 仓库',
+                  value: _repositoryUrl,
+                  copyTooltip: '复制 GitHub 地址',
+                  onCopy: () => _copy('GitHub 地址', _repositoryUrl),
+                ),
+                const Divider(),
+                _InformationRow(
+                  icon: FluentIcons.group,
+                  label: '讨论群',
+                  value: _discussionGroup,
+                  description: 'QQ 讨论群',
+                  copyTooltip: '复制讨论群号',
+                  onCopy: () => _copy('讨论群号', _discussionGroup),
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 32),
           const SectionTitle('开源许可'),
-          const _InformationRow(
-            icon: FluentIcons.pc1,
-            label: '支持平台',
-            value: 'Windows 10 / Windows 11',
-            description: '青卷目前仅提供 Windows 桌面客户端。',
-          ),
-          const Divider(),
-          const _InformationRow(
-            icon: FluentIcons.certificate,
-            label: '许可证',
-            value: 'GNU General Public License v3.0',
-            description: '使用、修改和分发时须遵守 GPL v3 条款。',
-          ),
-          const Divider(),
-          const _InformationRow(
-            icon: FluentIcons.favorite_star,
-            label: '维护者',
-            value: 'Tavre 与青卷开源社区',
-            description: '感谢每一位贡献代码、文档、测试和反馈的参与者。',
+          const AppSurface(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: Column(
+              children: <Widget>[
+                _InformationRow(
+                  icon: FluentIcons.pc1,
+                  label: '支持平台',
+                  value: 'Windows 10 / Windows 11',
+                  description: '青卷目前仅提供 Windows 桌面客户端。',
+                ),
+                Divider(),
+                _InformationRow(
+                  icon: FluentIcons.certificate,
+                  label: '许可证',
+                  value: 'GNU General Public License v3.0',
+                  description: '使用、修改和分发时须遵守 GPL v3 条款。',
+                ),
+                Divider(),
+                _InformationRow(
+                  icon: FluentIcons.favorite_star,
+                  label: '维护者',
+                  value: 'Tavre 与青卷开源社区',
+                  description: '感谢每一位贡献代码、文档、测试和反馈的参与者。',
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -107,10 +122,7 @@ class _InformationRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Icon(icon, size: 20, color: theme.accentColor),
-          ),
+          AccentIcon(icon),
           const SizedBox(width: 16),
           Expanded(
             child: Column(

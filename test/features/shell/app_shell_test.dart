@@ -13,6 +13,7 @@ import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/shell/app_shell.dart';
 import 'package:qingjuan/features/sources/sources_controller.dart';
 import 'package:qingjuan/features/tasks/tasks_controller.dart';
+import 'package:qingjuan/shared/desktop_title_bar.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -46,7 +47,41 @@ void main() {
     expect(expandedView.pane?.items, hasLength(5));
     expect(expandedView.pane?.footerItems, hasLength(1));
     expect(expandedView.appBar?.automaticallyImplyLeading, isFalse);
+    expect(expandedView.appBar?.height, desktopTitleBarHeight);
+    expect(find.byKey(const ValueKey('desktop-title-bar')), findsOneWidget);
+    expect(find.byKey(const ValueKey('window-minimize')), findsOneWidget);
+    expect(find.byKey(const ValueKey('window-maximize')), findsOneWidget);
+    expect(find.byKey(const ValueKey('window-close')), findsOneWidget);
     expect(find.byType(Image), findsNothing);
+  });
+
+  testWidgets('keyboard shortcuts switch primary workspaces', (tester) async {
+    final harness = await _Harness.create(const Size(1280, 800));
+    addTearDown(harness.dispose);
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 600));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.digit4);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(harness.appState.section, AppSection.tasks);
+    expect(find.text('任务'), findsWidgets);
+  });
+
+  testWidgets('dark shell supports 200 percent text scaling', (tester) async {
+    final harness = await _Harness.create(
+      const Size(960, 640),
+      textScaler: const TextScaler.linear(2),
+      brightness: Brightness.dark,
+    );
+    addTearDown(harness.dispose);
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(find.byKey(const ValueKey('desktop-title-bar')), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('about navigation shows project and community information',
@@ -171,6 +206,7 @@ void main() {
 class _Harness {
   _Harness({
     required this.widget,
+    required this.appState,
     required this.api,
     required this.library,
     required this.sources,
@@ -182,6 +218,7 @@ class _Harness {
     Size viewport, {
     List<Book> books = const <Book>[],
     TextScaler textScaler = TextScaler.noScaling,
+    Brightness brightness = Brightness.light,
   }) async {
     final appState = AppState(await SharedPreferences.getInstance());
     final api = ApiClient(() => appState.backendUrl);
@@ -195,7 +232,7 @@ class _Harness {
     final tasks = TasksController(api);
     final settings = SettingsController(api);
     final widget = FluentApp(
-      theme: buildQingJuanTheme(Brightness.light),
+      theme: buildQingJuanTheme(brightness),
       home: MediaQuery(
         data: MediaQueryData(size: viewport, textScaler: textScaler),
         child: AppScope(
@@ -212,6 +249,7 @@ class _Harness {
     );
     return _Harness(
       widget: widget,
+      appState: appState,
       api: api,
       library: library,
       sources: sources,
@@ -221,6 +259,7 @@ class _Harness {
   }
 
   final Widget widget;
+  final AppState appState;
   final ApiClient api;
   final LibraryController library;
   final SourcesController sources;

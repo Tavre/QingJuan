@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/models/tts_voice.dart';
+import '../core/models/tts_speech_style.dart';
 
 enum AppSection { library, search, sources, tasks, settings, about }
 
@@ -17,13 +18,17 @@ class AppState extends ChangeNotifier {
           orElse: () => AppThemeMode.system,
         ),
         _backendUrl = _preferences.getString(_backendKey) ?? _defaultBackendUrl,
-        _ttsVoice = _readTtsVoice(_preferences) {
+        _ttsVoice = _readTtsVoice(_preferences),
+        _ttsSpeechStyle = parseTtsSpeechStyle(
+          _preferences.getString(_ttsSpeechStyleKey),
+        ) {
     _themeModeListenable = ValueNotifier<ThemeMode>(fluentThemeMode);
   }
 
   static const _themeKey = 'qingjuan.theme';
   static const _backendKey = 'qingjuan.backendUrl';
   static const _ttsVoiceKey = 'qingjuan.ttsVoice';
+  static const _ttsSpeechStyleKey = 'qingjuan.ttsSpeechStyle';
   static const _defaultBackendUrl = 'http://127.0.0.1:19453';
 
   final SharedPreferences _preferences;
@@ -32,12 +37,14 @@ class AppState extends ChangeNotifier {
   late final ValueNotifier<ThemeMode> _themeModeListenable;
   String _backendUrl;
   TtsVoice? _ttsVoice;
+  TtsSpeechStyle _ttsSpeechStyle;
   String? _notice;
 
   AppSection get section => _section;
   AppThemeMode get themeMode => _themeMode;
   String get backendUrl => _backendUrl;
   TtsVoice? get ttsVoice => _ttsVoice;
+  TtsSpeechStyle get ttsSpeechStyle => _ttsSpeechStyle;
   String? get notice => _notice;
   ValueListenable<ThemeMode> get themeModeListenable => _themeModeListenable;
 
@@ -78,6 +85,13 @@ class AppState extends ChangeNotifier {
     } else {
       await _preferences.setString(_ttsVoiceKey, jsonEncode(value.toJson()));
     }
+  }
+
+  Future<void> setTtsSpeechStyle(TtsSpeechStyle value) async {
+    if (_ttsSpeechStyle == value) return;
+    _ttsSpeechStyle = value;
+    notifyListeners();
+    await _preferences.setString(_ttsSpeechStyleKey, value.name);
   }
 
   void showNotice(String message) {

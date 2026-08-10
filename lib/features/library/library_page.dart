@@ -24,8 +24,9 @@ class LibraryPage extends StatelessWidget {
           title: '书架',
           subtitle: '集中管理下载、翻译与阅读进度。',
           scrollable: false,
-          command: Row(
-            mainAxisSize: MainAxisSize.min,
+          command: Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: <Widget>[
               if (controller.linkJob != null) ...<Widget>[
                 Button(
@@ -45,7 +46,6 @@ class LibraryPage extends StatelessWidget {
                     ],
                   ),
                 ),
-                const SizedBox(width: 8),
               ],
               FilledButton(
                 onPressed: () => _openImportDialog(context),
@@ -70,9 +70,15 @@ class LibraryPage extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 10),
-                    IconButton(
-                      icon: const Icon(FluentIcons.refresh),
-                      onPressed: () => controller.load(),
+                    Tooltip(
+                      message: '刷新书架',
+                      child: IconButton(
+                        icon: const Icon(
+                          FluentIcons.refresh,
+                          semanticLabel: '刷新书架',
+                        ),
+                        onPressed: () => controller.load(),
+                      ),
                     ),
                   ],
                 ),
@@ -104,8 +110,8 @@ class LibraryPage extends StatelessWidget {
                         cacheExtent: 420,
                         itemCount: books.length,
                         gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-                          maxCrossAxisExtent: 326,
-                          mainAxisExtent: 154 + scaleAllowance,
+                          maxCrossAxisExtent: 352,
+                          mainAxisExtent: 164 + scaleAllowance,
                           crossAxisSpacing: 16,
                           mainAxisSpacing: 16,
                         ),

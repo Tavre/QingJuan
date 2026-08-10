@@ -293,6 +293,15 @@ def test_manga_render_skips_region_when_ink_mask_covers_most_of_artwork(tmp_path
         )
 
 
+def test_manga_cleanup_safety_allows_dense_glyphs_but_rejects_opaque_masks() -> None:
+    dense_glyph_mask = Image.new("L", (10, 10), 0)
+    ImageDraw.Draw(dense_glyph_mask).rectangle((0, 0, 5, 9), fill=255)
+    opaque_mask = Image.new("L", (10, 10), 255)
+
+    assert not scraper._manga_ink_mask_is_unsafe(dense_glyph_mask)
+    assert scraper._manga_ink_mask_is_unsafe(opaque_mask)
+
+
 def test_manga_render_skips_large_single_glyph_sound_effect(tmp_path) -> None:
     source = tmp_path / "sound-effect.png"
     image = Image.new("RGB", (160, 160), "black")

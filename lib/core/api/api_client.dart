@@ -308,7 +308,9 @@ class ApiClient {
     final trimmed = value.trim();
     if (trimmed.isEmpty ||
         trimmed.startsWith('http://') ||
-        trimmed.startsWith('https://')) return trimmed;
+        trimmed.startsWith('https://')) {
+      return trimmed;
+    }
     return '${_baseUrl().replaceAll(RegExp(r'/+$'), '')}/${trimmed.replaceFirst(RegExp(r'^/+'), '')}';
   }
 

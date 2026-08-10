@@ -822,8 +822,21 @@ async def post_preview(payload: AddBookPayload) -> PreviewResponse:
         raise HTTPException(status_code=400, detail=f"解析失败：{exc}") from exc
 
 
+def _is_fanqie_source_url(value: str) -> bool:
+    hostname = (urlparse(value.strip()).hostname or "").lower()
+    return hostname == "fanqienovel.com" or hostname.endswith(".fanqienovel.com")
+
+
+def _uses_manifest_only_import(payload: AddBookPayload) -> bool:
+    if payload.sourceId:
+        return True
+    return payload.downloadMode == "on_demand" and _is_fanqie_source_url(
+        str(payload.sourceUrl)
+    )
+
+
 async def _create_imported_book(payload: AddBookPayload, preview: PreviewResponse) -> BookRecord:
-    lightweight_import = bool(payload.sourceId)
+    lightweight_import = _uses_manifest_only_import(payload)
     result = (
         await create_book_manifest_only(payload, preview, LIBRARY_ROOT)
         if lightweight_import
@@ -899,15 +912,29 @@ async def _run_link_job(job_id: str) -> None:
             LINK_JOB_STORE.complete(job_id, "链接解析完成", preview=preview)
             return
 
-        LINK_JOB_STORE.append_log(job_id, "info", "开始下载并写入本地书库", progress=68)
+        manifest_only = _uses_manifest_only_import(payload)
+        import_start_message = (
+            "开始创建章节目录，正文将在阅读时按需下载"
+            if manifest_only
+            else "开始下载全部正文并写入本地书库"
+        )
+        import_wait_message = (
+            "正在写入章节目录"
+            if manifest_only
+            else "正在下载全部正文并写入本地书库"
+        )
+        LINK_JOB_STORE.append_log(job_id, "info", import_start_message, progress=68)
         book = await _run_link_job_stage(
             job_id,
             asyncio.create_task(_create_imported_book(payload, preview)),
-            message="正在下载章节并写入本地书库",
+            message=import_wait_message,
             start_progress=68,
             end_progress=98,
         )
-        LINK_JOB_STORE.complete(job_id, "链接导入完成", preview=preview, book=book)
+        completion_message = (
+            "链接导入完成，已启用边看边下" if manifest_only else "链接导入完成"
+        )
+        LINK_JOB_STORE.complete(job_id, completion_message, preview=preview, book=book)
     except asyncio.CancelledError:
         LINK_JOB_STORE.fail(job_id, "应用正在关闭，链接任务已取消")
         raise

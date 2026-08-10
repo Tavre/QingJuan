@@ -54,6 +54,14 @@ class TtsVoice {
 
   String get description => '$localeLabel · $genderLabel';
 
+  bool get isNatural {
+    final searchable = '$name $identifier'.toLowerCase();
+    return const <String>['natural', 'neural', 'online']
+        .any(searchable.contains);
+  }
+
+  String get qualityLabel => isNatural ? '自然声线' : '标准声线';
+
   String get previewText {
     final language = locale.toLowerCase().split('-').first;
     return switch (language) {
@@ -100,6 +108,7 @@ List<TtsVoice> parseTtsVoices(Object? rawVoices) {
   }
   final voices = byKey.values.toList()
     ..sort((left, right) {
+      if (left.isNatural != right.isNatural) return left.isNatural ? -1 : 1;
       final localeOrder = left.locale.compareTo(right.locale);
       if (localeOrder != 0) return localeOrder;
       return left.name.compareTo(right.name);

@@ -81,6 +81,7 @@ Dependabot 只维护当前技术栈：
 - 修改版本后必须验证 FastAPI 元数据与 Windows 文件属性均来自同一版本源，禁止在
   Dart、Python、C++ 或发布脚本中新增独立硬编码版本。
 - 当前发布基线为 `1.2.0+11`；后续正式发布的 build 必须大于 `11`，不得回退版本或复用已发布 build。
+- 本次更新按发布负责人指定使用 `1.3.0+12`，对外标签为 `v1.3.0`。
 
 发布前：
 
@@ -91,6 +92,20 @@ Dependabot 只维护当前技术栈：
 5. 验证自动后端、导入、任务、阅读、设置和退出；
 6. 扫描发布目录，不得包含数据库、缓存、日志和密钥；
 7. 记录已知站点兼容性与实验功能。
+
+合并并确认 `main` 的 CI 全绿后，推送与 `pubspec.yaml` 语义版本一致的标签即可触发
+`.github/workflows/release.yml`：
+
+```powershell
+git tag v1.3.0
+git push origin v1.3.0
+```
+
+发布工作流会在 `windows-2022` 上重新执行 Flutter 格式化、分析、测试，执行
+`python -m ruff check app tests` 与 `python -m pytest`，再构建完整 Windows 包。只有标签、
+`pubspec.yaml`、`qingjuan.exe` 文件版本和后端 OpenAPI 版本完全一致，且打包后端的
+`/health` 冒烟测试通过时，工作流才会上传压缩包及 SHA-256 文件并创建 GitHub Release。
+不得手工跳过失败门禁或从未提交的本地工作区制作正式发布包。
 
 分发时打包整个 `release/qingjuan-windows/`，不能只提供单个 EXE。
 压缩包统一命名为 `QingJuan-v<语义版本>-windows-x64.zip`，发布前必须：

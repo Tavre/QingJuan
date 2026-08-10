@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qingjuan/core/models/book.dart';
+import 'package:qingjuan/core/models/tts_speech_style.dart';
 import 'package:qingjuan/features/audiobook/audiobook_controller.dart';
 
 void main() {
@@ -13,6 +14,12 @@ void main() {
     expect(chunks, isNotEmpty);
     expect(chunks.every((chunk) => chunk.length <= 12), isTrue);
     expect(chunks.join(), text.replaceAll('\n', ''));
+  });
+
+  test('splitTextForTts inserts a natural pause between plain paragraphs', () {
+    final chunks = splitTextForTts('第一段没有句号\n第二段。');
+
+    expect(chunks.join(), '第一段没有句号。第二段。');
   });
 
   test('controller reads chapter chunks and continues to next chapter',
@@ -58,6 +65,24 @@ void main() {
     await controller.play();
     await playing;
     expect(engine.resumeCount, 1);
+  });
+
+  test('immersive style varies prosody for dialogue', () async {
+    final engine = _FakeTtsEngine();
+    final controller = AudiobookController(
+      detail: _detail(),
+      engine: engine,
+      initialStyle: TtsSpeechStyle.immersive,
+      loadChapter: (chapterIndex, mode) async =>
+          _content(chapterIndex, '“你真的要走吗？”', mode),
+    );
+
+    await controller.initialize();
+    await controller.play();
+
+    expect(controller.style, TtsSpeechStyle.immersive);
+    expect(engine.rates.last, greaterThanOrEqualTo(0.45));
+    expect(engine.pitches.last, greaterThan(0.98));
   });
 }
 
@@ -127,6 +152,8 @@ class _FakeTtsEngine implements TtsEngine {
   int pauseCount = 0;
   int resumeCount = 0;
   bool _didBlock = false;
+  final List<double> rates = <double>[];
+  final List<double> pitches = <double>[];
 
   @override
   Future<void> initialize(String language) async {
@@ -159,7 +186,10 @@ class _FakeTtsEngine implements TtsEngine {
   }
 
   @override
-  Future<void> setRate(double value) async {}
+  Future<void> setRate(double value) async => rates.add(value);
+
+  @override
+  Future<void> setPitch(double value) async => pitches.add(value);
 
   @override
   Future<void> setVolume(double value) async {}

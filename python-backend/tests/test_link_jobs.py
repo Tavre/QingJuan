@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from app import main
@@ -76,3 +78,117 @@ async def test_preview_link_job_runs_in_background_and_keeps_logs(monkeypatch) -
     assert completed.preview.title == "后台解析作品"
     assert completed.logs[0].message.startswith("已提交链接")
     assert completed.logs[-1].message == "链接解析完成"
+
+
+@pytest.mark.asyncio
+async def test_fanqie_on_demand_import_creates_manifest_without_full_download(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    preview = PreviewResponse(
+        title="长篇测试小说",
+        chapterCount=2,
+        chapters=[
+            {"title": "第一章", "url": "https://fanqienovel.com/reader/10001"},
+            {"title": "第二章", "url": "https://fanqienovel.com/reader/10002"},
+        ],
+        bookKind="长小说",
+    )
+    payload = AddBookPayload(
+        sourceUrl="https://fanqienovel.com/page/20001",
+        bookKind="长小说",
+        language="中文",
+        downloadMode="on_demand",
+    )
+    calls: list[str] = []
+
+    async def fake_manifest_only(*_: object) -> SimpleNamespace:
+        calls.append("manifest")
+        return SimpleNamespace(
+            title=preview.title,
+            synopsis="",
+            cover=None,
+            chapters=preview.chapters,
+            local_path=tmp_path / "book",
+        )
+
+    async def reject_full_download(*_: object) -> None:
+        pytest.fail("边看边下不应在导入阶段下载全部正文")
+
+    saved = []
+    monkeypatch.setattr(main, "LIBRARY_ROOT", tmp_path)
+    monkeypatch.setattr(main, "create_book_manifest_only", fake_manifest_only)
+    monkeypatch.setattr(main, "download_book", reject_full_download)
+    monkeypatch.setattr(main, "save_book", lambda book: saved.append(book))
+    monkeypatch.setattr(main, "_hydrate_book_record", lambda book: book)
+
+    book = await main._create_imported_book(payload, preview)
+
+    assert calls == ["manifest"]
+    assert book.status == "待处理"
+    assert saved[-1].id == book.id
+
+
+@pytest.mark.asyncio
+async def test_fanqie_full_import_keeps_existing_download_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    preview = PreviewResponse(
+        title="短篇测试小说",
+        chapterCount=1,
+        chapters=[{"title": "第一章", "url": "https://fanqienovel.com/reader/10001"}],
+        bookKind="长小说",
+    )
+    payload = AddBookPayload(
+        sourceUrl="https://fanqienovel.com/page/20001",
+        bookKind="长小说",
+        language="中文",
+        downloadMode="all",
+    )
+    calls: list[str] = []
+
+    async def fake_download(*_: object) -> SimpleNamespace:
+        calls.append("download")
+        return SimpleNamespace(
+            title=preview.title,
+            synopsis="",
+            cover=None,
+            chapters=preview.chapters,
+            local_path=tmp_path / "book",
+        )
+
+    async def reject_manifest_only(*_: object) -> None:
+        pytest.fail("全量下载不应只创建目录清单")
+
+    monkeypatch.setattr(main, "LIBRARY_ROOT", tmp_path)
+    monkeypatch.setattr(main, "create_book_manifest_only", reject_manifest_only)
+    monkeypatch.setattr(main, "download_book", fake_download)
+    monkeypatch.setattr(main, "save_book", lambda _: None)
+    monkeypatch.setattr(main, "_hydrate_book_record", lambda book: book)
+
+    book = await main._create_imported_book(payload, preview)
+
+    assert calls == ["download"]
+    assert book.status == "已下载"
+
+
+def test_on_demand_reader_prefetches_twenty_chapters_after_current(tmp_path) -> None:
+    chapters = [
+        {
+            "index": index,
+            "title": f"第{index}章",
+            "url": f"https://fanqienovel.com/reader/{10000 + index}",
+            "file_name": f"{index:04d}-chapter.txt",
+        }
+        for index in range(1, 31)
+    ]
+    (tmp_path / "0005-chapter.txt").write_text("当前章已缓存", encoding="utf-8")
+
+    indexes = main._source_chapter_cache_indexes(
+        tmp_path,
+        {"chapters": chapters},
+        chapter_index=5,
+    )
+
+    assert indexes == list(range(6, 26))

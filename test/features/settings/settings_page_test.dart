@@ -5,6 +5,7 @@ import 'package:qingjuan/app/app_state.dart';
 import 'package:qingjuan/core/api/api_client.dart';
 import 'package:qingjuan/core/backend/backend_process_manager.dart';
 import 'package:qingjuan/core/models/settings.dart';
+import 'package:qingjuan/core/models/tts_speech_style.dart';
 import 'package:qingjuan/core/models/tts_voice.dart';
 import 'package:qingjuan/features/audiobook/tts_voice_service.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
@@ -81,15 +82,28 @@ void main() {
 
     await tester.tap(find.byType(ComboBox<String>));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Microsoft Xiaoxiao · 简体中文 · 女声').last);
+    await tester.tap(
+      find.text('Microsoft Xiaoxiao · 简体中文 · 女声 · 标准声线').last,
+    );
     await tester.pumpAndSettle();
 
     expect(appState.ttsVoice, voice);
+
+    await tester.tap(find.byType(ComboBox<TtsSpeechStyle>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('沉浸小说').last);
+    await tester.pumpAndSettle();
+
+    expect(appState.ttsSpeechStyle, TtsSpeechStyle.immersive);
 
     await tester.tap(find.widgetWithText(Button, '试听'));
     await tester.pumpAndSettle();
 
     expect(voiceService.previewed, <TtsVoice>[voice]);
+    expect(
+      voiceService.previewedStyles,
+      <TtsSpeechStyle>[TtsSpeechStyle.immersive],
+    );
     api.close();
   });
 }
@@ -99,12 +113,19 @@ class _FakeTtsVoiceService implements TtsVoiceService {
 
   final List<TtsVoice> voices;
   final List<TtsVoice> previewed = <TtsVoice>[];
+  final List<TtsSpeechStyle> previewedStyles = <TtsSpeechStyle>[];
 
   @override
   Future<List<TtsVoice>> loadVoices() async => voices;
 
   @override
-  Future<void> preview(TtsVoice voice) async => previewed.add(voice);
+  Future<void> preview(
+    TtsVoice voice, {
+    TtsSpeechStyle style = TtsSpeechStyle.natural,
+  }) async {
+    previewed.add(voice);
+    previewedStyles.add(style);
+  }
 
   @override
   Future<void> stop() async {}

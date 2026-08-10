@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../core/models/book.dart';
+import '../../core/models/tts_speech_style.dart';
 
 typedef ChapterLoader = Future<ChapterContent> Function(
   int chapterIndex,
@@ -26,6 +27,7 @@ abstract class TtsEngine {
   Future<void> resume();
   Future<void> stop();
   Future<void> setRate(double value);
+  Future<void> setPitch(double value);
   Future<void> setVolume(double value);
   Future<void> dispose();
 }
@@ -34,7 +36,11 @@ List<String> splitTextForTts(String text, {int maxLength = 800}) {
   final limit = maxLength.clamp(8, 4000);
   final normalized = text
       .replaceAll('\r', '')
-      .replaceAll('\n', '')
+      .replaceAllMapped(
+        RegExp(r'([。！？!?；;])\s*\n+'),
+        (match) => match.group(1)!,
+      )
+      .replaceAll(RegExp(r'\s*\n+\s*'), '。')
       .replaceAll(RegExp(r'[\t ]+'), ' ')
       .trim();
   if (normalized.isEmpty) return const <String>[];
@@ -66,19 +72,24 @@ class AudiobookController extends ChangeNotifier {
     required this.engine,
     required this.loadChapter,
     int? initialChapterIndex,
-  }) : chapterIndex = (initialChapterIndex ?? detail.progress.chapterIndex)
-            .clamp(1, detail.chapters.length);
+    this.initialStyle = TtsSpeechStyle.natural,
+  })  : chapterIndex = (initialChapterIndex ?? detail.progress.chapterIndex)
+            .clamp(1, detail.chapters.length),
+        style = initialStyle,
+        rate = initialStyle.defaultRate;
 
   final BookDetail detail;
   final TtsEngine engine;
   final ChapterLoader loadChapter;
+  final TtsSpeechStyle initialStyle;
 
   AudiobookPlaybackState state = AudiobookPlaybackState.idle;
   int chapterIndex;
   int chunkIndex = 0;
   List<String> chunks = const <String>[];
   String mode = 'translated';
-  double rate = 0.5;
+  TtsSpeechStyle style;
+  double rate;
   double volume = 1;
   String? error;
 
@@ -112,6 +123,7 @@ class AudiobookController extends ChangeNotifier {
     try {
       await engine.initialize(_languageCode(detail.book.language));
       await engine.setRate(rate);
+      await engine.setPitch(style.basePitch);
       await engine.setVolume(volume);
       await _loadCurrentChapter();
     } catch (exception) {
@@ -137,7 +149,12 @@ class AudiobookController extends ChangeNotifier {
     try {
       while (token == _playbackToken && !_disposed) {
         while (chunkIndex < chunks.length && token == _playbackToken) {
-          await engine.speak(chunks[chunkIndex]);
+          final chunk = chunks[chunkIndex];
+          await engine.setRate(style.rateFor(chunk, rate));
+          await engine.setPitch(style.pitchFor(chunk));
+          await engine.speak(chunk);
+          if (token != _playbackToken || _disposed) return;
+          await Future<void>.delayed(style.pauseAfter(chunk));
           if (token != _playbackToken || _disposed) return;
           chunkIndex += 1;
           _notify();
@@ -203,6 +220,15 @@ class AudiobookController extends ChangeNotifier {
     rate = value.clamp(0.2, 1);
     _notify();
     await engine.setRate(rate);
+  }
+
+  Future<void> setStyle(TtsSpeechStyle value) async {
+    if (style == value) return;
+    style = value;
+    rate = value.defaultRate;
+    _notify();
+    await engine.setRate(rate);
+    await engine.setPitch(value.basePitch);
   }
 
   Future<void> setVolume(double value) async {

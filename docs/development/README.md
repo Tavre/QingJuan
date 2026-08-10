@@ -4,7 +4,8 @@
 
 ## 当前发布基线
 
-- 当前发布版本：`1.2.0+11`，对外版本为 `v1.2.0`。
+- 当前已发布基线：`1.2.0+11`，对外版本为 `v1.2.0`；本次发布目标为
+  `1.3.0+12` / `v1.3.0`。
 - 当前唯一客户端是 Flutter Windows；Vue/Vite、Web、PWA 与移动端实现均属于已移除的遗留技术。
 - v1.2.0 的功能基线包括：本地 `TXT` / `TEXT` / `DOCX` / `EPUB` 小说和 `PDF` 漫画导入、单章与多章导出、Windows TTS、可收起的链接任务与实时日志、单一 OpenAI 兼容翻译配置，以及 RapidOCR + Windows OCR 漫画翻译链路。
 - 后续版本不得破坏现有导入导出格式、阅读进度、设置迁移和无 Python 环境启动能力；确需不兼容变更时必须提供迁移说明和测试。
@@ -33,28 +34,73 @@
 | [质量与测试](./05-quality-and-testing.md) | TDD、测试分层、门禁、验收与完成定义 | 所有变更 |
 | [工作流与迁移](./06-workflow-and-migration.md) | Git、PR、发布、技术债与禁止项 | 贡献流程 |
 
-## 开发环境与首次配置
+## 开发环境与依赖基线
 
-环境要求：
+### 必需工具
 
-- Windows 10 1809 或更高版本，推荐 Windows 11；
-- Flutter `3.24.3` 与 Dart `3.5.3`；
-- Visual Studio 2022，并安装“使用 C++ 的桌面开发”工作负载；
-- Python `3.13`；
-- Git。
+| 工具 | 支持基线 | 用途与要求 |
+| --- | --- | --- |
+| Windows | Windows 10 1809 或更高版本，推荐 Windows 11 x64 | 唯一支持的开发、构建和运行平台 |
+| Flutter | `3.24.3` stable | 必须使用 stable 版本；正式包禁止使用 master、beta 或其他未验证版本 |
+| Dart | `3.5.3` | 随 Flutter `3.24.3` 提供，不单独安装或升级 |
+| Visual Studio | Visual Studio 2022 | 安装“使用 C++ 的桌面开发”工作负载、MSVC v143 x64/x86、C++ CMake 工具和 Windows 10/11 SDK |
+| Python | CPython `3.13.x` x64 | 后端开发、测试与 PyInstaller 打包；不使用 Microsoft Store 的重定向别名 |
+| PowerShell | Windows PowerShell 5.1 或 PowerShell 7 | 文档命令与 `tool/build_windows.ps1` 的执行环境 |
+| Git | 当前受支持版本 | 源码和子模块管理；本项目当前没有 Git 子模块 |
 
-在仓库根目录完成首次配置：
+Flutter 与 Dart 视为同一套工具链。升级 Flutter 时必须在同一个变更中同步
+`tool/build_windows.ps1`、`.github/workflows/ci.yml`、本文档和真实 Windows 构建结果。
+本机安装了多个 Flutter 或 Python 时，先用 `Get-Command flutter` 和 `Get-Command python`
+确认当前 PowerShell 会话解析到的可执行文件，不以 IDE 状态栏显示为准。
+
+完整发布脚本固定使用 NuGet `6.12.1`。开发机不必预装全局 `nuget.exe`；脚本在缺少 NuGet 时
+从官方地址下载到 `.dart_tool/nuget/6.12.1/`，验证 Microsoft 数字签名后再使用，因此首次完整构建
+需要访问 Flutter/Dart Pub、PyPI 和 NuGet 官方下载源。
+
+### 项目依赖来源
+
+| 范围 | 权威文件 | 安装命令 |
+| --- | --- | --- |
+| Flutter 运行与插件依赖 | `pubspec.yaml`、`pubspec.lock` | `flutter pub get` |
+| Python 运行依赖 | `python-backend/requirements.txt` | `python -m pip install -r python-backend/requirements.txt` |
+| Python 开发与发布依赖 | `python-backend/requirements-dev.txt` | `python -m pip install -r python-backend/requirements-dev.txt` |
+
+`requirements-dev.txt` 已包含运行依赖，并额外固定 Pytest、Ruff 和 PyInstaller；开发机与发布机通常只需
+安装这一份。不要在文档中复制完整三方包版本，版本升级以依赖文件和 lockfile 为准。项目不需要
+Node.js、npm、Android SDK、Java、WebView 前端工具链或移动端构建环境。
+
+### 首次配置
+
+在仓库根目录执行：
 
 ```powershell
+flutter config --enable-windows-desktop
 flutter doctor -v
 flutter pub get
+
 python -m venv python-backend/.venv
-python-backend/.venv/Scripts/python -m pip install -r python-backend/requirements-dev.txt
+& .\python-backend\.venv\Scripts\Activate.ps1
+python -m pip install -r python-backend/requirements-dev.txt
+python -m pip check
 ```
+
+`flutter doctor -v` 必须确认 Flutter 为 `3.24.3`，并且 Visual Studio 与 Windows toolchain 无错误；
+`python --version` 必须返回 `3.13.x`。如果 PowerShell 策略不允许激活脚本，可直接使用
+`.\python-backend\.venv\Scripts\python.exe` 安装和运行后端命令；但运行桌面调试或完整发布脚本前，
+仍须确保 `Get-Command python` 指向该虚拟环境，因为客户端开发启动和 PyInstaller 都调用当前
+`PATH` 中的 `python`。
+
+### 可选运行能力
+
+- Windows TTS 使用系统已安装的语音；Natural / Neural 音色需要在 Windows 语言与语音设置中另行安装。
+- Windows OCR 依赖相应系统语言能力；本地 RapidOCR 及 ONNX Runtime 由 Python 依赖安装。
+- 翻译和可选视觉识别需要用户自行配置 OpenAI 兼容 API，不是本地开发、测试或启动的前置条件。
+- `QINGJUAN_DATA_DIR` 只用于覆盖开发数据目录，不应写入全局环境或指向仓库外未确认的生产数据。
 
 启动 Windows 调试：
 
 ```powershell
+& .\python-backend\.venv\Scripts\Activate.ps1
 flutter run -d windows
 ```
 

@@ -193,23 +193,39 @@ class _ReaderPageState extends State<ReaderPage> {
     return NavigationView(
       appBar: NavigationAppBar(
         automaticallyImplyLeading: false,
-        leading: IconButton(
-          icon: const Icon(FluentIcons.back),
-          onPressed: () => Navigator.pop(context),
+        backgroundColor: theme.micaBackgroundColor,
+        leading: Tooltip(
+          message: '返回作品详情',
+          child: IconButton(
+            icon: const Icon(FluentIcons.back, semanticLabel: '返回作品详情'),
+            onPressed: () => Navigator.pop(context),
+          ),
         ),
         title: Text(widget.detail.book.title),
         actions: Row(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            IconButton(
-              icon: const Icon(FluentIcons.font_decrease),
-              onPressed: () =>
-                  setState(() => _fontSize = (_fontSize - 1).clamp(15, 28)),
+            Tooltip(
+              message: '减小字号',
+              child: IconButton(
+                icon: const Icon(
+                  FluentIcons.font_decrease,
+                  semanticLabel: '减小字号',
+                ),
+                onPressed: () =>
+                    setState(() => _fontSize = (_fontSize - 1).clamp(15, 28)),
+              ),
             ),
-            IconButton(
-              icon: const Icon(FluentIcons.font_increase),
-              onPressed: () =>
-                  setState(() => _fontSize = (_fontSize + 1).clamp(15, 28)),
+            Tooltip(
+              message: '增大字号',
+              child: IconButton(
+                icon: const Icon(
+                  FluentIcons.font_increase,
+                  semanticLabel: '增大字号',
+                ),
+                onPressed: () =>
+                    setState(() => _fontSize = (_fontSize + 1).clamp(15, 28)),
+              ),
             ),
             ToggleButton(
               checked: _mode == 'original',
@@ -248,7 +264,11 @@ class _ReaderPageState extends State<ReaderPage> {
                                       : _content!.paragraphs.length)),
                           itemBuilder: (context, index) => Center(
                             child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 860),
+                              constraints: BoxConstraints(
+                                maxWidth: _content!.imageSources.isNotEmpty
+                                    ? 920
+                                    : 760,
+                              ),
                               child:
                                   _buildReaderItem(context, _content!, index),
                             ),
@@ -259,7 +279,7 @@ class _ReaderPageState extends State<ReaderPage> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
             decoration: BoxDecoration(
-              color: theme.cardColor,
+              color: theme.micaBackgroundColor,
               border: Border(
                   top: BorderSide(
                       color: theme.resources.cardStrokeColorDefault)),

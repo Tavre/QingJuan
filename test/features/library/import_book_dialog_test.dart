@@ -19,6 +19,62 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
 
+  testWidgets('Fanqie import exposes on-demand and full download modes',
+      (tester) async {
+    final submitted = <Map<String, dynamic>>[];
+    final client = MockClient((request) async {
+      if (request.method == 'POST' && request.url.path == '/books/link-jobs') {
+        submitted.add(
+          Map<String, dynamic>.from(
+            jsonDecode(request.body) as Map<String, dynamic>,
+          ),
+        );
+        return _jsonResponse(_jobPayload(status: 'completed', progress: 100));
+      }
+      return http.Response('{}', 404);
+    });
+    final harness = await _Harness.create(client);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.tap(find.text('添加书籍'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.enterText(
+      find.byType(TextBox).at(1),
+      'https://fanqienovel.com/page/123456',
+    );
+    await tester.pump();
+
+    expect(find.text('番茄正文获取方式'), findsOneWidget);
+    expect(find.text('边看边下（推荐）'), findsOneWidget);
+    expect(find.textContaining('后台预取后续 20 章'), findsOneWidget);
+
+    await tester.tap(find.text('导入'));
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(
+      (submitted.single['payload'] as Map<String, dynamic>)['downloadMode'],
+      'on_demand',
+    );
+
+    harness.library.clearLinkJob();
+    await tester.pump();
+    final modeSelector = tester.widget<ComboBox<String>>(
+      find.byType(ComboBox<String>).last,
+    );
+    modeSelector.onChanged!('all');
+    await tester.pump();
+    await tester.tap(find.text('导入'));
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(
+      (submitted.last['payload'] as Map<String, dynamic>)['downloadMode'],
+      'all',
+    );
+
+    harness.dispose();
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('link parsing dialog can collapse and reopen with live logs',
       (tester) async {
     final client = MockClient((request) async {

@@ -48,4 +48,14 @@ void main() {
     expect(voice.localeLabel, '简体中文');
     expect(voice.description, '简体中文 · 女声');
   });
+
+  test('natural and neural voices are identified for prioritization', () {
+    const naturalVoice = TtsVoice(
+      name: 'Microsoft Xiaoxiao Natural',
+      locale: 'zh-CN',
+    );
+
+    expect(naturalVoice.isNatural, isTrue);
+    expect(naturalVoice.qualityLabel, '自然声线');
+  });
 }

@@ -19,18 +19,19 @@
 ## 功能
 
 - 从受支持的小说或漫画网址预览并导入作品
+- 番茄长篇小说可选择“边看边下”或“全部下载”；边看边下会先快速导入目录，阅读时获取当前章并在后台预取后续章节
 - 链接解析与导入支持后台运行、弹窗收起恢复和实时进度日志
 - 导入 Legado / 阅读 App JSON 书源，搜索并管理启用状态
 - 导入本地 `TXT` / `TEXT`、Word `DOCX`、`EPUB` 小说并自动拆章，也可将 `PDF` 导入为漫画
 - 下载章节、创建翻译任务、查看进度与失败重试
 - 单章、所选章节或全部章节可导出为 `TXT` / `TEXT` / `DOCX` / `EPUB`；漫画可导出为 `PDF` 或按章节、`001`、`002`……编号的图片文件夹
 - 阅读原文或译文，支持章节跳转、字号调整和阅读进度保存
-- 在小说详情页使用 Windows TTS 听书，支持连续播章、暂停、语速和音量调节
+- 在小说详情页使用 Windows TTS 听书，支持自然叙述、温柔陪伴、沉浸小说、活力对白和安静夜读风格，以及连续播章、暂停、语速和音量调节
 - 配置单一 OpenAI 兼容翻译模型，启用状态会被下载与翻译任务严格遵守
 - 默认使用本地 RapidOCR 与 Windows OCR 检测漫画文字，纯文本模型也可翻译；支持图片输入的模型可作为可选增强
 - 亮色、深色和跟随系统主题
 
-内置站点适配包括 Linovelib / 哔哩轻小说、Kakuyomu、Syosetu、Novel18、Pixiv 小说与插画漫画、
+内置站点适配包括番茄小说（含网页会话已获权且能校验为完整正文的受限章节）、Linovelib / 哔哩轻小说、Kakuyomu、Syosetu、Novel18、Pixiv 小说与插画漫画、
 Pixiv Comic、Hameln、Alphapolis、18Comic、Bika，以及 Webtoon、漫画柜、漫画呗、拷贝漫画、动漫之家等常见网页阅读器。
 网页阅读器使用通用规则尽力解析，站点结构、登录要求或访问策略变化都可能导致暂时不可用；请仅下载你有权访问和保存的内容。
 
@@ -90,4 +91,5 @@ Pixiv Comic、Hameln、Alphapolis、18Comic、Bika，以及 Webtoon、漫画柜�
 - FastAPI
 - [LINUX DO](https://linux.do/)
 - [RapidOCR](https://github.com/RapidAI/RapidOCR)
+- [fanqie-assistant](https://github.com/naiyQAQ/fanqie-assistant)
 - 为抓取、解析、图片处理和测试提供基础能力的开源项目

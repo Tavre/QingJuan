@@ -1,6 +1,7 @@
 import 'package:fluent_ui/fluent_ui.dart' show ThemeMode;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qingjuan/app/app_state.dart';
+import 'package:qingjuan/core/models/tts_speech_style.dart';
 import 'package:qingjuan/core/models/tts_voice.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -70,5 +71,17 @@ void main() {
     final state = AppState(await SharedPreferences.getInstance());
 
     expect(state.ttsVoice, isNull);
+  });
+
+  test('AppState persists and restores the TTS speech style', () async {
+    final preferences = await SharedPreferences.getInstance();
+    final state = AppState(preferences);
+
+    await state.setTtsSpeechStyle(TtsSpeechStyle.immersive);
+
+    expect(
+      AppState(preferences).ttsSpeechStyle,
+      TtsSpeechStyle.immersive,
+    );
   });
 }

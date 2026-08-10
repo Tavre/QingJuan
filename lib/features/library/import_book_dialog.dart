@@ -39,6 +39,7 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
   final _logScrollController = ScrollController();
   String _kind = '长小说';
   String _language = '中文';
+  String _downloadMode = 'on_demand';
   bool _translate = false;
   bool _loading = false;
   bool _restoredPayload = false;
@@ -56,6 +57,7 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
     _titleController.text = payload['title'] as String? ?? '';
     _kind = payload['bookKind'] as String? ?? _kind;
     _language = payload['language'] as String? ?? _language;
+    _downloadMode = payload['downloadMode'] as String? ?? _downloadMode;
     _translate = payload['needTranslation'] as bool? ?? _translate;
   }
 
@@ -67,12 +69,20 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
     super.dispose();
   }
 
+  bool get _isFanqieNovel {
+    if (_kind == '漫画') return false;
+    final uri = Uri.tryParse(_urlController.text.trim());
+    final host = uri?.host.toLowerCase() ?? '';
+    return host == 'fanqienovel.com' || host.endsWith('.fanqienovel.com');
+  }
+
   JsonMap get _payload => <String, dynamic>{
         'sourceUrl': _urlController.text.trim(),
         'bookKind': _kind,
         'title': _titleController.text.trim(),
         'language': _language,
         'needTranslation': _translate,
+        'downloadMode': _isFanqieNovel ? _downloadMode : 'all',
       };
 
   Future<void> _previewRemote() async {
@@ -170,6 +180,7 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
                     controller: _urlController,
                     placeholder: 'https://...',
                     enabled: !busy,
+                    onChanged: busy ? null : (_) => setState(() {}),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -219,6 +230,38 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
                     ),
                   ],
                 ),
+                if (_isFanqieNovel) ...<Widget>[
+                  const SizedBox(height: 14),
+                  InfoLabel(
+                    label: '番茄正文获取方式',
+                    child: ComboBox<String>(
+                      value: _downloadMode,
+                      isExpanded: true,
+                      items: const <ComboBoxItem<String>>[
+                        ComboBoxItem(
+                          value: 'on_demand',
+                          child: Text('边看边下（推荐）'),
+                        ),
+                        ComboBoxItem(
+                          value: 'all',
+                          child: Text('立即下载全部正文'),
+                        ),
+                      ],
+                      onChanged: busy
+                          ? null
+                          : (value) => setState(
+                                () => _downloadMode = value ?? _downloadMode,
+                              ),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    _downloadMode == 'on_demand'
+                        ? '快速加入书架；打开章节时下载当前章，并在后台预取后续 20 章。'
+                        : '导入时下载全部正文；长篇小说耗时较久，但完成后可完整离线阅读。',
+                    style: FluentTheme.of(context).typography.caption,
+                  ),
+                ],
                 const SizedBox(height: 14),
                 ToggleSwitch(
                   checked: _translate,

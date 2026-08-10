@@ -80,6 +80,7 @@ Desktop.ini
 $RECYCLE.BIN/
 .idea/
 .vscode/
+.vs/
 *.suo
 *.user
 *.userosscache

@@ -3,6 +3,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 import '../../app/app_scope.dart';
 import '../../core/models/source.dart';
 import '../../core/state/load_state.dart';
+import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/page_frame.dart';
 
@@ -84,14 +85,14 @@ class SourcesPage extends StatelessWidget {
         title: '书源',
         subtitle: '维护内置、手动和 Legado 兼容书源。',
         scrollable: false,
-        command: Row(
-          mainAxisSize: MainAxisSize.min,
+        command: Wrap(
+          spacing: 8,
+          runSpacing: 8,
           children: <Widget>[
             Button(
               onPressed: () => _showImportDialog(context, fromUrl: false),
               child: const Text('粘贴配置'),
             ),
-            const SizedBox(width: 8),
             FilledButton(
               onPressed: () => _showImportDialog(context, fromUrl: true),
               child: const Text('导入网址'),
@@ -133,21 +134,13 @@ class _SourceTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
-    return Container(
+    return AppSurface(
       margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: theme.cardColor,
-        border: Border.all(color: theme.resources.cardStrokeColorDefault),
-        borderRadius: BorderRadius.circular(8),
-      ),
       child: Row(
         children: <Widget>[
-          Icon(
-            source.enabled
-                ? FluentIcons.radio_btn_on
-                : FluentIcons.radio_btn_off,
-            color: source.enabled ? theme.accentColor : null,
+          AccentIcon(
+            FluentIcons.database,
+            enabled: source.enabled,
           ),
           const SizedBox(width: 14),
           Expanded(
@@ -172,8 +165,13 @@ class _SourceTile extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          Text(
-            source.statusMessage.isEmpty ? source.status : source.statusMessage,
+          Flexible(
+            child: StatusPill(
+              source.statusMessage.isEmpty
+                  ? source.status
+                  : source.statusMessage,
+              accented: source.enabled,
+            ),
           ),
         ],
       ),

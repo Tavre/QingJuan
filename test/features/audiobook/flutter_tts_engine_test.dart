@@ -36,6 +36,7 @@ void main() {
 class _FakeFlutterTts extends FlutterTts {
   String? language;
   Map<String, String>? selectedVoice;
+  double? pitch;
 
   @override
   Future<dynamic> awaitSpeakCompletion(bool awaitCompletion) async => 1;
@@ -53,5 +54,8 @@ class _FakeFlutterTts extends FlutterTts {
   }
 
   @override
-  Future<dynamic> setPitch(double pitch) async => 1;
+  Future<dynamic> setPitch(double pitch) async {
+    this.pitch = pitch;
+    return 1;
+  }
 }

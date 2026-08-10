@@ -275,7 +275,7 @@ def test_manga_render_never_changes_pixels_outside_original_bubble(tmp_path) -> 
     assert outside_changes == 0
 
 
-def test_manga_render_preserves_source_when_translation_cannot_fit(tmp_path) -> None:
+def test_manga_render_compresses_translation_when_it_cannot_fit(tmp_path) -> None:
     source = tmp_path / "overflow-bubble.png"
     image = Image.new("RGB", (120, 90), "white")
     draw = ImageDraw.Draw(image)
@@ -284,6 +284,7 @@ def test_manga_render_preserves_source_when_translation_cannot_fit(tmp_path) -> 
     font = scraper._load_local_render_font(20, bold=True)
     draw.text((38, 34), "TEXT", font=font, fill="black")
     text_bbox = draw.textbbox((38, 34), "TEXT", font=font)
+    full_translation = "无法容纳的超长翻译文本" * 20
     image.save(source)
     payload = MangaTranslatedPagePayload(
         page_number=1,
@@ -297,21 +298,38 @@ def test_manga_render_preserves_source_when_translation_cannot_fit(tmp_path) -> 
                 safe_box=(28, 22, 92, 68),
                 source_text="TEXT",
                 direction="horizontal",
-                translation="无法容纳的超长翻译文本" * 20,
+                translation=full_translation,
                 shape="ellipse",
             )
         ],
     )
 
-    translated_bytes, _, diagnostics = scraper._render_translated_manga_page_to_image(source, payload)
+    translated_bytes, page_translation, diagnostics = (
+        scraper._render_translated_manga_page_to_image(source, payload)
+    )
 
-    assert diagnostics["rendered_region_count"] == 0
-    assert diagnostics["skipped_overflow_region_count"] == 1
-    assert diagnostics["source_text_erased_region_count"] == 0
+    assert page_translation == full_translation
+    assert diagnostics["rendered_region_count"] == 1
+    assert diagnostics["compressed_overflow_region_count"] == 1
+    assert diagnostics["skipped_overflow_region_count"] == 0
+    assert diagnostics["source_text_erased_region_count"] == 1
+    assert 0 < diagnostics["min_overflow_scale"] < 1
+    allowed_mask = Image.new("L", image.size, 0)
+    ImageDraw.Draw(allowed_mask).ellipse(body_bbox, fill=255)
     with Image.open(BytesIO(translated_bytes)) as translated:
-        assert list(translated.convert("RGB").get_flattened_data()) == list(
-            image.get_flattened_data()
+        translated_pixels = list(translated.convert("RGB").get_flattened_data())
+    source_pixels = list(image.get_flattened_data())
+    assert translated_pixels != source_pixels
+    assert all(
+        before == after
+        for before, after, allowed in zip(
+            source_pixels,
+            translated_pixels,
+            allowed_mask.get_flattened_data(),
+            strict=True,
         )
+        if allowed == 0
+    )
 
 
 def test_manga_render_skips_effectively_unchanged_text(tmp_path) -> None:
@@ -1083,6 +1101,59 @@ async def test_manga_translation_sends_only_ocr_text_to_text_model(monkeypatch) 
     assert isinstance(user_content, str)
     assert "image_url" not in user_content
     assert translated[0].translation == "你好世界"
+
+
+@pytest.mark.asyncio
+async def test_manga_translation_rewrites_over_budget_result_more_concisely(monkeypatch) -> None:
+    submitted_payloads: list[dict[str, object]] = []
+
+    async def fake_post(*_: object, **kwargs: object) -> dict[str, object]:
+        submitted_payloads.append(dict(kwargs["payload"]))
+        translation = "现在立刻马上从这里快速离开不要停留" if len(submitted_payloads) == 1 else "快离开"
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": scraper.json.dumps(
+                            {"translations": [{"order": 1, "translation": translation}]},
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(scraper, "_post_translation_json", fake_post)
+    regions = [
+        MangaOcrRegion(
+            order=1,
+            bbox=(20, 20, 120, 60),
+            safe_box=(28, 24, 112, 56),
+            source_text="GET OUT OF HERE RIGHT NOW",
+            direction="horizontal",
+        )
+    ]
+
+    translated = await scraper._translate_manga_region_batch(
+        settings=TranslationSettings(),
+        base_url="https://gateway.example.test/v1",
+        api_key="secret",
+        model="text-only-model",
+        target_language="Chinese",
+        chapter_title="",
+        chapter_index=1,
+        page_number=1,
+        total_pages=1,
+        regions=regions,
+        timeout_seconds=30,
+    )
+
+    assert len(submitted_payloads) == 2
+    compact_prompt = submitted_payloads[1]["messages"][1]["content"]
+    assert isinstance(compact_prompt, str)
+    assert "hard maximum" in compact_prompt
+    assert "current_translation" in compact_prompt
+    assert translated[0].translation == "快离开"
 
 
 @pytest.mark.asyncio

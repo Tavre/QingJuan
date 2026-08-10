@@ -6,6 +6,7 @@ import base64
 import hmac
 import importlib
 import json
+import math
 import mimetypes
 import os
 import re
@@ -285,7 +286,7 @@ BIKA_SIGNATURE_KEY = "~d}$Q7$eIni=V)9\\RK/P.RM4;9[7|@/CA}b~OW!3?EV`:<>M7pddUBL5n
 _BIKA_TOKEN_CACHE: dict[str, str] = {}
 _COMIC_18_SCRAMBLE_ID_CACHE: dict[str, int] = {}
 _PIXIV_COMIC_PAGE_KEYS: dict[str, tuple[str, int]] = {}
-MANGA_RENDERER_VERSION = 9
+MANGA_RENDERER_VERSION = 10
 
 
 @dataclass
@@ -4992,6 +4993,129 @@ def _render_text_layout_to_bubble_layer(
     return layer, outside_pixel_count
 
 
+def _largest_rectangle_in_mask(
+    mask: Image.Image,
+    limit_box: tuple[int, int, int, int] | None = None,
+) -> tuple[int, int, int, int] | None:
+    normalized_mask = mask.convert("L")
+    width, height = normalized_mask.size
+    left, top, right, bottom = limit_box or (0, 0, width, height)
+    left = max(0, min(width, int(left)))
+    top = max(0, min(height, int(top)))
+    right = max(left, min(width, int(right)))
+    bottom = max(top, min(height, int(bottom)))
+    if right <= left or bottom <= top:
+        return None
+
+    pixels = normalized_mask.load()
+    heights = [0] * width
+    best_area = 0
+    best_box: tuple[int, int, int, int] | None = None
+    for current_y in range(top, bottom):
+        for current_x in range(left, right):
+            heights[current_x] = heights[current_x] + 1 if pixels[current_x, current_y] >= 250 else 0
+
+        stack: list[int] = []
+        for current_x in range(left, right + 1):
+            current_height = heights[current_x] if current_x < right else 0
+            while stack and heights[stack[-1]] > current_height:
+                bar_x = stack.pop()
+                bar_height = heights[bar_x]
+                rectangle_left = stack[-1] + 1 if stack else left
+                area = bar_height * (current_x - rectangle_left)
+                if area <= best_area:
+                    continue
+                best_area = area
+                best_box = (
+                    rectangle_left,
+                    current_y - bar_height + 1,
+                    current_x,
+                    current_y + 1,
+                )
+            if current_x < right:
+                stack.append(current_x)
+
+    if best_box is None:
+        return None
+    if best_box[2] - best_box[0] >= 6 and best_box[3] - best_box[1] >= 6:
+        return best_box[0] + 1, best_box[1] + 1, best_box[2] - 1, best_box[3] - 1
+    return best_box
+
+
+def _render_compressed_text_layout_to_bubble_layer(
+    body_bbox: tuple[int, int, int, int],
+    content_box: tuple[int, int, int, int],
+    layout: dict[str, Any],
+    text_color: tuple[int, int, int],
+    stroke_color: tuple[int, int, int] | None,
+    stroke_width: int | None,
+    safe_mask: Image.Image,
+) -> tuple[Image.Image, float]:
+    body_width = max(1, body_bbox[2] - body_bbox[0])
+    body_height = max(1, body_bbox[3] - body_bbox[1])
+    output_layer = Image.new("RGBA", (body_width, body_height), (0, 0, 0, 0))
+    relative_content_box = (
+        max(0, content_box[0] - body_bbox[0]),
+        max(0, content_box[1] - body_bbox[1]),
+        min(body_width, content_box[2] - body_bbox[0]),
+        min(body_height, content_box[3] - body_bbox[1]),
+    )
+    target_box = _largest_rectangle_in_mask(safe_mask, relative_content_box)
+    if target_box is None:
+        return output_layer, 0.0
+
+    resolved_stroke_width = max(0, int(stroke_width or 0))
+    source_padding = max(4, resolved_stroke_width * 2 + 2)
+    source_width = max(
+        relative_content_box[2] - relative_content_box[0],
+        int(layout.get("content_width") or 0) + source_padding * 2,
+        8,
+    )
+    source_height = max(
+        relative_content_box[3] - relative_content_box[1],
+        int(layout.get("content_height") or 0) + source_padding * 2,
+        8,
+    )
+    source_layer = Image.new("RGBA", (source_width, source_height), (0, 0, 0, 0))
+    _render_text_layout(
+        ImageDraw.Draw(source_layer),
+        source_padding,
+        source_padding,
+        (
+            max(1, source_width - source_padding * 2),
+            max(1, source_height - source_padding * 2),
+        ),
+        layout,
+        text_color,
+        stroke_color,
+        stroke_width,
+    )
+    glyph_box = source_layer.getchannel("A").getbbox()
+    if glyph_box is None:
+        return output_layer, 0.0
+    glyph_layer = source_layer.crop(glyph_box)
+    target_width = max(1, target_box[2] - target_box[0])
+    target_height = max(1, target_box[3] - target_box[1])
+    scale = min(
+        1.0,
+        target_width / max(1, glyph_layer.width),
+        target_height / max(1, glyph_layer.height),
+    )
+    scaled_size = (
+        max(1, min(target_width, int(math.floor(glyph_layer.width * scale)))),
+        max(1, min(target_height, int(math.floor(glyph_layer.height * scale)))),
+    )
+    if glyph_layer.size != scaled_size:
+        glyph_layer = glyph_layer.resize(scaled_size, Image.Resampling.LANCZOS)
+    target_x = target_box[0] + max(0, (target_width - glyph_layer.width) // 2)
+    target_y = target_box[1] + max(0, (target_height - glyph_layer.height) // 2)
+    output_layer.alpha_composite(glyph_layer, (target_x, target_y))
+    output_layer.putalpha(
+        ImageChops.multiply(output_layer.getchannel("A"), safe_mask.convert("L"))
+    )
+    return output_layer, scale
+
+
 def _normalize_manga_text_direction(value: Any) -> str | None:
     normalized = str(value or "").strip().lower()
     alias_map = {
@@ -5197,7 +5321,9 @@ def _filter_manga_ocr_regions_by_image_evidence(
     return payload.model_copy(update={"regions": normalized_regions, "diagnostics": diagnostics})
 
 
-def _estimate_manga_region_char_budget(region: MangaOcrRegion) -> int:
+def _estimate_manga_region_char_budget(
+    region: MangaOcrRegion | MangaTranslatedRegion,
+) -> int:
     bbox = region.safe_box or region.body_bbox or region.bbox
     if bbox is None:
         return 32
@@ -5232,6 +5358,47 @@ def _normalize_manga_region_translation_text(value: Any) -> str:
         if inner:
             text = inner
     return text
+
+
+def _manga_translation_char_count(value: Any) -> int:
+    return len(re.sub(r"\s+", "", str(value or "")))
+
+
+def _build_manga_translation_compaction_prompt(
+    *,
+    target_language: str,
+    source_regions: list[MangaOcrRegion],
+    translated_regions: list[MangaTranslatedRegion],
+) -> str:
+    source_by_order = {region.order: region for region in source_regions}
+    compact_items: list[dict[str, Any]] = []
+    for translated_region in translated_regions:
+        source_region = source_by_order.get(translated_region.order)
+        if source_region is None:
+            continue
+        max_chars = _estimate_manga_region_char_budget(source_region)
+        if _manga_translation_char_count(translated_region.translation) <= max_chars:
+            continue
+        compact_items.append(
+            {
+                "order": source_region.order,
+                "source_text": source_region.source_text,
+                "current_translation": translated_region.translation,
+                "max_chars": max_chars,
+            }
+        )
+    if not compact_items:
+        return ""
+    return (
+        f"Rewrite the existing {target_language} manga translations so they fit their bubbles. "
+        "Return JSON only with schema "
+        '{"translations":[{"order":1,"translation":"..."}]}. '
+        "Return exactly one item for every input item. Each max_chars value is a hard maximum "
+        "for non-whitespace characters. Keep the complete meaning, tone, names, emphasis, and "
+        "speech intent, but remove redundant wording and punctuation. Never return an empty "
+        "translation, notes, labels, ellipses that replace meaning, or truncated fragments. "
+        f"Input items: {json.dumps(compact_items, ensure_ascii=False)}"
+    )
 
 
 def _build_manga_ocr_prompt(*, image_size: tuple[int, int]) -> str:
@@ -6465,6 +6632,12 @@ def _build_manga_page_translation_diagnostics(
         if str(region.direction or region.source_direction or "") == "vertical"
     )
     safe_box_region_count = sum(1 for region in translated_regions if region.safe_box is not None)
+    over_budget_translation_count = sum(
+        1
+        for region in translated_regions
+        if _manga_translation_char_count(region.translation)
+        > _estimate_manga_region_char_budget(region)
+    )
     return {
         **dict(ocr_payload.diagnostics or {}),
         "region_count": len(translated_regions),
@@ -6473,6 +6646,7 @@ def _build_manga_page_translation_diagnostics(
         "unchanged_translation_count": unchanged_translation_count,
         "vertical_region_count": vertical_region_count,
         "safe_box_region_count": safe_box_region_count,
+        "over_budget_translation_count": over_budget_translation_count,
         "source_char_total": sum(len(str(region.source_text or "").strip()) for region in translated_regions),
         "translation_char_total": sum(
             len(str(region.translation or "").strip()) for region in translated_regions
@@ -6554,7 +6728,76 @@ async def _translate_manga_region_batch(
                 )
     if raw_payload is None:
         raise ValueError("漫画文本翻译模型未返回可解析结果")
-    return _coerce_manga_translated_regions(raw_payload, regions)
+    translated_regions = _coerce_manga_translated_regions(raw_payload, regions)
+    compaction_prompt = _build_manga_translation_compaction_prompt(
+        target_language=_resolve_translation_target_language(target_language),
+        source_regions=regions,
+        translated_regions=translated_regions,
+    )
+    if not compaction_prompt:
+        return translated_regions
+
+    translated_by_order = {region.order: region for region in translated_regions}
+    compact_source_regions = [
+        region
+        for region in regions
+        if (translated_region := translated_by_order.get(region.order)) is not None
+        and _manga_translation_char_count(translated_region.translation)
+        > _estimate_manga_region_char_budget(region)
+    ]
+    compact_payload = {
+        "model": model,
+        "temperature": 0,
+        "max_tokens": 2000,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a precise manga dialogue editor. Output valid JSON only and obey "
+                    "every per-item character limit."
+                ),
+            },
+            {"role": "user", "content": compaction_prompt},
+        ],
+    }
+    try:
+        async with _create_async_http_client(
+            timeout=float(timeout_seconds),
+            follow_redirects=True,
+        ) as client:
+            compact_content = await _post_translation_completion_text(
+                client,
+                f"{base_url}/chat/completions",
+                headers=headers,
+                payload=compact_payload,
+                feature_name="漫画气泡译文压缩模型",
+                expects_json=True,
+            )
+        compact_raw_payload = _extract_json_object_from_text(compact_content)
+        compact_regions = _coerce_manga_translated_regions(
+            compact_raw_payload,
+            compact_source_regions,
+        )
+    except Exception:
+        return translated_regions
+
+    compact_by_order = {
+        region.order: region.translation
+        for region in compact_regions
+        if str(region.translation or "").strip()
+    }
+    resolved_regions: list[MangaTranslatedRegion] = []
+    for region in translated_regions:
+        compact_translation = compact_by_order.get(region.order)
+        if compact_translation and _manga_translation_char_count(
+            compact_translation
+        ) < _manga_translation_char_count(region.translation):
+            resolved_regions.append(
+                region.model_copy(update={"translation": compact_translation})
+            )
+        else:
+            resolved_regions.append(region)
+    return resolved_regions
 
 
 async def _build_translated_manga_page_payload(
@@ -6682,9 +6925,11 @@ def _render_translated_manga_page_to_image(
     layout_retry_count = 0
     overflow_region_count = 0
     skipped_overflow_region_count = 0
+    compressed_overflow_region_count = 0
     mask_layout_retry_count = 0
     max_overflow = 0.0
     max_masked_outside_pixels = 0
+    min_overflow_scale = 1.0
     style_estimated_region_count = 0
     source_text_erased_region_count = 0
     solid_cleanup_region_count = 0
@@ -6831,46 +7076,10 @@ def _render_translated_manga_page_to_image(
                 bold=style.bold,
             )
         overflow_value = float(layout.get("overflow") or 0.0)
-        if not bool(layout.get("fits")) or overflow_value > 0:
-            overflow_region_count += 1
-            max_overflow = max(max_overflow, overflow_value)
-            skipped_overflow_region_count += 1
-            continue
-
-        text_layer, outside_pixel_count = _render_text_layout_to_bubble_layer(
-            body_bbox,
-            content_box,
-            layout,
-            style.text_color,
-            style.stroke_color,
-            style.stroke_width,
-            safe_text_mask,
-        )
-        max_masked_outside_pixels = max(max_masked_outside_pixels, outside_pixel_count)
-        for _ in range(4):
-            if outside_pixel_count <= 0:
-                break
-            retry_box = _shrink_absolute_bbox(
-                content_box,
-                max(2, min(10, (content_box[2] - content_box[0]) // 24)),
-                max(2, min(10, (content_box[3] - content_box[1]) // 24)),
-            )
-            if retry_box is None:
-                break
-            content_box = retry_box
-            box_width = max(8, content_box[2] - content_box[0])
-            box_height = max(8, content_box[3] - content_box[1])
-            layout = _fit_text_layout_for_render(
-                translation,
-                (box_width, box_height),
-                final_direction,
-                preferred_font_size=max(10, int(layout.get("font_size") or style.font_size) - 1),
-                bold=style.bold,
-            )
-            mask_layout_retry_count += 1
-            overflow_value = float(layout.get("overflow") or 0.0)
-            if not bool(layout.get("fits")) or overflow_value > 0:
-                break
+        requires_compression = not bool(layout.get("fits")) or overflow_value > 0
+        text_layer: Image.Image | None = None
+        outside_pixel_count = 0
+        if not requires_compression:
             text_layer, outside_pixel_count = _render_text_layout_to_bubble_layer(
                 body_bbox,
                 content_box,
@@ -6881,12 +7090,69 @@ def _render_translated_manga_page_to_image(
                 safe_text_mask,
             )
             max_masked_outside_pixels = max(max_masked_outside_pixels, outside_pixel_count)
+            for _ in range(4):
+                if outside_pixel_count <= 0:
+                    break
+                retry_box = _shrink_absolute_bbox(
+                    content_box,
+                    max(2, min(10, (content_box[2] - content_box[0]) // 24)),
+                    max(2, min(10, (content_box[3] - content_box[1]) // 24)),
+                )
+                if retry_box is None:
+                    break
+                content_box = retry_box
+                box_width = max(8, content_box[2] - content_box[0])
+                box_height = max(8, content_box[3] - content_box[1])
+                layout = _fit_text_layout_for_render(
+                    translation,
+                    (box_width, box_height),
+                    final_direction,
+                    preferred_font_size=max(
+                        10,
+                        int(layout.get("font_size") or style.font_size) - 1,
+                    ),
+                    bold=style.bold,
+                )
+                mask_layout_retry_count += 1
+                overflow_value = float(layout.get("overflow") or 0.0)
+                if not bool(layout.get("fits")) or overflow_value > 0:
+                    break
+                text_layer, outside_pixel_count = _render_text_layout_to_bubble_layer(
+                    body_bbox,
+                    content_box,
+                    layout,
+                    style.text_color,
+                    style.stroke_color,
+                    style.stroke_width,
+                    safe_text_mask,
+                )
+                max_masked_outside_pixels = max(
+                    max_masked_outside_pixels,
+                    outside_pixel_count,
+                )
+            requires_compression = (
+                not bool(layout.get("fits"))
+                or overflow_value > 0
+                or outside_pixel_count > 0
+            )
 
-        if not bool(layout.get("fits")) or overflow_value > 0 or outside_pixel_count > 0:
+        if requires_compression:
             overflow_region_count += 1
-            skipped_overflow_region_count += 1
             max_overflow = max(max_overflow, overflow_value)
-            continue
+            text_layer, overflow_scale = _render_compressed_text_layout_to_bubble_layer(
+                body_bbox,
+                content_box,
+                layout,
+                style.text_color,
+                style.stroke_color,
+                style.stroke_width,
+                safe_text_mask,
+            )
+            if text_layer.getchannel("A").getbbox() is None or overflow_scale <= 0:
+                skipped_overflow_region_count += 1
+                continue
+            compressed_overflow_region_count += 1
+            min_overflow_scale = min(min_overflow_scale, overflow_scale)
 
         erased_pixels, cleanup_method = _erase_manga_source_text(
             canvas,
@@ -6931,7 +7197,9 @@ def _render_translated_manga_page_to_image(
             "mask_layout_retry_count": mask_layout_retry_count,
             "overflow_region_count": overflow_region_count,
             "skipped_overflow_region_count": skipped_overflow_region_count,
+            "compressed_overflow_region_count": compressed_overflow_region_count,
             "max_overflow": round(max_overflow, 3),
+            "min_overflow_scale": round(min_overflow_scale, 4),
             "max_masked_outside_pixels": max_masked_outside_pixels,
             "style_estimated_region_count": style_estimated_region_count,
             "source_text_erased_region_count": source_text_erased_region_count,
@@ -6952,6 +7220,7 @@ def _format_manga_page_diagnostics_log(log_prefix: str, page_payload: MangaTrans
         f"regions={diagnostics.get('region_count', len(page_payload.regions))}, "
         f"empty={diagnostics.get('empty_translation_count', 0)}, "
         f"overflow={diagnostics.get('overflow_region_count', 0)}, "
+        f"compressed={diagnostics.get('compressed_overflow_region_count', 0)}, "
         f"erased={diagnostics.get('source_text_erased_region_count', 0)}, "
         f"font={diagnostics.get('average_source_font_size', 0)}, "
         f"pipeline_ms={diagnostics.get('pipeline_ms', 0)}"
@@ -6977,6 +7246,9 @@ async def _emit_single_image_diagnostics(
         "region_count": int(diagnostics.get("region_count") or len(page_payload.regions)),
         "empty_translation_count": int(diagnostics.get("empty_translation_count") or 0),
         "overflow_region_count": int(diagnostics.get("overflow_region_count") or 0),
+        "compressed_overflow_region_count": int(
+            diagnostics.get("compressed_overflow_region_count") or 0
+        ),
         "source_text_erased_region_count": int(diagnostics.get("source_text_erased_region_count") or 0),
         "average_source_font_size": diagnostics.get("average_source_font_size"),
         "pipeline_ms": diagnostics.get("pipeline_ms"),

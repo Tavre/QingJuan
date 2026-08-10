@@ -286,7 +286,7 @@ BIKA_SIGNATURE_KEY = "~d}$Q7$eIni=V)9\\RK/P.RM4;9[7|@/CA}b~OW!3?EV`:<>M7pddUBL5n
 _BIKA_TOKEN_CACHE: dict[str, str] = {}
 _COMIC_18_SCRAMBLE_ID_CACHE: dict[str, int] = {}
 _PIXIV_COMIC_PAGE_KEYS: dict[str, tuple[str, int]] = {}
-MANGA_RENDERER_VERSION = 10
+MANGA_RENDERER_VERSION = 11
 
 
 @dataclass
@@ -3007,7 +3007,7 @@ def _sample_region_fill_color_python(
     center_inset_x = max(1, min(12, (sample_bbox[2] - sample_bbox[0]) // 7))
     center_inset_y = max(1, min(12, (sample_bbox[3] - sample_bbox[1]) // 7))
     center_bbox = _shrink_absolute_bbox(sample_bbox, center_inset_x, center_inset_y)
-    if center_bbox is not None:
+    if body_bbox is not None and center_bbox is not None:
         interior_pixels = _image_pixels(rgb_image.crop(center_bbox))
         if interior_pixels:
             high_luminance_pixels = [
@@ -3020,10 +3020,19 @@ def _sample_region_fill_color_python(
                 for color in interior_pixels
                 if _color_luminance(color) <= 104 and _color_saturation(color) <= 96
             ]
-            if len(low_luminance_pixels) >= max(16, len(interior_pixels) // 5):
-                return _dominant_rgb_pixels(low_luminance_pixels)
-            if len(high_luminance_pixels) >= max(16, len(interior_pixels) // 5):
+            minimum_count = max(16, len(interior_pixels) // 5)
+            if len(high_luminance_pixels) >= minimum_count and len(
+                low_luminance_pixels
+            ) < minimum_count:
                 return _dominant_rgb_pixels(high_luminance_pixels)
+            if len(low_luminance_pixels) >= minimum_count and len(
+                high_luminance_pixels
+            ) < minimum_count:
+                return _dominant_rgb_pixels(low_luminance_pixels)
+            if len(high_luminance_pixels) >= len(low_luminance_pixels) * 1.25:
+                return _dominant_rgb_pixels(high_luminance_pixels)
+            if len(low_luminance_pixels) >= len(high_luminance_pixels) * 1.25:
+                return _dominant_rgb_pixels(low_luminance_pixels)
 
     def append_strip(left: int, top: int, right: int, bottom: int) -> None:
         crop = rgb_image.crop((max(0, left), max(0, top), min(width, right), min(height, bottom)))
@@ -3074,7 +3083,7 @@ def _sample_region_fill_color_vectorized(
     center_inset_x = max(1, min(12, (sample_bbox[2] - sample_bbox[0]) // 7))
     center_inset_y = max(1, min(12, (sample_bbox[3] - sample_bbox[1]) // 7))
     center_bbox = _shrink_absolute_bbox(sample_bbox, center_inset_x, center_inset_y)
-    if center_bbox is not None:
+    if body_bbox is not None and center_bbox is not None:
         interior = np.asarray(rgb_image.crop(center_bbox), dtype=np.uint8).reshape(-1, 3)
         if interior.size:
             luminance = interior[:, 0] * 0.299 + interior[:, 1] * 0.587 + interior[:, 2] * 0.114
@@ -3082,10 +3091,14 @@ def _sample_region_fill_color_vectorized(
             low = interior[(luminance <= 104) & (saturation <= 96)]
             high = interior[(luminance >= 176) & (saturation <= 72)]
             minimum_count = max(16, len(interior) // 5)
-            if len(low) >= minimum_count:
-                return _dominant_rgb_array(low)
-            if len(high) >= minimum_count:
+            if len(high) >= minimum_count and len(low) < minimum_count:
                 return _dominant_rgb_array(high)
+            if len(low) >= minimum_count and len(high) < minimum_count:
+                return _dominant_rgb_array(low)
+            if len(high) >= len(low) * 1.25:
+                return _dominant_rgb_array(high)
+            if len(low) >= len(high) * 1.25:
+                return _dominant_rgb_array(low)
 
     crop_boxes = (
         (x1 - padding, y1 - padding, x2 + padding, y1),
@@ -4149,6 +4162,16 @@ def _layout_score_tuple(layout: dict[str, Any], box_size: tuple[int, int]) -> tu
     )
     edge_penalty = max(0.0, fill_ratio - 0.84) * 12.0
     underfill_penalty = max(0.0, 0.46 - fill_ratio) * 4.5
+    if layout.get("direction") == "vertical":
+        # A single thin column can be almost as tall as the bubble and therefore
+        # look "full" according to the longest-axis ratio while wasting nearly
+        # all horizontal space. Score the two-dimensional footprint as well so
+        # longer translations split into readable right-to-left columns instead
+        # of shrinking to a narrow strip.
+        footprint_ratio = (content_width / max(1, box_width)) * (
+            content_height / max(1, box_height)
+        )
+        underfill_penalty += max(0.0, 0.16 - footprint_ratio) * 8.0
     layout_penalty = float(layout.get("layout_penalty") or 0.0)
     return (
         0 if bool(layout.get("fits")) else 1,
@@ -5170,7 +5193,11 @@ def _coerce_manga_ocr_region(
     if bbox is None or not source_text:
         return None
 
-    body_bbox = _normalize_region_box_within(raw_region.get("body_bbox"), image_size, bbox) or bbox
+    normalized_body_bbox = _normalize_region_box_within(raw_region.get("body_bbox"), image_size)
+    if normalized_body_bbox is not None and _intersect_region_bboxes(normalized_body_bbox, bbox):
+        body_bbox = _union_region_bboxes(normalized_body_bbox, bbox)
+    else:
+        body_bbox = bbox
     safe_box = _normalize_region_box_within(raw_region.get("safe_box"), image_size, body_bbox)
     source_direction = _normalize_manga_text_direction(raw_region.get("source_direction"))
     direction = _normalize_manga_text_direction(raw_region.get("direction")) or source_direction
@@ -5589,7 +5616,30 @@ def _estimate_external_ocr_fill_color(
         expand_y_ratio=0.16 if direction == "vertical" else 0.22,
         min_expand=5,
     )
-    return _sample_region_fill_color(image, sample_bbox, body_bbox=sample_bbox)
+    inset_x = max(1, min(12, (sample_bbox[2] - sample_bbox[0]) // 7))
+    inset_y = max(1, min(12, (sample_bbox[3] - sample_bbox[1]) // 7))
+    interior_bbox = _shrink_absolute_bbox(sample_bbox, inset_x, inset_y) or sample_bbox
+    interior_pixels = _image_pixels(image.convert("RGB").crop(interior_bbox))
+    if interior_pixels:
+        high_luminance_pixels = [
+            color
+            for color in interior_pixels
+            if _color_luminance(color) >= 176 and _color_saturation(color) <= 72
+        ]
+        low_luminance_pixels = [
+            color
+            for color in interior_pixels
+            if _color_luminance(color) <= 104 and _color_saturation(color) <= 96
+        ]
+        minimum_count = max(16, len(interior_pixels) // 5)
+        if len(high_luminance_pixels) >= minimum_count and len(
+            high_luminance_pixels
+        ) >= len(low_luminance_pixels) * 1.25:
+            return _dominant_rgb_pixels(high_luminance_pixels)
+    # OCR boxes are often almost completely occupied by dark glyphs. Sample the
+    # surrounding ring here; using the box interior would mistake source ink for
+    # a black bubble and prevent recovery of its larger white container.
+    return _sample_region_fill_color(image, sample_bbox)
 
 
 def _region_strip_pixels(
@@ -5639,6 +5689,221 @@ def _bubble_fill_matches_array(
             (distance_from_fill <= 90) & (luminance_delta <= 48.0) & (saturation <= 112)
         )
     return (distance_from_seed <= 56) | ((distance_from_fill <= 78) & (luminance_delta <= 36.0))
+
+
+def _external_ocr_fill_component_bbox_vectorized(
+    image: Image.Image,
+    text_bbox: tuple[int, int, int, int],
+    fill_color: tuple[int, int, int],
+    *,
+    page_size: tuple[int, int] | None = None,
+    bbox_offset: tuple[int, int] = (0, 0),
+    page_text_bbox: tuple[int, int, int, int] | None = None,
+) -> tuple[int, int, int, int] | None:
+    blurred = image.convert("RGB").filter(ImageFilter.GaussianBlur(radius=1.2))
+    pixels = np.asarray(blurred, dtype=np.uint8)
+    matches = _bubble_fill_matches_array(pixels.reshape(-1, 3), fill_color, fill_color).reshape(
+        pixels.shape[:2]
+    )
+    _, labels = cv2.connectedComponents(matches.astype(np.uint8), connectivity=4)
+    x1, y1, x2, y2 = text_bbox
+    local_labels = labels[y1:y2, x1:x2]
+    positive_labels = local_labels[local_labels > 0]
+    if positive_labels.size == 0:
+        return None
+    local_counts = np.bincount(positive_labels)
+    component_label = int(np.argmax(local_counts))
+    local_area = int(local_counts[component_label])
+    component = labels == component_label
+    component_area = int(np.count_nonzero(component))
+    coordinates = np.argwhere(component)
+    if coordinates.size == 0:
+        return None
+    top, left = coordinates.min(axis=0)
+    bottom, right = coordinates.max(axis=0) + 1
+    offset_x, offset_y = bbox_offset
+    component_bbox = (
+        int(left) + offset_x,
+        int(top) + offset_y,
+        int(right) + offset_x,
+        int(bottom) + offset_y,
+    )
+    resolved_text_bbox = page_text_bbox or (
+        text_bbox[0] + offset_x,
+        text_bbox[1] + offset_y,
+        text_bbox[2] + offset_x,
+        text_bbox[3] + offset_y,
+    )
+    return _validate_external_ocr_fill_component(
+        page_size or image.size,
+        resolved_text_bbox,
+        component_bbox,
+        local_area=local_area,
+        component_area=component_area,
+    )
+
+
+def _external_ocr_fill_component_bbox_python(
+    image: Image.Image,
+    text_bbox: tuple[int, int, int, int],
+    fill_color: tuple[int, int, int],
+    *,
+    page_size: tuple[int, int] | None = None,
+    bbox_offset: tuple[int, int] = (0, 0),
+    page_text_bbox: tuple[int, int, int, int] | None = None,
+) -> tuple[int, int, int, int] | None:
+    blurred = image.convert("RGB").filter(ImageFilter.GaussianBlur(radius=1.2))
+    pixels = blurred.load()
+    width, height = blurred.size
+    x1, y1, x2, y2 = text_bbox
+    step = max(1, min(x2 - x1, y2 - y1) // 18)
+    visited: set[tuple[int, int]] = set()
+    best: tuple[int, int, tuple[int, int, int, int]] | None = None
+
+    for seed_y in range(y1, y2, step):
+        for seed_x in range(x1, x2, step):
+            if (seed_x, seed_y) in visited:
+                continue
+            seed_color = tuple(int(channel) for channel in pixels[seed_x, seed_y])
+            if not _pixel_matches_bubble_fill(seed_color, fill_color, fill_color):
+                continue
+            queue: deque[tuple[int, int]] = deque([(seed_x, seed_y)])
+            component_area = 0
+            local_area = 0
+            left = right = seed_x
+            top = bottom = seed_y
+            while queue:
+                current_x, current_y = queue.popleft()
+                if (current_x, current_y) in visited:
+                    continue
+                visited.add((current_x, current_y))
+                if current_x < 0 or current_x >= width or current_y < 0 or current_y >= height:
+                    continue
+                current_color = tuple(int(channel) for channel in pixels[current_x, current_y])
+                if not _pixel_matches_bubble_fill(current_color, fill_color, fill_color):
+                    continue
+                component_area += 1
+                if x1 <= current_x < x2 and y1 <= current_y < y2:
+                    local_area += 1
+                left = min(left, current_x)
+                top = min(top, current_y)
+                right = max(right, current_x)
+                bottom = max(bottom, current_y)
+                queue.extend(
+                    (
+                        (current_x - 1, current_y),
+                        (current_x + 1, current_y),
+                        (current_x, current_y - 1),
+                        (current_x, current_y + 1),
+                    )
+                )
+            candidate = (left, top, right + 1, bottom + 1)
+            if best is None or (local_area, component_area) > (best[0], best[1]):
+                best = local_area, component_area, candidate
+
+    if best is None:
+        return None
+    offset_x, offset_y = bbox_offset
+    component_bbox = (
+        best[2][0] + offset_x,
+        best[2][1] + offset_y,
+        best[2][2] + offset_x,
+        best[2][3] + offset_y,
+    )
+    resolved_text_bbox = page_text_bbox or (
+        text_bbox[0] + offset_x,
+        text_bbox[1] + offset_y,
+        text_bbox[2] + offset_x,
+        text_bbox[3] + offset_y,
+    )
+    return _validate_external_ocr_fill_component(
+        page_size or image.size,
+        resolved_text_bbox,
+        component_bbox,
+        local_area=best[0],
+        component_area=best[1],
+    )
+
+
+def _validate_external_ocr_fill_component(
+    image_size: tuple[int, int],
+    text_bbox: tuple[int, int, int, int],
+    component_bbox: tuple[int, int, int, int],
+    *,
+    local_area: int,
+    component_area: int,
+) -> tuple[int, int, int, int] | None:
+    image_area = max(1, image_size[0] * image_size[1])
+    text_area = max(1, _bbox_area(text_bbox))
+    component_box_area = max(1, _bbox_area(component_bbox))
+    if local_area < max(12, int(round(text_area * 0.08))):
+        return None
+    if component_area < max(48, int(round(text_area * 0.28))):
+        return None
+    if component_box_area < int(round(text_area * 1.12)):
+        return None
+    if component_area > image_area * 0.58 or component_box_area > image_area * 0.68:
+        return None
+    if component_bbox[2] - component_bbox[0] < text_bbox[2] - text_bbox[0]:
+        return None
+    if component_bbox[3] - component_bbox[1] < text_bbox[3] - text_bbox[1]:
+        return None
+    if (
+        component_bbox[0] <= 1
+        or component_bbox[1] <= 1
+        or component_bbox[2] >= image_size[0] - 1
+        or component_bbox[3] >= image_size[1] - 1
+    ):
+        return None
+    return component_bbox
+
+
+def _external_ocr_fill_component_bbox(
+    image: Image.Image,
+    text_bbox: tuple[int, int, int, int],
+    fill_color: tuple[int, int, int],
+) -> tuple[int, int, int, int] | None:
+    text_width = max(1, text_bbox[2] - text_bbox[0])
+    text_height = max(1, text_bbox[3] - text_bbox[1])
+    search_padding = min(1024, max(96, int(round(max(text_width, text_height) * 2.0))))
+    search_bbox = (
+        max(0, text_bbox[0] - search_padding),
+        max(0, text_bbox[1] - search_padding),
+        min(image.size[0], text_bbox[2] + search_padding),
+        min(image.size[1], text_bbox[3] + search_padding),
+    )
+    search_image = image.crop(search_bbox)
+    local_text_bbox = (
+        text_bbox[0] - search_bbox[0],
+        text_bbox[1] - search_bbox[1],
+        text_bbox[2] - search_bbox[0],
+        text_bbox[3] - search_bbox[1],
+    )
+    component_builder = (
+        _external_ocr_fill_component_bbox_vectorized
+        if cv2 is not None and np is not None
+        else _external_ocr_fill_component_bbox_python
+    )
+    component_bbox = component_builder(
+        search_image,
+        local_text_bbox,
+        fill_color,
+        page_size=image.size,
+        bbox_offset=(search_bbox[0], search_bbox[1]),
+        page_text_bbox=text_bbox,
+    )
+    if component_bbox is None:
+        return None
+
+    touches_search_edge = (
+        (search_bbox[0] > 0 and component_bbox[0] <= search_bbox[0] + 1)
+        or (search_bbox[1] > 0 and component_bbox[1] <= search_bbox[1] + 1)
+        or (search_bbox[2] < image.size[0] and component_bbox[2] >= search_bbox[2] - 1)
+        or (search_bbox[3] < image.size[1] and component_bbox[3] >= search_bbox[3] - 1)
+    )
+    if touches_search_edge:
+        return component_builder(image, text_bbox, fill_color)
+    return component_bbox
 
 
 def _strip_matches_fill_color(
@@ -5730,8 +5995,7 @@ def _infer_external_ocr_shape(
     fill_color: tuple[int, int, int],
     direction: str,
 ) -> str:
-    if direction == "vertical":
-        return "ellipse"
+    del direction
 
     crop = image.crop(body_bbox).convert("RGB")
     width, height = crop.size
@@ -5778,7 +6042,9 @@ def _build_external_ocr_region(
 ) -> dict[str, Any]:
     resolved_direction = direction or _external_ocr_inferred_direction(bbox)
     fill_color = _estimate_external_ocr_fill_color(image, bbox, resolved_direction)
-    body_bbox = _estimate_external_ocr_body_bbox(
+    inferred_container_bbox = _external_ocr_fill_component_bbox(image, bbox, fill_color)
+    container_inferred = inferred_container_bbox is not None
+    body_bbox = inferred_container_bbox or _estimate_external_ocr_body_bbox(
         image,
         bbox,
         resolved_direction,
@@ -5810,7 +6076,7 @@ def _build_external_ocr_region(
         2, min(16, (body_bbox[3] - body_bbox[1]) // (10 if resolved_direction == "vertical" else 9))
     )
     body_safe = _shrink_absolute_bbox(body_bbox, body_padding_x, body_padding_y) or body_bbox
-    safe_box = _intersect_region_bboxes(safe_source, body_safe) or body_safe
+    safe_box = body_safe if container_inferred else _intersect_region_bboxes(safe_source, body_safe) or body_safe
     padding_ratio = 0.80 if line_count > 1 else 0.84 if resolved_direction == "horizontal" else 0.82
     return {
         "order": order,
@@ -5823,7 +6089,64 @@ def _build_external_ocr_region(
         "background": "#{:02X}{:02X}{:02X}".format(*fill_color),
         "shape": shape,
         "padding_ratio": padding_ratio,
+        "_container_inferred": container_inferred,
     }
+
+
+def _merge_external_ocr_regions_by_container(
+    regions: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    grouped: list[list[dict[str, Any]]] = []
+    group_keys: list[tuple[Any, ...] | None] = []
+    for region in regions:
+        container_key = (
+            tuple(region.get("body_bbox") or ()),
+            str(region.get("source_direction") or region.get("direction") or ""),
+            str(region.get("background") or ""),
+            str(region.get("shape") or ""),
+        )
+        if not region.get("_container_inferred"):
+            container_key = None
+        try:
+            group_index = group_keys.index(container_key) if container_key is not None else -1
+        except ValueError:
+            group_index = -1
+        if group_index < 0:
+            grouped.append([region])
+            group_keys.append(container_key)
+        else:
+            grouped[group_index].append(region)
+
+    merged_regions: list[dict[str, Any]] = []
+    merged_count = 0
+    for group in grouped:
+        direction = str(group[0].get("direction") or "horizontal")
+        ordered_group = sorted(
+            group,
+            key=(
+                (lambda item: (item["bbox"][0], item["bbox"][1]))
+                if direction == "vertical"
+                else (lambda item: (item["bbox"][1], item["bbox"][0]))
+            ),
+            reverse=direction == "vertical",
+        )
+        merged = dict(ordered_group[0])
+        merged_bbox = tuple(ordered_group[0]["bbox"])
+        for item in ordered_group[1:]:
+            merged_bbox = _union_region_bboxes(merged_bbox, tuple(item["bbox"]))
+        merged["bbox"] = list(merged_bbox)
+        merged["source_text"] = "\n".join(
+            str(item.get("source_text") or "").strip()
+            for item in ordered_group
+            if str(item.get("source_text") or "").strip()
+        )
+        merged.pop("_container_inferred", None)
+        merged_regions.append(merged)
+        merged_count += max(0, len(group) - 1)
+
+    for order, region in enumerate(merged_regions, start=1):
+        region["order"] = order
+    return merged_regions, merged_count
 
 
 def _coerce_external_service_ocr_page_payload(
@@ -5880,6 +6203,7 @@ def _coerce_external_service_ocr_page_payload(
                 line_count=int(item.get("line_count") or 1),
             )
         )
+    regions, container_merged_region_count = _merge_external_ocr_regions_by_container(regions)
 
     payload = _coerce_manga_ocr_page_payload(
         {"regions": regions},
@@ -5890,6 +6214,7 @@ def _coerce_external_service_ocr_page_payload(
     diagnostics["ocr_backend"] = "external_service"
     diagnostics["raw_line_count"] = raw_line_count
     diagnostics["merged_line_count"] = len(merged_items)
+    diagnostics["container_merged_region_count"] = container_merged_region_count
     return payload.model_copy(update={"diagnostics": diagnostics})
 
 
@@ -6018,6 +6343,7 @@ def _build_windows_ocr_page_payload(
                 line_count=int(item.get("line_count") or 1),
             )
         )
+    regions, container_merged_region_count = _merge_external_ocr_regions_by_container(regions)
 
     payload = _coerce_manga_ocr_page_payload(
         {"regions": regions},
@@ -6029,6 +6355,7 @@ def _build_windows_ocr_page_payload(
     diagnostics["ocr_engine_language"] = str(raw_payload.get("engineLang") or "")
     diagnostics["raw_line_count"] = raw_line_count
     diagnostics["merged_line_count"] = len(merged_items)
+    diagnostics["container_merged_region_count"] = container_merged_region_count
     return payload.model_copy(update={"diagnostics": diagnostics})
 
 
@@ -6109,6 +6436,7 @@ def _build_rapid_ocr_page_payload(
         )
         for index, item in enumerate(merged_items, start=1)
     ]
+    regions, container_merged_region_count = _merge_external_ocr_regions_by_container(regions)
     payload = _coerce_manga_ocr_page_payload(
         {"regions": regions},
         image_size=image_size,
@@ -6121,6 +6449,7 @@ def _build_rapid_ocr_page_payload(
             "raw_line_count": len(boxes),
             "accepted_line_count": len(raw_items),
             "merged_line_count": len(merged_items),
+            "container_merged_region_count": container_merged_region_count,
             "rejected_low_confidence_count": rejected_low_confidence_count,
             "average_confidence": (
                 round(sum(accepted_scores) / len(accepted_scores), 5) if accepted_scores else 0.0

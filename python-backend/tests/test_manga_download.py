@@ -896,6 +896,37 @@ async def test_text_only_model_uses_local_ocr_without_sending_the_image(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_high_confidence_rapidocr_skips_slower_windows_ocr(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(scraper.os, "name", "nt")
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (640, 960), "white").save(image_path)
+
+    async def fake_rapid(**_: object) -> MangaOcrPagePayload:
+        return MangaOcrPagePayload(
+            page_number=1,
+            image_size=(640, 960),
+            regions=[MangaOcrRegion(order=1, bbox=(20, 20, 120, 80), source_text="文字")],
+            diagnostics={"ocr_backend": "rapidocr", "average_confidence": 0.96},
+        )
+
+    async def forbidden_windows(**_: object) -> MangaOcrPagePayload:
+        raise AssertionError("高置信度 RapidOCR 不应等待 Windows OCR")
+
+    monkeypatch.setattr(scraper, "_request_rapid_ocr_regions_payload", fake_rapid)
+    monkeypatch.setattr(scraper, "_request_windows_ocr_regions_payload", forbidden_windows)
+
+    payload = await scraper._request_local_manga_ocr_regions_payload(
+        settings=TranslationSettings(),
+        image_path=image_path,
+        image_size=(640, 960),
+        timeout_seconds=30,
+        page_number=1,
+    )
+
+    assert payload.diagnostics["windows_ocr_skipped"] == "rapidocr_high_confidence"
+
+
+@pytest.mark.asyncio
 async def test_linux_local_ocr_never_invokes_windows_ocr(monkeypatch, tmp_path) -> None:
     image_path = tmp_path / "page.png"
     Image.new("RGB", (320, 480), "white").save(image_path)
@@ -1093,6 +1124,126 @@ async def test_translation_reports_reasoning_budget_exhaustion_after_retry(monke
             regions=[MangaOcrRegion(order=1, bbox=(20, 20, 180, 80), source_text="HELLO WORLD")],
             timeout_seconds=30,
         )
+
+
+def test_rapidocr_uses_fast_manga_detection_settings(monkeypatch, tmp_path) -> None:
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (64, 64), "white").save(image_path)
+    captured: dict[str, object] = {}
+
+    class FakeRapidOCR:
+        def __init__(self, *, params: dict[str, object]) -> None:
+            captured["params"] = params
+
+        def __call__(self, path, *, use_cls: bool):
+            captured["path"] = path
+            captured["use_cls"] = use_cls
+            return SimpleNamespace(boxes=[], txts=[], scores=[])
+
+    monkeypatch.setattr(scraper, "_RAPID_OCR_ENGINE", None)
+    monkeypatch.setattr(
+        scraper.importlib,
+        "import_module",
+        lambda _: SimpleNamespace(RapidOCR=FakeRapidOCR),
+    )
+
+    scraper._run_rapid_ocr_sync(image_path)
+
+    params = captured["params"]
+    assert isinstance(params, dict)
+    assert params["Det.limit_side_len"] == 512
+    assert params["Det.limit_type"] == "min"
+    assert captured["use_cls"] is False
+
+
+@pytest.mark.asyncio
+async def test_manga_translation_resumes_completed_pages_from_checkpoint(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    image_files = ["images/page-1.png", "images/page-2.png"]
+    for asset_path in image_files:
+        (tmp_path / asset_path).write_bytes(PNG_1X1)
+
+    checkpoint_path = tmp_path / "chapter.translated.json.part"
+    settings = TranslationSettings(
+        translationModel=OpenAICompatibleConfig(
+            enabled=True,
+            baseUrl="https://api.deepseek.com",
+            apiKey="secret",
+            model="deepseek-v4-flash",
+        )
+    )
+    calls: list[int] = []
+    failed_once = False
+
+    async def fake_pipeline(**kwargs):
+        nonlocal failed_once
+        page_number = int(kwargs["page_number"])
+        calls.append(page_number)
+        if page_number == 2 and not failed_once:
+            failed_once = True
+            raise RuntimeError("temporary translation failure")
+        translation = f"translation-{page_number}"
+        return (
+            PNG_1X1,
+            translation,
+            MangaTranslatedPagePayload(
+                page_number=page_number,
+                target_language=str(kwargs["target_language"]),
+                source_image_file=str(kwargs["source_image_file"]),
+                translated_image_file=str(kwargs["translated_image_file"]),
+                page_translation=translation,
+            ),
+        )
+
+    monkeypatch.setattr(scraper, "_translate_manga_page_with_pipeline", fake_pipeline)
+    first_progress: list[int] = []
+    with pytest.raises(RuntimeError, match="temporary translation failure"):
+        await scraper._translate_manga_pages_with_command_detailed(
+            settings=settings,
+            target_language="中文",
+            chapter_index=1,
+            title="chapter",
+            image_files=image_files,
+            book_dir=tmp_path,
+            checkpoint_path=checkpoint_path,
+            progress_callback=lambda completed, _: first_progress.append(completed),
+        )
+
+    assert calls == [1, 2]
+    assert first_progress == [1]
+    assert checkpoint_path.exists()
+
+    logs: list[str] = []
+    resumed_progress: list[int] = []
+    (
+        page_translations,
+        translated_files,
+        translated_pages,
+    ) = await scraper._translate_manga_pages_with_command_detailed(
+        settings=settings,
+        target_language="中文",
+        chapter_index=1,
+        title="chapter",
+        image_files=image_files,
+        book_dir=tmp_path,
+        checkpoint_path=checkpoint_path,
+        log_callback=lambda _, message: logs.append(message),
+        progress_callback=lambda completed, _: resumed_progress.append(completed),
+    )
+
+    assert calls == [1, 2, 2]
+    assert resumed_progress == [1, 2]
+    assert page_translations == ["translation-1", "translation-2"]
+    assert translated_files == [
+        "images/page-1.translated.png",
+        "images/page-2.translated.png",
+    ]
+    assert [page.page_number for page in translated_pages] == [1, 2]
+    assert any("断点恢复" in message for message in logs)
 
 
 @pytest.mark.asyncio

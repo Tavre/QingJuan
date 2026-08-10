@@ -3804,6 +3804,26 @@ async def _process_translate_task(task: TaskRecord, book: BookRecord) -> None:
         _ensure_task_resources_exist(task.id, book.id)
         chapter_label = f"{unit} {chapter_index}"
         _append_task_runtime_log(task, "info", f"开始处理{chapter_label}")
+
+        async def on_page_progress(
+            completed_pages: int,
+            total_pages: int,
+            chapter_position: int = index,
+        ) -> None:
+            _ensure_task_resources_exist(task.id, book.id)
+            chapter_fraction = completed_pages / total_pages if total_pages else 0
+            task.completedCount = chapter_position - 1
+            task.progress = round(
+                ((chapter_position - 1) + chapter_fraction) / task.totalCount * 100,
+                2,
+            )
+            task.message = (
+                f"正在翻译第 {chapter_position}/{task.totalCount} {unit}，"
+                f"本{unit}已完成 {completed_pages}/{total_pages} 页"
+            )
+            task.updatedAt = _now()
+            save_task(task)
+
         await translate_selected_chapters(
             book_dir=book_dir,
             manifest=manifest,
@@ -3811,6 +3831,7 @@ async def _process_translate_task(task: TaskRecord, book: BookRecord) -> None:
             language=book.language,
             settings=settings,
             log_callback=on_log,
+            progress_callback=on_page_progress,
         )
         _ensure_task_resources_exist(task.id, book.id)
         task.completedCount = index

@@ -55,4 +55,41 @@ void main() {
     );
     api.close();
   });
+
+  test('task page results are fetched incrementally by sequence', () async {
+    final api = ApiClient(
+      () => 'https://qingjuan.example.test',
+      client: MockClient((request) async {
+        expect(request.url.path, '/api/v1/tasks/task-1/page-results');
+        expect(request.url.queryParameters['after'], '7');
+        return http.Response(
+          jsonEncode(<Map<String, Object?>>[
+            <String, Object?>{
+              'sequence': 8,
+              'taskId': 'task-1',
+              'chapterIndex': 1,
+              'chapterTitle': '第一话',
+              'pageNumber': 1,
+              'totalPages': 2,
+              'texts': <Map<String, Object?>>[
+                <String, Object?>{
+                  'order': 1,
+                  'sourceText': 'こんにちは',
+                  'translation': '你好',
+                },
+              ],
+            },
+          ]),
+          200,
+          headers: <String, String>{'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    final results = await api.fetchTaskPageResults('task-1', after: 7);
+
+    expect(results.single.sequence, 8);
+    expect(results.single.displayText, 'こんにちは → 你好');
+    api.close();
+  });
 }

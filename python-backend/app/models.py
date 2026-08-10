@@ -425,6 +425,22 @@ class PublicBookSourceRecord(BaseModel):
     statusMessage: str = ""
     lastCheckedAt: str | None = None
     createdAt: str
+
+
+class TaskPageTextRecord(BaseModel):
+    order: int = 0
+    sourceText: str = ""
+    translation: str = ""
+
+
+class TaskPageResultRecord(BaseModel):
+    sequence: int
+    taskId: str
+    chapterIndex: int
+    chapterTitle: str
+    pageNumber: int
+    totalPages: int
+    texts: list[TaskPageTextRecord] = Field(default_factory=list)
     updatedAt: str
 
 

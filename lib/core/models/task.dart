@@ -41,3 +41,66 @@ class BookTask {
   final String updatedAt;
   final String? error;
 }
+
+class TaskPageText {
+  const TaskPageText({
+    required this.order,
+    required this.sourceText,
+    required this.translation,
+  });
+
+  factory TaskPageText.fromJson(JsonMap json) => TaskPageText(
+        order: (json['order'] as num?)?.toInt() ?? 0,
+        sourceText: json['sourceText'] as String? ?? '',
+        translation: json['translation'] as String? ?? '',
+      );
+
+  final int order;
+  final String sourceText;
+  final String translation;
+}
+
+class TaskPageResult {
+  const TaskPageResult({
+    required this.sequence,
+    required this.taskId,
+    required this.chapterIndex,
+    required this.chapterTitle,
+    required this.pageNumber,
+    required this.totalPages,
+    required this.texts,
+  });
+
+  factory TaskPageResult.fromJson(JsonMap json) => TaskPageResult(
+        sequence: (json['sequence'] as num?)?.toInt() ?? 0,
+        taskId: json['taskId'] as String? ?? '',
+        chapterIndex: (json['chapterIndex'] as num?)?.toInt() ?? 0,
+        chapterTitle: json['chapterTitle'] as String? ?? '',
+        pageNumber: (json['pageNumber'] as num?)?.toInt() ?? 0,
+        totalPages: (json['totalPages'] as num?)?.toInt() ?? 0,
+        texts: (json['texts'] as List<dynamic>? ?? const <dynamic>[])
+            .whereType<JsonMap>()
+            .map(TaskPageText.fromJson)
+            .toList(growable: false),
+      );
+
+  final int sequence;
+  final String taskId;
+  final int chapterIndex;
+  final String chapterTitle;
+  final int pageNumber;
+  final int totalPages;
+  final List<TaskPageText> texts;
+
+  String get displayText => texts
+      .map((text) {
+        final source = text.sourceText.trim();
+        final translation = text.translation.trim();
+        if (source.isNotEmpty && translation.isNotEmpty) {
+          return '$source → $translation';
+        }
+        return source.isNotEmpty ? source : translation;
+      })
+      .where((text) => text.isNotEmpty)
+      .join('\n');
+}

@@ -110,6 +110,8 @@ try:
         ReadingProgressRecord,
         ServiceMetaResponse,
         TaskLogRecord,
+        TaskPageResultRecord,
+        TaskPageTextRecord,
         TaskRecord,
         TranslationSettings,
         TranslationSettingsView,
@@ -123,6 +125,7 @@ try:
         create_book_manifest_only,
         download_book,
         download_selected_chapters,
+        load_manga_translation_page_payloads,
         load_manifest,
         load_translated_page_payload,
         preview_from_url,
@@ -206,6 +209,8 @@ except ImportError:
         ReadingProgressRecord,
         ServiceMetaResponse,
         TaskLogRecord,
+        TaskPageResultRecord,
+        TaskPageTextRecord,
         TaskRecord,
         TranslationSettings,
         TranslationSettingsView,
@@ -219,6 +224,7 @@ except ImportError:
         create_book_manifest_only,
         download_book,
         download_selected_chapters,
+        load_manga_translation_page_payloads,
         load_manifest,
         load_translated_page_payload,
         preview_from_url,
@@ -832,6 +838,72 @@ async def get_task_logs(task_id: str, after: int = Query(default=0, ge=0)) -> li
     if task is None:
         raise HTTPException(status_code=404, detail=f"未找到任务：{task_id}")
     return list_task_logs(task.id, after)
+
+
+@tasks_router.get(
+    "/tasks/{task_id}/page-results",
+    response_model=list[TaskPageResultRecord],
+)
+async def get_task_page_results(
+    task_id: str,
+    after: int = Query(default=0, ge=0),
+) -> list[TaskPageResultRecord]:
+    task = get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"未找到任务：{task_id}")
+    book = _get_book_or_404(task.bookId)
+    if task.taskType != "translate" or book.bookKind != "漫画":
+        return []
+
+    book_dir = _resolve_book_dir(book)
+    manifest = _load_or_initialize_manifest(book, book_dir)
+    chapter_lookup = _build_manifest_lookup(manifest)
+    results: list[TaskPageResultRecord] = []
+    sequence = 0
+    for chapter_position, chapter_index in enumerate(task.chapterIndexes, start=1):
+        chapter = chapter_lookup.get(chapter_index)
+        if not isinstance(chapter, dict):
+            continue
+        filename = str(chapter.get("file_name") or f"{chapter_index:04d}-chapter-{chapter_index}.txt")
+        pages = load_manga_translation_page_payloads(
+            book_dir,
+            filename,
+            include_final=chapter_position <= task.completedCount,
+        )
+        total_pages = len(_read_string_list(chapter.get("image_files"))) or len(pages)
+        chapter_title = str(chapter.get("title") or f"第{chapter_index}话")
+        for page in pages:
+            sequence += 1
+            if sequence <= after:
+                continue
+            texts = [
+                TaskPageTextRecord(
+                    order=region.order,
+                    sourceText=region.source_text.strip(),
+                    translation=region.translation.strip(),
+                )
+                for region in page.regions
+                if region.source_text.strip() or region.translation.strip()
+            ]
+            if not texts and page.page_translation.strip():
+                texts = [
+                    TaskPageTextRecord(
+                        order=0,
+                        translation=page.page_translation.strip(),
+                    )
+                ]
+            results.append(
+                TaskPageResultRecord(
+                    sequence=sequence,
+                    taskId=task.id,
+                    chapterIndex=chapter_index,
+                    chapterTitle=chapter_title,
+                    pageNumber=page.page_number,
+                    totalPages=total_pages,
+                    texts=texts,
+                )
+            )
+    return results
 
 
 @tasks_router.post("/books/{book_id}/chapters/download", response_model=TaskRecord)

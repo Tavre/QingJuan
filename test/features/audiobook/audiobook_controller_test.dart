@@ -84,6 +84,47 @@ void main() {
     expect(engine.rates.last, greaterThanOrEqualTo(0.45));
     expect(engine.pitches.last, greaterThan(0.98));
   });
+
+  test('pause failures become readable state instead of uncaught futures',
+      () async {
+    final engine = _FakeTtsEngine(
+      blockSpeech: true,
+      pauseError: StateError('系统语音已关闭'),
+    );
+    final controller = AudiobookController(
+      detail: _detail(),
+      engine: engine,
+      loadChapter: (chapterIndex, mode) async =>
+          _content(chapterIndex, '等待暂停的正文。', mode),
+    );
+    await controller.initialize();
+
+    final playing = controller.play();
+    await Future<void>.delayed(Duration.zero);
+    await controller.pause();
+    await playing;
+
+    expect(controller.state, AudiobookPlaybackState.error);
+    expect(controller.error, '系统语音已关闭');
+    expect(engine.stopCount, 1);
+  });
+
+  test('dispose owns one engine shutdown path', () async {
+    final engine = _FakeTtsEngine();
+    final controller = AudiobookController(
+      detail: _detail(),
+      engine: engine,
+      loadChapter: (chapterIndex, mode) async =>
+          _content(chapterIndex, '退出测试。', mode),
+    );
+    await controller.initialize();
+
+    controller.dispose();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(engine.disposeCount, 1);
+    expect(engine.stopCount, 0);
+  });
 }
 
 BookDetail _detail() => const BookDetail(
@@ -143,14 +184,17 @@ ChapterContent _content(int index, String text, String mode) => ChapterContent(
     );
 
 class _FakeTtsEngine implements TtsEngine {
-  _FakeTtsEngine({this.blockSpeech = false});
+  _FakeTtsEngine({this.blockSpeech = false, this.pauseError});
 
   final bool blockSpeech;
+  final Object? pauseError;
   final List<String> spoken = <String>[];
   Completer<void>? _speechCompleter;
   String? language;
   int pauseCount = 0;
   int resumeCount = 0;
+  int stopCount = 0;
+  int disposeCount = 0;
   bool _didBlock = false;
   final List<double> rates = <double>[];
   final List<double> pitches = <double>[];
@@ -172,6 +216,7 @@ class _FakeTtsEngine implements TtsEngine {
   @override
   Future<void> pause() async {
     pauseCount += 1;
+    if (pauseError != null) throw pauseError!;
   }
 
   @override
@@ -182,6 +227,7 @@ class _FakeTtsEngine implements TtsEngine {
 
   @override
   Future<void> stop() async {
+    stopCount += 1;
     if (_speechCompleter?.isCompleted == false) _speechCompleter?.complete();
   }
 
@@ -195,5 +241,7 @@ class _FakeTtsEngine implements TtsEngine {
   Future<void> setVolume(double value) async {}
 
   @override
-  Future<void> dispose() async {}
+  Future<void> dispose() async {
+    disposeCount += 1;
+  }
 }

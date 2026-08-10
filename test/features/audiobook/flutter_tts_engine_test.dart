@@ -31,15 +31,54 @@ void main() {
     expect(plugin.language, 'ja-JP');
     expect(plugin.selectedVoice, isNull);
   });
+
+  test('speech waits for the Windows completion event without native await',
+      () async {
+    final plugin = _FakeFlutterTts();
+    final engine = FlutterTtsEngine(flutterTts: plugin);
+    await engine.initialize('zh-CN');
+
+    var completed = false;
+    final speaking = engine.speak('逐段朗读').then((_) => completed = true);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(plugin.awaitCompletion, isFalse);
+    expect(plugin.spoken, <String>['逐段朗读']);
+    expect(completed, isFalse);
+
+    plugin.completeSpeech();
+    await speaking;
+    expect(completed, isTrue);
+  });
 }
 
 class _FakeFlutterTts extends FlutterTts {
   String? language;
   Map<String, String>? selectedVoice;
   double? pitch;
+  bool? awaitCompletion;
+  final List<String> spoken = <String>[];
+  void Function()? _completionHandler;
+  void Function()? _cancelHandler;
 
   @override
-  Future<dynamic> awaitSpeakCompletion(bool awaitCompletion) async => 1;
+  Future<dynamic> awaitSpeakCompletion(bool awaitCompletion) async {
+    this.awaitCompletion = awaitCompletion;
+    return 1;
+  }
+
+  @override
+  void setCompletionHandler(void Function() callback) {
+    _completionHandler = callback;
+  }
+
+  @override
+  void setCancelHandler(void Function() callback) {
+    _cancelHandler = callback;
+  }
+
+  @override
+  void setErrorHandler(void Function(dynamic) handler) {}
 
   @override
   Future<dynamic> setLanguage(String language) async {
@@ -58,4 +97,18 @@ class _FakeFlutterTts extends FlutterTts {
     this.pitch = pitch;
     return 1;
   }
+
+  @override
+  Future<dynamic> speak(String text, {bool focus = false}) async {
+    spoken.add(text);
+    return 1;
+  }
+
+  @override
+  Future<dynamic> stop() async {
+    _cancelHandler?.call();
+    return 1;
+  }
+
+  void completeSpeech() => _completionHandler?.call();
 }

@@ -234,6 +234,10 @@ class _TaskTile extends StatelessWidget {
       _ => task.status,
     };
     final updatedAt = _formatTimestamp(task.updatedAt);
+    final pageResults = controller
+        .pageResultsForTask(task.id)
+        .where((result) => result.displayText.isNotEmpty)
+        .toList(growable: false);
     return AppSurface(
       margin: const EdgeInsets.only(bottom: 10),
       child: Row(
@@ -291,6 +295,50 @@ class _TaskTile extends StatelessWidget {
                     fontWeight: failed ? FontWeight.w600 : null,
                   ),
                 ),
+                if (pageResults.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 12),
+                  Expander(
+                    key: ValueKey('task-page-text-${task.id}'),
+                    leading: const Icon(FluentIcons.text_document),
+                    header: Text('逐页识别结果（${pageResults.length} 页）'),
+                    initiallyExpanded: task.status == 'running',
+                    contentPadding: const EdgeInsets.all(10),
+                    content: SizedBox(
+                      height: (pageResults.length * 96.0).clamp(80.0, 260.0),
+                      child: ListView.separated(
+                        reverse: true,
+                        itemCount: pageResults.length,
+                        separatorBuilder: (_, __) => const Divider(),
+                        itemBuilder: (context, index) {
+                          final result =
+                              pageResults[pageResults.length - 1 - index];
+                          return Semantics(
+                            label: '漫画逐页识别结果',
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: <Widget>[
+                                Text(
+                                  '${result.chapterTitle} · '
+                                  '第 ${result.pageNumber}/${result.totalPages} 页',
+                                  style: theme.typography.caption?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                SelectableText(
+                                  result.displayText,
+                                  style: theme.typography.caption?.copyWith(
+                                    height: 1.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ],
                 if (failed) ...<Widget>[
                   const SizedBox(height: 12),
                   Button(

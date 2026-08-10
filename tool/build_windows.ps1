@@ -13,7 +13,11 @@ $releaseOutput = Join-Path $projectRoot "release/qingjuan-windows"
 $backendRoot = Join-Path $projectRoot "python-backend"
 
 function Assert-FlutterVersion {
-    $version = flutter --version --machine | ConvertFrom-Json
+    $versionOutput = flutter --version --machine
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to query Flutter version; flutter exited with code $LASTEXITCODE."
+    }
+    $version = $versionOutput | ConvertFrom-Json
     if ($version.frameworkVersion -eq $requiredFlutterVersion) {
         return
     }
@@ -55,7 +59,13 @@ try {
     Assert-FlutterVersion
     Enable-NuGet
     flutter pub get
+    if ($LASTEXITCODE -ne 0) {
+        throw "flutter pub get failed with exit code $LASTEXITCODE."
+    }
     flutter build windows --release
+    if ($LASTEXITCODE -ne 0) {
+        throw "flutter build windows --release failed with exit code $LASTEXITCODE."
+    }
 
     if (Test-Path -LiteralPath $releaseOutput) {
         Remove-Item -LiteralPath $releaseOutput -Recurse -Force
@@ -100,6 +110,9 @@ try {
             --workpath (Join-Path $backendRoot "build") `
             --specpath $backendRoot `
             (Join-Path $backendRoot "app/main.py")
+        if ($LASTEXITCODE -ne 0) {
+            throw "PyInstaller failed with exit code $LASTEXITCODE."
+        }
     }
 
     Write-Host "Windows release package created: $releaseOutput"

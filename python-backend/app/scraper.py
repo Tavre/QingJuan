@@ -39,6 +39,13 @@ from bs4 import BeautifulSoup
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, UnidentifiedImageError
 
 try:
+    import cv2
+    import numpy as np
+except Exception:  # pragma: no cover - RapidOCR environments normally provide both
+    cv2 = None
+    np = None
+
+try:
     from .db import DATA_DIR
     from .manga_download import (
         MANGA_RETRYABLE_STATUS_CODES,
@@ -120,6 +127,7 @@ except Exception:  # pragma: no cover - 环境可选依赖
 
 _RAPID_OCR_ENGINE: Any | None = None
 _RAPID_OCR_LOCK = threading.RLock()
+RAPID_OCR_DETECTION_SIDE = 512
 
 CHAPTER_PATTERN = re.compile(r"(chapter|episode|第.{0,6}[章节话卷篇])", re.IGNORECASE)
 GENERIC_CHAPTER_CONTAINER_SELECTORS = (
@@ -1818,6 +1826,114 @@ def translated_meta_path(book_dir: Path, filename: str) -> Path:
     return book_dir / build_translated_meta_filename(filename)
 
 
+def translated_checkpoint_path(book_dir: Path, filename: str) -> Path:
+    return Path(f"{translated_meta_path(book_dir, filename)}.part")
+
+
+def _manga_translation_source_signatures(
+    book_dir: Path,
+    image_files: list[str],
+) -> list[dict[str, int | str]]:
+    signatures: list[dict[str, int | str]] = []
+    for asset_path in image_files:
+        source_path = (book_dir / asset_path).resolve()
+        stat = source_path.stat()
+        signatures.append(
+            {
+                "path": asset_path,
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            }
+        )
+    return signatures
+
+
+def _write_manga_translation_checkpoint(
+    checkpoint_path: Path,
+    *,
+    book_dir: Path,
+    base_url: str,
+    model: str,
+    target_language: str,
+    image_files: list[str],
+    pages: list[MangaTranslatedPagePayload],
+) -> None:
+    payload = {
+        "version": 1,
+        "renderer_version": MANGA_RENDERER_VERSION,
+        "base_url": base_url,
+        "model": model,
+        "target_language": target_language,
+        "source_signatures": _manga_translation_source_signatures(book_dir, image_files),
+        "pages": [page.model_dump(mode="python", exclude_none=True) for page in pages],
+    }
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = Path(f"{checkpoint_path}.tmp")
+    temporary_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary_path.replace(checkpoint_path)
+
+
+def _load_manga_translation_checkpoint(
+    checkpoint_path: Path,
+    *,
+    book_dir: Path,
+    base_url: str,
+    model: str,
+    target_language: str,
+    image_files: list[str],
+) -> list[MangaTranslatedPagePayload]:
+    if not checkpoint_path.exists():
+        return []
+    try:
+        raw_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        expected_signatures = _manga_translation_source_signatures(book_dir, image_files)
+    except (OSError, ValueError, json.JSONDecodeError):
+        checkpoint_path.unlink(missing_ok=True)
+        return []
+    if not isinstance(raw_payload, dict) or any(
+        (
+            raw_payload.get("version") != 1,
+            raw_payload.get("renderer_version") != MANGA_RENDERER_VERSION,
+            raw_payload.get("base_url") != base_url,
+            raw_payload.get("model") != model,
+            raw_payload.get("target_language") != target_language,
+            raw_payload.get("source_signatures") != expected_signatures,
+        )
+    ):
+        checkpoint_path.unlink(missing_ok=True)
+        return []
+
+    raw_pages = raw_payload.get("pages")
+    if not isinstance(raw_pages, list):
+        checkpoint_path.unlink(missing_ok=True)
+        return []
+
+    resolved_book_dir = book_dir.resolve()
+    pages: list[MangaTranslatedPagePayload] = []
+    for page_number, asset_path in enumerate(image_files, start=1):
+        if page_number > len(raw_pages) or not isinstance(raw_pages[page_number - 1], dict):
+            break
+        try:
+            page = MangaTranslatedPagePayload.model_validate(raw_pages[page_number - 1])
+        except Exception:
+            break
+        translated_asset_path = build_translated_image_asset_path(asset_path)
+        translated_image_path = (book_dir / translated_asset_path).resolve()
+        if (
+            page.page_number != page_number
+            or page.source_image_file != asset_path
+            or page.translated_image_file != translated_asset_path
+            or not translated_image_path.is_relative_to(resolved_book_dir)
+            or not is_valid_image_file(translated_image_path)
+        ):
+            break
+        pages.append(page)
+    return pages
+
+
 def _load_translated_page_metadata(book_dir: Path, filename: str) -> dict[str, Any]:
     payload_path = translated_meta_path(book_dir, filename)
     if not payload_path.exists():
@@ -2139,6 +2255,7 @@ async def translate_selected_chapters(
     language: str,
     settings: TranslationSettings,
     log_callback: Callable[[str, str], Awaitable[None] | None] | None = None,
+    progress_callback: Callable[[int, int], Awaitable[None] | None] | None = None,
 ) -> dict:
     chapter_lookup = _chapter_lookup(manifest)
     updated = False
@@ -2155,6 +2272,7 @@ async def translate_selected_chapters(
                 raise ValueError(f"章节未下载，无法翻译：{chapter_index}")
             translated_filename = build_translated_filename(filename)
             translated_meta_filename = build_translated_meta_filename(filename)
+            checkpoint_path = translated_checkpoint_path(book_dir, filename)
             source_title = str(chapter.get("title") or f"第{chapter_index}章")
             repair_18comic_chapter_images(book_dir, manifest, chapter_index)
             (
@@ -2169,6 +2287,8 @@ async def translate_selected_chapters(
                 image_files=[item for item in chapter.get("image_files", []) if isinstance(item, str)],
                 book_dir=book_dir,
                 log_callback=log_callback,
+                progress_callback=progress_callback,
+                checkpoint_path=checkpoint_path,
             )
             translated_text = _merge_page_translations(source_title, page_translations)
             save_translated_page_payload(
@@ -2178,6 +2298,7 @@ async def translate_selected_chapters(
                 translated_image_files,
                 translated_pages=translated_pages,
             )
+            checkpoint_path.unlink(missing_ok=True)
             chapter["translated_meta_file_name"] = translated_meta_filename
             chapter["translated_image_files"] = translated_image_files
             chapter["translated"] = True
@@ -2833,7 +2954,7 @@ def _image_pixels(image: Image.Image) -> list[Any]:
     return list(image.getdata())  # pragma: no cover - Pillow < 12.1 兼容
 
 
-def _sample_region_fill_color(
+def _sample_region_fill_color_python(
     image: Image.Image,
     bbox: tuple[int, int, int, int],
     preferred_color: Any = None,
@@ -2885,6 +3006,89 @@ def _sample_region_fill_color(
         return (255, 255, 255)
 
     return _dominant_rgb_pixels(pixels)
+
+
+def _dominant_rgb_array(pixels: Any, *, bucket_size: int = 12) -> tuple[int, int, int]:
+    flattened = np.asarray(pixels, dtype=np.uint8).reshape(-1, 3)
+    if flattened.size == 0:
+        return (255, 255, 255)
+    bucket_count = (255 // bucket_size) + 1
+    buckets = flattened.astype(np.int16) // bucket_size
+    bucket_codes = buckets[:, 0] * bucket_count * bucket_count + buckets[:, 1] * bucket_count + buckets[:, 2]
+    counts = np.bincount(bucket_codes, minlength=bucket_count**3)
+    dominant_code = int(np.argmax(counts))
+    dominant = flattened[bucket_codes == dominant_code].astype(np.uint64)
+    averages = dominant.sum(axis=0) // max(1, len(dominant))
+    return tuple(int(value) for value in averages)
+
+
+def _sample_region_fill_color_vectorized(
+    image: Image.Image,
+    bbox: tuple[int, int, int, int],
+    preferred_color: Any = None,
+    *,
+    body_bbox: tuple[int, int, int, int] | None = None,
+) -> tuple[int, int, int]:
+    parsed = _parse_hex_color(preferred_color)
+    if parsed is not None:
+        return parsed
+
+    width, height = image.size
+    x1, y1, x2, y2 = bbox
+    sample_bbox = body_bbox or bbox
+    padding = max(2, min((x2 - x1) // 8, (y2 - y1) // 8, 12))
+    rgb_image = image.convert("RGB")
+
+    center_inset_x = max(1, min(12, (sample_bbox[2] - sample_bbox[0]) // 7))
+    center_inset_y = max(1, min(12, (sample_bbox[3] - sample_bbox[1]) // 7))
+    center_bbox = _shrink_absolute_bbox(sample_bbox, center_inset_x, center_inset_y)
+    if center_bbox is not None:
+        interior = np.asarray(rgb_image.crop(center_bbox), dtype=np.uint8).reshape(-1, 3)
+        if interior.size:
+            luminance = interior[:, 0] * 0.299 + interior[:, 1] * 0.587 + interior[:, 2] * 0.114
+            saturation = interior.max(axis=1) - interior.min(axis=1)
+            low = interior[(luminance <= 104) & (saturation <= 96)]
+            high = interior[(luminance >= 176) & (saturation <= 72)]
+            minimum_count = max(16, len(interior) // 5)
+            if len(low) >= minimum_count:
+                return _dominant_rgb_array(low)
+            if len(high) >= minimum_count:
+                return _dominant_rgb_array(high)
+
+    crop_boxes = (
+        (x1 - padding, y1 - padding, x2 + padding, y1),
+        (x1 - padding, y2, x2 + padding, y2 + padding),
+        (x1 - padding, y1, x1, y2),
+        (x2, y1, x2 + padding, y2),
+    )
+    strips = []
+    for left, top, right, bottom in crop_boxes:
+        clipped = (max(0, left), max(0, top), min(width, right), min(height, bottom))
+        if clipped[2] > clipped[0] and clipped[3] > clipped[1]:
+            strips.append(np.asarray(rgb_image.crop(clipped), dtype=np.uint8).reshape(-1, 3))
+    return _dominant_rgb_array(np.concatenate(strips, axis=0)) if strips else (255, 255, 255)
+
+
+def _sample_region_fill_color(
+    image: Image.Image,
+    bbox: tuple[int, int, int, int],
+    preferred_color: Any = None,
+    *,
+    body_bbox: tuple[int, int, int, int] | None = None,
+) -> tuple[int, int, int]:
+    if np is None:
+        return _sample_region_fill_color_python(
+            image,
+            bbox,
+            preferred_color,
+            body_bbox=body_bbox,
+        )
+    return _sample_region_fill_color_vectorized(
+        image,
+        bbox,
+        preferred_color,
+        body_bbox=body_bbox,
+    )
 
 
 def _resolve_text_color(
@@ -2992,7 +3196,7 @@ def _active_mask_run_size(mask: Image.Image, *, horizontal: bool) -> int:
     return max(run_lengths, default=max(1, height if horizontal else width))
 
 
-def _estimate_manga_text_style(
+def _estimate_manga_text_style_python(
     image: Image.Image,
     text_bbox: tuple[int, int, int, int],
     fill_color: tuple[int, int, int],
@@ -3100,6 +3304,144 @@ def _estimate_manga_text_style(
         bold=bold,
         confidence=confidence,
         ink_mask=mask,
+    )
+
+
+def _lab_color_array(color: tuple[int, int, int]) -> Any:
+    color_array = np.asarray([[color]], dtype=np.float32) / 255.0
+    return cv2.cvtColor(color_array, cv2.COLOR_RGB2LAB)[0, 0]
+
+
+def _upper_median_rgb(pixels: Any) -> tuple[int, int, int]:
+    if pixels.size == 0:
+        return (24, 24, 24)
+    midpoint = len(pixels) // 2
+    partitioned = np.partition(pixels, midpoint, axis=0)
+    return tuple(int(value) for value in partitioned[midpoint])
+
+
+def _longest_active_mask_run(mask: Any, *, horizontal: bool) -> int:
+    secondary_size = mask.shape[1] if horizontal else mask.shape[0]
+    minimum_ink = max(1, int(round(secondary_size * 0.012)))
+    ink_counts = np.count_nonzero(mask, axis=1 if horizontal else 0)
+    active = ink_counts >= minimum_ink
+    if not np.any(active):
+        return max(1, mask.shape[0] if horizontal else mask.shape[1])
+    padded = np.pad(active.astype(np.int8), (1, 1))
+    transitions = np.flatnonzero(np.diff(padded))
+    return int(np.max(transitions[1::2] - transitions[::2]))
+
+
+def _estimate_manga_text_style_vectorized(
+    image: Image.Image,
+    text_bbox: tuple[int, int, int, int],
+    fill_color: tuple[int, int, int],
+    *,
+    preferred_color: Any = None,
+    direction: str = "horizontal",
+) -> MangaTextStyle:
+    clipped_bbox = _normalize_region_bbox(text_bbox, image.size) or (0, 0, 1, 1)
+    crop = image.crop(clipped_bbox).convert("RGB")
+    rgb = np.asarray(crop, dtype=np.uint8)
+    height, width = rgb.shape[:2]
+    lab = cv2.cvtColor(rgb.astype(np.float32) / 255.0, cv2.COLOR_RGB2LAB)
+    fill_lab = _lab_color_array(fill_color)
+    background_difference = np.linalg.norm(lab - fill_lab, axis=2)
+    parsed_preferred = _parse_hex_color(preferred_color)
+
+    candidate_mask = background_difference >= 24
+    if parsed_preferred is not None:
+        preferred_lab = _lab_color_array(parsed_preferred)
+        candidate_mask &= np.linalg.norm(lab - preferred_lab, axis=2) <= 56
+    candidate_pixels = rgb[candidate_mask]
+    if candidate_pixels.size:
+        buckets = candidate_pixels.astype(np.int16) // 24
+        bucket_codes = buckets[:, 0] * 121 + buckets[:, 1] * 11 + buckets[:, 2]
+        counts = np.bincount(bucket_codes, minlength=1331)
+        maximum_count = int(counts.max())
+        candidate_codes = np.flatnonzero(counts == maximum_count)
+        if len(candidate_codes) > 1:
+            distance_sums = np.bincount(
+                bucket_codes,
+                weights=background_difference[candidate_mask],
+                minlength=1331,
+            )
+            averages = distance_sums[candidate_codes] / np.maximum(1, counts[candidate_codes])
+            dominant_code = int(candidate_codes[int(np.argmax(averages))])
+        else:
+            dominant_code = int(candidate_codes[0])
+        detected_color = _upper_median_rgb(candidate_pixels[bucket_codes == dominant_code])
+    else:
+        detected_color = _resolve_text_color(fill_color, preferred_color)
+
+    if parsed_preferred is not None and _color_difference(detected_color, parsed_preferred) <= 38:
+        detected_color = parsed_preferred
+    detected_lab = _lab_color_array(detected_color)
+    color_difference = np.linalg.norm(lab - detected_lab, axis=2)
+    color_threshold = 52 if parsed_preferred is not None else 76
+    mask_array = (background_difference >= 20) & (color_difference <= color_threshold)
+    if not np.any(mask_array):
+        mask_array = background_difference >= 34
+    if np.any(mask_array):
+        proximity = cv2.dilate(mask_array.astype(np.uint8), np.ones((5, 5), dtype=np.uint8)) > 0
+        mask_array |= proximity & (background_difference >= 18)
+
+    mask_bytes = np.where(mask_array, 255, 0).astype(np.uint8)
+    mask = Image.fromarray(mask_bytes, mode="L")
+    ink_bbox = mask.getbbox() or (0, 0, max(1, width), max(1, height))
+    ink_width = max(1, ink_bbox[2] - ink_bbox[0])
+    ink_height = max(1, ink_bbox[3] - ink_bbox[1])
+    is_vertical = direction == "vertical"
+    glyph_span = _longest_active_mask_run(mask_array, horizontal=not is_vertical)
+    font_size = int(round(glyph_span * 1.30))
+    font_size = max(10, min(180, font_size, max(ink_width, ink_height) * 2))
+    ink_pixels = int(np.count_nonzero(mask_array))
+    coverage = ink_pixels / max(1, ink_width * ink_height)
+    bold = coverage >= 0.23
+
+    expanded = cv2.dilate(mask_bytes, np.ones((5, 5), dtype=np.uint8))
+    inner = cv2.dilate(mask_bytes, np.ones((3, 3), dtype=np.uint8))
+    ring_mask = (expanded > inner) & (background_difference >= 36) & (color_difference >= 42)
+    stroke_pixels = rgb[ring_mask]
+    minimum_stroke_pixels = max(10, int(round(ink_pixels * 0.08)))
+    stroke_color = _upper_median_rgb(stroke_pixels) if len(stroke_pixels) >= minimum_stroke_pixels else None
+    if stroke_color is not None:
+        _, stroke_color = _fg_bg_compare(detected_color, stroke_color)
+    stroke_width = max(1, round(font_size * MANGA_STROKE_RATIO)) if stroke_color is not None else 0
+    confidence = min(1.0, ink_pixels / max(12.0, width * height * 0.08))
+    return MangaTextStyle(
+        text_color=detected_color,
+        stroke_color=stroke_color,
+        stroke_width=stroke_width,
+        font_size=font_size,
+        bold=bold,
+        confidence=confidence,
+        ink_mask=mask,
+    )
+
+
+def _estimate_manga_text_style(
+    image: Image.Image,
+    text_bbox: tuple[int, int, int, int],
+    fill_color: tuple[int, int, int],
+    *,
+    preferred_color: Any = None,
+    direction: str = "horizontal",
+) -> MangaTextStyle:
+    if cv2 is None or np is None:
+        return _estimate_manga_text_style_python(
+            image,
+            text_bbox,
+            fill_color,
+            preferred_color=preferred_color,
+            direction=direction,
+        )
+    return _estimate_manga_text_style_vectorized(
+        image,
+        text_bbox,
+        fill_color,
+        preferred_color=preferred_color,
+        direction=direction,
     )
 
 
@@ -4070,7 +4412,7 @@ def _pixel_matches_bubble_fill(
     return distance_from_seed <= 56 or (distance_from_fill <= 78 and luminance_delta <= 36.0)
 
 
-def _extract_precise_bubble_mask(
+def _extract_precise_bubble_mask_python(
     image: Image.Image,
     bbox: tuple[int, int, int, int],
     fill_color: tuple[int, int, int],
@@ -4148,6 +4490,96 @@ def _extract_precise_bubble_mask(
     if refined_mask.getbbox() is None:
         return shape_mask
     return refined_mask
+
+
+def _extract_precise_bubble_mask_vectorized(
+    image: Image.Image,
+    bbox: tuple[int, int, int, int],
+    fill_color: tuple[int, int, int],
+    fill_shape: str,
+) -> Image.Image:
+    x1, y1, x2, y2 = bbox
+    crop = image.crop((x1, y1, x2, y2)).convert("RGB")
+    width, height = crop.size
+    if width < 4 or height < 4:
+        return _build_region_shape_mask((width, height), fill_shape)
+
+    blur_radius = max(1.2, min(4.0, min(width, height) / 34.0))
+    blurred = crop.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    pixels = np.asarray(blurred, dtype=np.int16)
+    shape_mask = _build_region_shape_mask((width, height), fill_shape)
+    shape_array = np.asarray(shape_mask, dtype=np.uint8) > 0
+
+    seeds: list[tuple[float, int, int, tuple[int, int, int]]] = []
+    for seed_x, seed_y in _seed_positions_for_region((width, height)):
+        if not shape_array[seed_y, seed_x]:
+            continue
+        seed_color = tuple(int(channel) for channel in pixels[seed_y, seed_x])
+        seeds.append((_score_bubble_seed(seed_color, fill_color), seed_x, seed_y, seed_color))
+    if not seeds:
+        return shape_mask
+    seeds.sort(key=lambda item: item[0], reverse=True)
+
+    fill = np.asarray(fill_color, dtype=np.int16)
+    fill_luminance = _color_luminance(fill_color)
+    pixel_luminance = pixels[:, :, 0] * 0.299 + pixels[:, :, 1] * 0.587 + pixels[:, :, 2] * 0.114
+    distance_from_fill = np.abs(pixels - fill).sum(axis=2)
+    saturation = pixels.max(axis=2) - pixels.min(axis=2)
+    best_component: Any | None = None
+    best_area = 0
+
+    for _, seed_x, seed_y, seed_color in seeds[:6]:
+        seed = np.asarray(seed_color, dtype=np.int16)
+        seed_luminance = _color_luminance(seed_color)
+        distance_from_seed = np.abs(pixels - seed).sum(axis=2)
+        luminance_delta = np.abs(pixel_luminance - seed_luminance)
+        if fill_luminance >= 185:
+            matches = (distance_from_seed <= 72) | (
+                (distance_from_fill <= 112)
+                & (pixel_luminance >= max(148.0, seed_luminance - 44.0))
+                & (saturation <= 100)
+            )
+        elif fill_luminance >= 135:
+            matches = (distance_from_seed <= 62) | (
+                (distance_from_fill <= 90) & (luminance_delta <= 48.0) & (saturation <= 112)
+            )
+        else:
+            matches = (distance_from_seed <= 56) | ((distance_from_fill <= 78) & (luminance_delta <= 36.0))
+        candidate = (matches & shape_array).astype(np.uint8)
+        if not candidate[seed_y, seed_x]:
+            continue
+        _, labels = cv2.connectedComponents(candidate, connectivity=4)
+        label = int(labels[seed_y, seed_x])
+        if label <= 0:
+            continue
+        component = labels == label
+        area = int(np.count_nonzero(component))
+        if area > best_area:
+            best_component = component
+            best_area = area
+
+    min_area_ratio = 0.14 if fill_shape == "ellipse" else 0.10 if fill_shape == "roundrect" else 0.08
+    min_area = max(24, int(width * height * min_area_ratio))
+    if best_component is None or best_area < min_area:
+        return shape_mask
+
+    best_mask = Image.fromarray(np.where(best_component, 255, 0).astype(np.uint8), mode="L")
+    expanded_mask = best_mask.filter(ImageFilter.MaxFilter(7)).filter(ImageFilter.MinFilter(3))
+    inner_shape_kernel = 7 if fill_shape == "ellipse" else 5
+    inner_shape_mask = shape_mask.filter(ImageFilter.MinFilter(inner_shape_kernel))
+    refined_mask = ImageChops.multiply(ImageChops.lighter(expanded_mask, inner_shape_mask), shape_mask)
+    return refined_mask if refined_mask.getbbox() is not None else shape_mask
+
+
+def _extract_precise_bubble_mask(
+    image: Image.Image,
+    bbox: tuple[int, int, int, int],
+    fill_color: tuple[int, int, int],
+    fill_shape: str,
+) -> Image.Image:
+    if cv2 is None or np is None:
+        return _extract_precise_bubble_mask_python(image, bbox, fill_color, fill_shape)
+    return _extract_precise_bubble_mask_vectorized(image, bbox, fill_color, fill_shape)
 
 
 def _resolve_mask_content_box(
@@ -4898,7 +5330,7 @@ def _region_strip_pixels(
     bbox: tuple[int, int, int, int],
     direction: str,
     step: int,
-) -> list[tuple[int, int, int]]:
+) -> Any:
     x1, y1, x2, y2 = bbox
     if direction == "left":
         crop_box = (x1, y1, min(rgb_image.size[0], x1 + step), y2)
@@ -4909,15 +5341,47 @@ def _region_strip_pixels(
     else:
         crop_box = (x1, max(0, y2 - step), x2, y2)
     crop = rgb_image.crop(crop_box)
+    if np is not None:
+        return np.asarray(crop, dtype=np.uint8).reshape(-1, 3)
     return _image_pixels(crop)
 
 
+def _bubble_fill_matches_array(
+    pixels: Any,
+    seed_color: tuple[int, int, int],
+    fill_color: tuple[int, int, int],
+) -> Any:
+    values = np.asarray(pixels, dtype=np.int16).reshape(-1, 3)
+    seed = np.asarray(seed_color, dtype=np.int16)
+    fill = np.asarray(fill_color, dtype=np.int16)
+    fill_luminance = _color_luminance(fill_color)
+    seed_luminance = _color_luminance(seed_color)
+    pixel_luminance = values[:, 0] * 0.299 + values[:, 1] * 0.587 + values[:, 2] * 0.114
+    distance_from_fill = np.abs(values - fill).sum(axis=1)
+    distance_from_seed = np.abs(values - seed).sum(axis=1)
+    luminance_delta = np.abs(pixel_luminance - seed_luminance)
+    saturation = values.max(axis=1) - values.min(axis=1)
+    if fill_luminance >= 185:
+        return (distance_from_seed <= 72) | (
+            (distance_from_fill <= 112)
+            & (pixel_luminance >= max(148.0, seed_luminance - 44.0))
+            & (saturation <= 100)
+        )
+    if fill_luminance >= 135:
+        return (distance_from_seed <= 62) | (
+            (distance_from_fill <= 90) & (luminance_delta <= 48.0) & (saturation <= 112)
+        )
+    return (distance_from_seed <= 56) | ((distance_from_fill <= 78) & (luminance_delta <= 36.0))
+
+
 def _strip_matches_fill_color(
-    pixels: list[tuple[int, int, int]],
+    pixels: Any,
     fill_color: tuple[int, int, int],
 ) -> bool:
-    if not pixels:
+    if len(pixels) == 0:
         return False
+    if np is not None:
+        return float(np.mean(_bubble_fill_matches_array(pixels, fill_color, fill_color))) >= 0.52
     matched = sum(1 for pixel in pixels if _pixel_matches_bubble_fill(pixel, fill_color, fill_color))
     return matched / len(pixels) >= 0.52
 
@@ -4927,6 +5391,7 @@ def _estimate_external_ocr_body_bbox(
     text_bbox: tuple[int, int, int, int],
     direction: str,
     line_count: int,
+    fill_color: tuple[int, int, int] | None = None,
 ) -> tuple[int, int, int, int]:
     body_bbox = _expand_region_bbox(
         text_bbox,
@@ -4935,7 +5400,7 @@ def _estimate_external_ocr_body_bbox(
         expand_y_ratio=0.10 if direction == "vertical" else 0.14,
         min_expand=4,
     )
-    fill_color = _estimate_external_ocr_fill_color(image, text_bbox, direction)
+    resolved_fill_color = fill_color or _estimate_external_ocr_fill_color(image, text_bbox, direction)
     rgb_image = image.convert("RGB")
     width_limit, height_limit = image.size
     text_width = max(1, text_bbox[2] - text_bbox[0])
@@ -4958,7 +5423,7 @@ def _estimate_external_ocr_body_bbox(
         if x1 > 0:
             candidate = (max(0, x1 - step_x), y1, x2, y2)
             if candidate[2] - candidate[0] <= max_width and _strip_matches_fill_color(
-                _region_strip_pixels(rgb_image, candidate, "left", step_x), fill_color
+                _region_strip_pixels(rgb_image, candidate, "left", step_x), resolved_fill_color
             ):
                 body_bbox = candidate
                 expanded = True
@@ -4966,7 +5431,7 @@ def _estimate_external_ocr_body_bbox(
         if x2 < width_limit:
             candidate = (x1, y1, min(width_limit, x2 + step_x), y2)
             if candidate[2] - candidate[0] <= max_width and _strip_matches_fill_color(
-                _region_strip_pixels(rgb_image, candidate, "right", step_x), fill_color
+                _region_strip_pixels(rgb_image, candidate, "right", step_x), resolved_fill_color
             ):
                 body_bbox = candidate
                 expanded = True
@@ -4974,7 +5439,7 @@ def _estimate_external_ocr_body_bbox(
         if y1 > 0:
             candidate = (x1, max(0, y1 - step_y), x2, y2)
             if candidate[3] - candidate[1] <= max_height and _strip_matches_fill_color(
-                _region_strip_pixels(rgb_image, candidate, "top", step_y), fill_color
+                _region_strip_pixels(rgb_image, candidate, "top", step_y), resolved_fill_color
             ):
                 body_bbox = candidate
                 expanded = True
@@ -4982,7 +5447,7 @@ def _estimate_external_ocr_body_bbox(
         if y2 < height_limit:
             candidate = (x1, y1, x2, min(height_limit, y2 + step_y))
             if candidate[3] - candidate[1] <= max_height and _strip_matches_fill_color(
-                _region_strip_pixels(rgb_image, candidate, "bottom", step_y), fill_color
+                _region_strip_pixels(rgb_image, candidate, "bottom", step_y), resolved_fill_color
             ):
                 body_bbox = candidate
                 expanded = True
@@ -5013,14 +5478,21 @@ def _infer_external_ocr_shape(
         (0, height - patch, patch, height),
         (width - patch, height - patch, width, height),
     ]
-    matches = 0
-    total = 0
+    corner_pixels: list[Any] = []
     for left, top, right, bottom in corner_boxes:
-        pixels = _image_pixels(crop.crop((left, top, right, bottom)))
-        total += len(pixels)
-        matches += sum(1 for pixel in pixels if _pixel_matches_bubble_fill(pixel, fill_color, fill_color))
-
-    ratio = matches / max(total, 1)
+        corner = crop.crop((left, top, right, bottom))
+        if np is not None:
+            corner_pixels.append(np.asarray(corner, dtype=np.uint8).reshape(-1, 3))
+        else:
+            corner_pixels.extend(_image_pixels(corner))
+    if np is not None:
+        pixels = np.concatenate(corner_pixels, axis=0)
+        ratio = float(np.mean(_bubble_fill_matches_array(pixels, fill_color, fill_color)))
+    else:
+        matches = sum(
+            1 for pixel in corner_pixels if _pixel_matches_bubble_fill(pixel, fill_color, fill_color)
+        )
+        ratio = matches / max(len(corner_pixels), 1)
     if ratio <= 0.28:
         return "ellipse"
     if ratio <= 0.62:
@@ -5039,7 +5511,13 @@ def _build_external_ocr_region(
 ) -> dict[str, Any]:
     resolved_direction = direction or _external_ocr_inferred_direction(bbox)
     fill_color = _estimate_external_ocr_fill_color(image, bbox, resolved_direction)
-    body_bbox = _estimate_external_ocr_body_bbox(image, bbox, resolved_direction, line_count)
+    body_bbox = _estimate_external_ocr_body_bbox(
+        image,
+        bbox,
+        resolved_direction,
+        line_count,
+        fill_color=fill_color,
+    )
     shape = _infer_external_ocr_shape(image, body_bbox, fill_color, resolved_direction)
     if shape == "rect" and resolved_direction == "horizontal" and _color_luminance(fill_color) < 228:
         compact_body = _expand_region_bbox(
@@ -5396,11 +5874,16 @@ def _run_rapid_ocr_sync(image_path: Path) -> Any:
                     params={
                         "Global.log_level": "critical",
                         "Global.text_score": 0.35,
+                        "Det.limit_side_len": RAPID_OCR_DETECTION_SIDE,
+                        "Det.limit_type": "min",
                     }
                 )
             except Exception as error:
                 raise RuntimeError(f"RapidOCR 初始化失败：{error}") from error
-        return _RAPID_OCR_ENGINE(image_path)
+        # Manga pages commonly contain vertical text but RapidOCR's classifier only
+        # resolves 0/180-degree rotations. Skipping it preserves recognition quality
+        # while avoiding an unnecessary inference pass for every detected line.
+        return _RAPID_OCR_ENGINE(image_path, use_cls=False)
 
 
 async def _request_rapid_ocr_regions_payload(
@@ -5486,21 +5969,33 @@ async def _request_local_manga_ocr_regions_payload(
             image_size=image_size,
             page_number=page_number,
         )
-    rapid_result, windows_result = await asyncio.gather(
-        _request_rapid_ocr_regions_payload(
+
+    try:
+        rapid_result: MangaOcrPagePayload | Exception = await _request_rapid_ocr_regions_payload(
             image_path=image_path,
             image_size=image_size,
             page_number=page_number,
-        ),
-        _request_windows_ocr_regions_payload(
+        )
+    except Exception as error:
+        rapid_result = error
+
+    if isinstance(rapid_result, MangaOcrPagePayload) and rapid_result.regions:
+        rapid_diagnostics = dict(rapid_result.diagnostics or {})
+        average_confidence = float(rapid_diagnostics.get("average_confidence") or 0.0)
+        if average_confidence >= 0.72:
+            rapid_diagnostics["windows_ocr_skipped"] = "rapidocr_high_confidence"
+            return rapid_result.model_copy(update={"diagnostics": rapid_diagnostics})
+
+    try:
+        windows_result: MangaOcrPagePayload | Exception = await _request_windows_ocr_regions_payload(
             settings=settings,
             image_path=image_path,
             image_size=image_size,
             timeout_seconds=timeout_seconds,
             page_number=page_number,
-        ),
-        return_exceptions=True,
-    )
+        )
+    except Exception as error:
+        windows_result = error
     rapid_payload = rapid_result if isinstance(rapid_result, MangaOcrPagePayload) else None
     windows_payload = windows_result if isinstance(windows_result, MangaOcrPagePayload) else None
     if rapid_payload is not None and windows_payload is not None:
@@ -6566,6 +7061,8 @@ async def _translate_manga_pages_with_command_detailed(
     image_files: list[str],
     book_dir: Path,
     log_callback: Callable[[str, str], Awaitable[None] | None] | None = None,
+    progress_callback: Callable[[int, int], Awaitable[None] | None] | None = None,
+    checkpoint_path: Path | None = None,
 ) -> tuple[list[str], list[str], list[MangaTranslatedPagePayload]]:
     if not image_files:
         raise ValueError("漫画章节没有可翻译的页面图片")
@@ -6576,6 +7073,18 @@ async def _translate_manga_pages_with_command_detailed(
     translated_image_files: list[str] = []
     translated_pages: list[MangaTranslatedPagePayload] = []
     total_pages = len(image_files)
+    checkpoint_pages = (
+        _load_manga_translation_checkpoint(
+            checkpoint_path,
+            book_dir=book_dir,
+            base_url=base_url,
+            model=image_model,
+            target_language=resolved_target_language,
+            image_files=image_files,
+        )
+        if checkpoint_path is not None
+        else []
+    )
 
     for page_number, asset_path in enumerate(image_files, start=1):
         page_started_at = time.perf_counter()
@@ -6586,9 +7095,25 @@ async def _translate_manga_pages_with_command_detailed(
         translated_asset_path = build_translated_image_asset_path(asset_path)
         translated_image_path = (book_dir / translated_asset_path).resolve()
         translated_image_path.parent.mkdir(parents=True, exist_ok=True)
-        translated_image_path.unlink(missing_ok=True)
 
         log_prefix = f"[漫画译图][第 {page_number}/{total_pages} 页] "
+        if page_number <= len(checkpoint_pages):
+            checkpoint_page = checkpoint_pages[page_number - 1]
+            page_translations.append(checkpoint_page.page_translation)
+            translated_image_files.append(translated_asset_path)
+            translated_pages.append(checkpoint_page)
+            await _notify_task_log(
+                log_callback,
+                "info",
+                f"{log_prefix}已从断点恢复，跳过 OCR、模型调用与图片回填",
+            )
+            if progress_callback is not None:
+                progress_result = progress_callback(page_number, total_pages)
+                if progress_result is not None:
+                    await progress_result
+            continue
+
+        translated_image_path.unlink(missing_ok=True)
         await _notify_task_log(
             log_callback,
             "info",
@@ -6639,6 +7164,17 @@ async def _translate_manga_pages_with_command_detailed(
         page_translations.append(page_translation)
         translated_image_files.append(translated_asset_path)
         translated_pages.append(resolved_page_payload)
+        if checkpoint_path is not None:
+            await asyncio.to_thread(
+                _write_manga_translation_checkpoint,
+                checkpoint_path,
+                book_dir=book_dir,
+                base_url=base_url,
+                model=image_model,
+                target_language=resolved_target_language,
+                image_files=image_files,
+                pages=translated_pages,
+            )
         await _notify_task_log(
             log_callback,
             "info",
@@ -6649,6 +7185,10 @@ async def _translate_manga_pages_with_command_detailed(
             "info",
             f"{log_prefix}处理完成，输出文件：{translated_asset_path}",
         )
+        if progress_callback is not None:
+            progress_result = progress_callback(page_number, total_pages)
+            if progress_result is not None:
+                await progress_result
 
     return page_translations, translated_image_files, translated_pages
 

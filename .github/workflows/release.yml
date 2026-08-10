@@ -88,13 +88,28 @@ jobs:
           $tag = '${{ github.ref_name }}'
           $archive = '${{ steps.package.outputs.archive }}'
           $checksum = '${{ steps.package.outputs.checksum }}'
+          $notesFile = Join-Path $env:GITHUB_WORKSPACE "docs/releases/$tag.md"
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
           $releaseExists = $LASTEXITCODE -eq 0
           if ($releaseExists) {
             gh release upload $tag $archive $checksum --clobber --repo $env:GITHUB_REPOSITORY
+            if ((Test-Path -LiteralPath $notesFile) -and $LASTEXITCODE -eq 0) {
+              gh release edit $tag --notes-file $notesFile --title "青卷 $tag" --repo $env:GITHUB_REPOSITORY
+            }
           }
           else {
-            gh release create $tag $archive $checksum --verify-tag --generate-notes --latest --title "青卷 $tag" --repo $env:GITHUB_REPOSITORY
+            $releaseArguments = @(
+              $tag, $archive, $checksum,
+              '--verify-tag', '--latest', '--title', "青卷 $tag",
+              '--repo', $env:GITHUB_REPOSITORY
+            )
+            if (Test-Path -LiteralPath $notesFile) {
+              $releaseArguments += @('--notes-file', $notesFile)
+            }
+            else {
+              $releaseArguments += '--generate-notes'
+            }
+            gh release create @releaseArguments
           }
           if ($LASTEXITCODE -ne 0) {
             throw "GitHub release publishing failed with exit code $LASTEXITCODE."

@@ -6,93 +6,101 @@
 <h1 align="center">青卷 QingJuan</h1>
 
 <p align="center">
-  面向 Windows 的小说与漫画导入、下载、翻译和阅读工具
+  Windows 小说与漫画下载、翻译和阅读工具
 </p>
 
-青卷是一个仅适配 Windows 电脑端的开源应用。客户端使用 Flutter 与
-[`fluent_ui`](https://pub.dev/packages/fluent_ui)，遵循
-[Microsoft Fluent UI](https://github.com/microsoft/fluentui) 和 Windows 11 的简约设计语言；
-服务端使用 Python、FastAPI 与 SQLite。桌面应用既可以自动探测并启动本机后端，也可以通过
-HTTPS 连接部署在 Linux 服务器上的单用户青卷后端；退出时只关闭由自己创建的本机后端进程。
+青卷支持 Windows 本机使用，也支持把后端部署到 Linux 服务器，再由 Windows 客户端远程连接。
+
 ![青卷应用截图](./assets/应用截图.png)
-> 当前处于持续开发阶段。漫画译图、部分站点适配与第三方书源可能受目标站点变化影响，请勿将实验功能用于不可恢复的重要数据。
+
+> 项目仍在持续开发。网站规则变化时，部分下载功能可能暂时失效。请只保存你有权访问的内容。
 
 ## 功能
 
-- 从受支持的小说或漫画网址预览并导入作品
-- 番茄长篇小说可选择“边看边下”或“全部下载”；边看边下会先快速导入目录，阅读时获取当前章并在后台预取后续章节
-- 链接解析与导入支持后台运行、弹窗收起恢复和实时进度日志
-- 导入 Legado / 阅读 App JSON 书源，搜索并管理启用状态
-- 导入本地 `TXT` / `TEXT`、Word `DOCX`、`EPUB` 小说并自动拆章，也可将 `PDF` 导入为漫画
-- 下载章节、创建翻译任务、查看进度与失败重试
-- 单章、所选章节或全部章节可导出为 `TXT` / `TEXT` / `DOCX` / `EPUB`；漫画可导出为 `PDF` 或按章节、`001`、`002`……编号的图片压缩包
-- 阅读原文或译文，支持章节跳转、字号调整和阅读进度保存
-- 在小说详情页使用 Windows TTS 听书，支持自然叙述、温柔陪伴、沉浸小说、活力对白和安静夜读风格，以及连续播章、暂停、语速和音量调节
-- 配置单一 OpenAI 兼容翻译模型，启用状态会被下载与翻译任务严格遵守
-- 默认使用本地 RapidOCR 与 Windows OCR 检测漫画文字，纯文本模型也可翻译；支持图片输入的模型可作为可选增强
-- 亮色、深色和跟随系统主题
+- 从常见小说、漫画网站导入作品
+- 导入本地 `TXT`、`DOCX`、`EPUB` 和 `PDF`
+- 下载章节并查看任务进度
+- 使用 OpenAI 兼容接口翻译小说和漫画
+- 导出 `TXT`、`DOCX`、`EPUB`、`PDF` 或图片压缩包
+- 阅读原文和译文，保存阅读进度
+- 使用 Windows TTS 听书
+- 支持亮色、深色和跟随系统主题
 
-内置站点适配包括番茄小说（含网页会话已获权且能校验为完整正文的受限章节）、Linovelib / 哔哩轻小说、Kakuyomu、Syosetu、Novel18、Pixiv 小说与插画漫画、
-Pixiv Comic、Hameln、Alphapolis、18Comic、Bika，以及 Webtoon、漫画柜、漫画呗、拷贝漫画、动漫之家等常见网页阅读器。
-网页阅读器使用通用规则尽力解析，站点结构、登录要求或访问策略变化都可能导致暂时不可用；请仅下载你有权访问和保存的内容。
+目前支持番茄小说、哔哩轻小说、Kakuyomu、Syosetu、Novel18、Pixiv、Webtoon、拷贝漫画、动漫之家、
+18Comic、Bika 等站点，也支持导入 Legado / 阅读 App JSON 书源。
 
-## 开发文档
+## 使用方法
 
-环境配置、源码调试、项目架构、UI 规范、测试门禁和 Windows 发布流程统一维护在
-[青卷开发规范](./docs/development/README.md) 中，README 不再重复开发细节。
+### 便捷版
 
-## 数据与隐私
+适合直接在一台 Windows 电脑上使用：
 
-- 开发模式默认数据目录：`python-backend/data/`
-- Windows 打包后端默认数据目录：`backend/data/`
-- Linux 原生服务默认将持久化数据保存到 `/var/lib/qingjuan`
-- 可在启动前设置 `QINGJUAN_DATA_DIR` 覆盖位置
-- 远程后端必须通过私有网络或 HTTPS 访问，并为业务 API 启用 Bearer Token 认证
-- 翻译 API 密钥保存在后端 SQLite 设置中，连接 Token 保存在 Windows 安全凭据存储中；两者都不应提交、截图或分享
-- 不要提交数据库、下载内容、账号、Cookie、密钥、日志或受版权保护的正文
-- 仅导入可信书源；网络内容和第三方脚本均应视为不可信输入
+1. 前往 [Releases](https://github.com/Tavre/QingJuan/releases/latest) 下载 Windows ZIP。
+2. 完整解压 ZIP，不要单独移动或删除其中的文件。
+3. 双击 `qingjuan.exe`。
 
-## 参与贡献
+应用默认使用“本机后端”，不需要另外安装 Python。
 
-欢迎通过 [Issue](https://github.com/Tavre/QingJuan/issues) 报告问题或提出建议，
-也欢迎阅读[开发规范](./docs/development/README.md)后提交 Pull Request。
-提交前请搜索重复问题，并移除密钥、数据库、账号和个人内容。
+### Linux 后端 + Windows 客户端
 
-## 交流与支持
+先在 Linux 服务器执行：
 
-- GitHub 仓库：[Tavre/QingJuan](https://github.com/Tavre/QingJuan)
-- QQ 讨论群：`1074882763`
+```bash
+sudo mkdir -p /opt/qingjuan
+sudo git clone https://github.com/Tavre/QingJuan.git /opt/qingjuan/app
+cd /opt/qingjuan/app
+sudo bash deploy/linux/install.sh --url http://10.0.0.20:19453 --bind 0.0.0.0
+sudo qingjuan-info
+```
 
-应用内可从左侧菜单进入“关于”页面查看并复制以上信息。
+将示例中的 `10.0.0.20` 改成 Windows 电脑能够访问的服务器私有 IP。安装完成后，
+`sudo qingjuan-info` 会显示 FastAPI 地址和连接 Token。
 
-安全问题不要在公开 Issue 中披露利用细节或用户数据。请使用 GitHub 仓库的
-**Security → Report a vulnerability** 私密报告入口，并附受影响版本、最小复现、影响范围和建议方案。
+然后在 Windows 应用中：
 
-## 感谢贡献者
+1. 打开 **设置 → 后端连接**。
+2. 将“连接模式”改为 **Linux 远程后端**。
+3. 填写服务器显示的“FastAPI 地址”和“连接 Token”。
+4. 点击 **保存设置**。
 
-感谢每一位参与代码、文档、测试、问题反馈和评审的贡献者。
+FastAPI 地址不要添加 `/api/v1`。公网访问必须使用 HTTPS，不要直接暴露公网 HTTP 端口。
 
-<p>
-  <a href="https://github.com/Tavre" title="@Tavre">
-    <img src="https://avatars.githubusercontent.com/u/137062985?s=96&amp;v=4" width="72" height="72" alt="@Tavre 的 GitHub 头像" />
-  </a>
-</p>
+常用服务器命令：
 
-<sub><b><a href="https://github.com/Tavre">@Tavre</a></b> · 项目发起者与维护者</sub>
+```bash
+# 查看状态
+sudo systemctl status qingjuan-backend --no-pager
 
-查看 GitHub 统计的[全部贡献者](https://github.com/Tavre/QingJuan/graphs/contributors)。
+# 查看日志
+sudo journalctl -u qingjuan-backend -f
 
-## 许可证
+# 更新后端
+sudo bash /opt/qingjuan/app/deploy/linux/update.sh
+```
 
-本项目由 `Tavre` 发起，使用 [GNU General Public License v3.0](./LICENSE) 发布。
-使用、修改和分发时须遵守 GPL v3 条款。
+## 数据与安全
 
-## 致谢
+- Windows 数据保存在应用目录的 `backend/data/`
+- Linux 数据保存在 `/var/lib/qingjuan`
+- 更新或迁移前请先备份数据目录
+- 不要公开连接 Token、翻译 API 密钥、Cookie、数据库和下载内容
+- 远程连接建议使用局域网、Tailscale / WireGuard 或 HTTPS
 
-- Flutter 与 Dart
-- `fluent_ui`
-- FastAPI
-- [LINUX DO](https://linux.do/)
-- [RapidOCR](https://github.com/RapidAI/RapidOCR)
-- [fanqie-assistant](https://github.com/naiyQAQ/fanqie-assistant)
-- 为抓取、解析、图片处理和测试提供基础能力的开源项目
+## 开发与贡献
+
+开发环境、项目结构、测试和发布说明见[开发文档](./docs/development/README.md)。
+
+欢迎提交 [Issue](https://github.com/Tavre/QingJuan/issues) 或 Pull Request。提交代码前请移除密钥、账号和个人数据。
+
+## 交流
+
+- GitHub：[Tavre/QingJuan](https://github.com/Tavre/QingJuan)
+- QQ 群：`1074882763`
+- 安全问题请使用 GitHub 的 **Security → Report a vulnerability** 私密报告
+
+## 许可与致谢
+
+本项目使用 [GNU GPL v3](./LICENSE) 许可证。
+
+感谢[所有贡献者](https://github.com/Tavre/QingJuan/graphs/contributors)，以及 Flutter、FastAPI、RapidOCR、
+`fluent_ui`、[fanqie-assistant](https://github.com/naiyQAQ/fanqie-assistant) 等开源项目。

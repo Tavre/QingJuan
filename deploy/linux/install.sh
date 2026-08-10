@@ -11,22 +11,24 @@ readonly SERVICE_NAME="qingjuan-backend"
 readonly SERVICE_USER="qingjuan"
 readonly SERVICE_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 readonly INFO_COMMAND="/usr/local/sbin/qingjuan-info"
+readonly UNINSTALL_COMMAND="/usr/local/sbin/qingjuan-uninstall"
 
 public_url=""
 bind_host="127.0.0.1"
+bind_explicit="false"
 port="19453"
 rotate_token="false"
 install_packages="true"
 
 usage() {
   cat <<'EOF'
-用法：sudo bash deploy/linux/install.sh --url <客户端地址> [选项]
+用法：sudo bash deploy/linux/install.sh [选项]
 
-必需：
-  --url URL           Windows 客户端使用的 FastAPI 根地址，不含 /api/v1
+默认自动检测服务器私有 IPv4，并生成 Windows 客户端连接地址。
 
 选项：
-  --bind HOST         Uvicorn 监听地址，默认 127.0.0.1
+  --url URL           手动指定 FastAPI 根地址，不含 /api/v1
+  --bind HOST         手动指定监听地址
   --port PORT         监听端口，默认 19453
   --rotate-token      重新生成连接 Token
   --skip-packages     不使用 apt 安装系统依赖
@@ -50,6 +52,7 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       bind_host="${2:-}"
+      bind_explicit="true"
       shift 2
       ;;
     --port)
@@ -83,11 +86,6 @@ done
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   printf '安装脚本必须使用 sudo 或 root 运行。\n' >&2
   exit 1
-fi
-if [[ -z "$public_url" ]]; then
-  printf '必须通过 --url 指定 Windows 客户端连接地址。\n' >&2
-  usage >&2
-  exit 2
 fi
 if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
   printf '端口必须是 1 到 65535 之间的整数。\n' >&2
@@ -127,6 +125,67 @@ find_browser() {
   return 1
 }
 
+detect_private_ipv4() {
+  python3 - <<'PY'
+import ipaddress
+import shutil
+import socket
+import subprocess
+
+private_networks = tuple(
+    ipaddress.ip_network(value)
+    for value in (
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+    )
+)
+candidates = []
+
+if shutil.which("tailscale"):
+    try:
+        candidates.extend(
+            subprocess.check_output(
+                ["tailscale", "ip", "-4"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).split()
+        )
+    except (OSError, subprocess.CalledProcessError):
+        pass
+
+try:
+    candidates.extend(
+        subprocess.check_output(
+            ["hostname", "-I"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).split()
+    )
+except (OSError, subprocess.CalledProcessError):
+    pass
+
+try:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
+        connection.connect(("1.1.1.1", 80))
+        candidates.append(connection.getsockname()[0])
+except OSError:
+    pass
+
+for value in candidates:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        continue
+    if address.version == 4 and any(address in network for network in private_networks):
+        print(address)
+        raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
 install_system_packages
 
 for command_name in python3 git curl systemctl; do
@@ -135,6 +194,27 @@ for command_name in python3 git curl systemctl; do
     exit 1
   fi
 done
+
+python3 - <<'PY'
+import sys
+if sys.version_info < (3, 11):
+    raise SystemExit("青卷 Linux 后端要求 Python 3.11 或更高版本")
+PY
+
+if [[ -z "$public_url" ]]; then
+  detected_ip="$(detect_private_ipv4 || true)"
+  if [[ -z "$detected_ip" ]]; then
+    printf '%s\n' \
+      '未检测到可供客户端访问的私有 IPv4。' \
+      '请先加入局域网、Tailscale 或 WireGuard，或使用 --url https://域名。' >&2
+    exit 1
+  fi
+  public_url="http://${detected_ip}:${port}"
+  if [[ "$bind_explicit" != "true" ]]; then
+    bind_host="0.0.0.0"
+  fi
+  printf '已自动检测服务器地址：%s\n' "$public_url"
+fi
 
 python3 - "$public_url" "$bind_host" <<'PY'
 import ipaddress
@@ -196,12 +276,6 @@ except ValueError:
         raise SystemExit("--bind 必须是 IP 地址或 localhost")
 PY
 
-python3 - <<'PY'
-import sys
-if sys.version_info < (3, 11):
-    raise SystemExit("青卷 Linux 后端要求 Python 3.11 或更高版本")
-PY
-
 browser_path="$(find_browser || true)"
 if [[ -z "$browser_path" ]]; then
   printf '未找到 Chromium/Chrome，请安装后重试。\n' >&2
@@ -258,6 +332,7 @@ chmod 0600 "$CONFIG_DIR/backend.env" "$client_file"
 chown root:root "$CONFIG_DIR/backend.env" "$client_file"
 install -o root -g root -m 0644 "$REPO_DIR/deploy/linux/qingjuan-backend.service" "$SERVICE_UNIT"
 install -o root -g root -m 0755 "$REPO_DIR/deploy/linux/qingjuan-info.sh" "$INFO_COMMAND"
+install -o root -g root -m 0755 "$REPO_DIR/deploy/linux/uninstall.sh" "$UNINSTALL_COMMAND"
 
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"

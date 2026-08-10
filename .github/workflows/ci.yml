@@ -66,11 +66,19 @@ jobs:
           grep -q '^ExecStart=/opt/qingjuan/venv/bin/python -m app.main serve' \
             deploy/linux/qingjuan-backend.service
           grep -q '^User=qingjuan$' deploy/linux/qingjuan-backend.service
+          grep -Fq 'chown -R root:"$SERVICE_USER" "$VENV_DIR"' deploy/linux/install.sh
+          grep -Fq 'chmod -R u=rwX,g=rX,o= "$VENV_DIR"' deploy/linux/install.sh
+          grep -Fq 'chown -R root:"$SERVICE_USER" "$VENV_DIR"' deploy/linux/update.sh
+          grep -Fq 'chmod -R u=rwX,g=rX,o= "$VENV_DIR"' deploy/linux/update.sh
           sudo useradd --system --no-create-home qingjuan
           sudo install -d /opt/qingjuan/venv/bin /opt/qingjuan/app/python-backend
           sudo install -d -o qingjuan -g qingjuan /var/lib/qingjuan
           sudo install -d -m 0700 /etc/qingjuan
           sudo ln -s "$(command -v python)" /opt/qingjuan/venv/bin/python
+          sudo chmod 0700 /opt/qingjuan/venv /opt/qingjuan/venv/bin
+          sudo chown -R root:qingjuan /opt/qingjuan/venv
+          sudo chmod -R u=rwX,g=rX,o= /opt/qingjuan/venv
+          sudo -u qingjuan test -x /opt/qingjuan/venv/bin/python
           printf '%s\n' \
             'QINGJUAN_BIND_HOST=127.0.0.1' \
             'QINGJUAN_PORT=19453' \

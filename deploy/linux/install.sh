@@ -298,6 +298,9 @@ fi
 "$VENV_DIR/bin/python" -m pip install --upgrade pip
 "$VENV_DIR/bin/python" -m pip install -r "$REPO_DIR/python-backend/requirements.txt"
 "$VENV_DIR/bin/python" -m pip check
+# umask 077 protects generated secrets, but the unprivileged service must be able to read the venv.
+chown -R root:"$SERVICE_USER" "$VENV_DIR"
+chmod -R u=rwX,g=rX,o= "$VENV_DIR"
 
 client_file="$CONFIG_DIR/client.env"
 connection_token=""

@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/api/api_client.dart';
 import '../core/backend/backend_process_manager.dart';
+import '../core/backend/connection_secret_store.dart';
 import '../features/library/library_controller.dart';
 import '../features/settings/settings_controller.dart';
 import '../features/shell/app_shell.dart';
@@ -28,9 +29,21 @@ class QingJuanApp extends StatefulWidget {
 
   static Future<QingJuanApp> bootstrap() async {
     final preferences = await SharedPreferences.getInstance();
-    final appState = AppState(preferences);
-    final api = ApiClient(() => appState.backendUrl);
-    final backend = BackendProcessManager(api);
+    const secretStore = WindowsConnectionSecretStore();
+    final token = await secretStore.readToken() ?? '';
+    final appState = AppState(
+      preferences,
+      secretStore: secretStore,
+      initialBackendToken: token,
+    );
+    final api = ApiClient(
+      () => appState.backendUrl,
+      token: () => appState.backendToken,
+    );
+    final backend = BackendProcessManager(
+      api,
+      isRemote: () => appState.connectionMode == BackendConnectionMode.remote,
+    );
     return QingJuanApp._(
       appState: appState,
       api: api,

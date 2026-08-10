@@ -224,9 +224,12 @@ _HOST_LAST_REQUEST_AT: dict[str, float] = {}
 _FANQIE_APP_CLIENTS: weakref.WeakKeyDictionary[httpx.AsyncClient, FanqieAppClient] = (
     weakref.WeakKeyDictionary()
 )
-EDGE_BROWSER_PATHS = tuple(
+BROWSER_EXECUTABLE_PATHS = tuple(
     path
     for path in (
+        Path(os.environ["QINGJUAN_BROWSER_EXECUTABLE"]).expanduser()
+        if os.environ.get("QINGJUAN_BROWSER_EXECUTABLE")
+        else None,
         Path(os.environ.get("PROGRAMFILES(X86)", "")) / "Microsoft/Edge/Application/msedge.exe"
         if os.environ.get("PROGRAMFILES(X86)")
         else None,
@@ -235,6 +238,9 @@ EDGE_BROWSER_PATHS = tuple(
         else None,
         Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"),
         Path("C:/Program Files/Microsoft/Edge/Application/msedge.exe"),
+        Path("/usr/bin/chromium"),
+        Path("/usr/bin/chromium-browser"),
+        Path("/usr/bin/google-chrome"),
     )
     if path is not None
 )
@@ -5474,6 +5480,12 @@ async def _request_local_manga_ocr_regions_payload(
     timeout_seconds: int,
     page_number: int,
 ) -> MangaOcrPagePayload:
+    if os.name != "nt":
+        return await _request_rapid_ocr_regions_payload(
+            image_path=image_path,
+            image_size=image_size,
+            page_number=page_number,
+        )
     rapid_result, windows_result = await asyncio.gather(
         _request_rapid_ocr_regions_payload(
             image_path=image_path,
@@ -6911,11 +6923,20 @@ async def _fetch_site_html(url: str, referer: str | None = None) -> tuple[str, s
     _raise_special_site_error(url, last_error)
 
 
-def _find_edge_executable() -> Path | None:
-    for candidate in EDGE_BROWSER_PATHS:
+def _find_browser_executable() -> Path | None:
+    for candidate in BROWSER_EXECUTABLE_PATHS:
         if candidate.exists():
             return candidate
+    for name in ("msedge", "msedge.exe", "chromium", "chromium-browser", "google-chrome"):
+        resolved = shutil.which(name)
+        if resolved:
+            return Path(resolved)
     return None
+
+
+def _find_edge_executable() -> Path | None:
+    """向后兼容旧测试与调用；实际可返回 Edge、Chrome 或 Chromium。"""
+    return _find_browser_executable()
 
 
 def _reserve_local_port() -> int:
@@ -7002,16 +7023,16 @@ async def _fetch_with_edge_cdp(
     timeout_seconds: float = EDGE_CDP_PAGE_TIMEOUT_SECONDS,
     blocked_message: str | None = None,
 ) -> EdgeSnapshot:
-    edge_path = _find_edge_executable()
-    if edge_path is None:
-        raise ValueError("未找到 Microsoft Edge，无法启用浏览器会话兜底抓取。")
+    browser_path = _find_browser_executable()
+    if browser_path is None:
+        raise ValueError("未找到 Edge 或 Chromium，无法启用浏览器会话兜底抓取。")
     if websockets is None:
         raise ValueError("当前环境缺少 websockets 依赖，无法启用浏览器会话兜底抓取。")
 
     port = _reserve_local_port()
     user_data_dir = Path(tempfile.mkdtemp(prefix="qingjuan-edge-cdp-"))
     launch_args = [
-        str(edge_path),
+        str(browser_path),
         f"--remote-debugging-port={port}",
         "--disable-gpu",
         "--disable-extensions",
@@ -7020,10 +7041,12 @@ async def _fetch_with_edge_cdp(
         f"--user-data-dir={user_data_dir}",
         "about:blank",
     ]
-    if headless:
+    if headless or os.name != "nt":
         launch_args.insert(2, "--headless=new")
     else:
         launch_args.insert(2, "--start-minimized")
+    if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0:
+        launch_args.insert(2, "--no-sandbox")
 
     process = subprocess.Popen(launch_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:

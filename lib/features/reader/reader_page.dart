@@ -108,7 +108,12 @@ class _ReaderPageState extends State<ReaderPage> {
   void _evictChapterImages(ChapterContent? content) {
     if (content == null) return;
     for (final source in content.imageSources) {
-      unawaited(NetworkImage(source).evict().then<void>((_) {}));
+      unawaited(
+        NetworkImage(
+          source,
+          headers: _scope.api.headersForUrl(source),
+        ).evict().then<void>((_) {}),
+      );
     }
   }
 
@@ -147,6 +152,8 @@ class _ReaderPageState extends State<ReaderPage> {
             // 漫画页按原始分辨率解码；ListView 仅创建视口附近的页面。
             Image.network(
               content.imageSources[contentIndex],
+              headers:
+                  _scope.api.headersForUrl(content.imageSources[contentIndex]),
               width: double.infinity,
               fit: BoxFit.contain,
               filterQuality: FilterQuality.medium,

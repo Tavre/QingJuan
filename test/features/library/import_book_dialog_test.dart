@@ -23,7 +23,8 @@ void main() {
       (tester) async {
     final submitted = <Map<String, dynamic>>[];
     final client = MockClient((request) async {
-      if (request.method == 'POST' && request.url.path == '/books/link-jobs') {
+      if (request.method == 'POST' &&
+          request.url.path == '/api/v1/books/link-jobs') {
         submitted.add(
           Map<String, dynamic>.from(
             jsonDecode(request.body) as Map<String, dynamic>,
@@ -78,11 +79,12 @@ void main() {
   testWidgets('link parsing dialog can collapse and reopen with live logs',
       (tester) async {
     final client = MockClient((request) async {
-      if (request.method == 'POST' && request.url.path == '/books/link-jobs') {
+      if (request.method == 'POST' &&
+          request.url.path == '/api/v1/books/link-jobs') {
         return _jsonResponse(_jobPayload(status: 'queued', progress: 0));
       }
       if (request.method == 'GET' &&
-          request.url.path == '/books/link-jobs/link-1') {
+          request.url.path == '/api/v1/books/link-jobs/link-1') {
         return _jsonResponse(
           _jobPayload(
             status: 'running',

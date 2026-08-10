@@ -116,6 +116,7 @@ async def test_fanqie_on_demand_import_creates_manifest_without_full_download(
         pytest.fail("边看边下不应在导入阶段下载全部正文")
 
     saved = []
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "LIBRARY_ROOT", tmp_path)
     monkeypatch.setattr(main, "create_book_manifest_only", fake_manifest_only)
     monkeypatch.setattr(main, "download_book", reject_full_download)
@@ -161,6 +162,7 @@ async def test_fanqie_full_import_keeps_existing_download_behavior(
     async def reject_manifest_only(*_: object) -> None:
         pytest.fail("全量下载不应只创建目录清单")
 
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "LIBRARY_ROOT", tmp_path)
     monkeypatch.setattr(main, "create_book_manifest_only", reject_manifest_only)
     monkeypatch.setattr(main, "download_book", fake_download)

@@ -38,6 +38,7 @@ class BookCard extends StatelessWidget {
                     )
                   : Image.network(
                       api.resolveUrl(cover),
+                      headers: api.headersForUrl(cover),
                       fit: BoxFit.cover,
                       cacheWidth:
                           (70 * MediaQuery.devicePixelRatioOf(context)).round(),

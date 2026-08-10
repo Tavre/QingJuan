@@ -894,6 +894,35 @@ async def test_text_only_model_uses_local_ocr_without_sending_the_image(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_linux_local_ocr_never_invokes_windows_ocr(monkeypatch, tmp_path) -> None:
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (320, 480), "white").save(image_path)
+    calls: list[str] = []
+
+    async def fake_rapid(**_: object) -> MangaOcrPagePayload:
+        calls.append("rapidocr")
+        return MangaOcrPagePayload(page_number=1, image_size=(320, 480))
+
+    async def forbidden_windows(**_: object) -> MangaOcrPagePayload:
+        raise AssertionError("Linux 后端不得调用 Windows OCR")
+
+    monkeypatch.setattr(scraper.os, "name", "posix")
+    monkeypatch.setattr(scraper, "_request_rapid_ocr_regions_payload", fake_rapid)
+    monkeypatch.setattr(scraper, "_request_windows_ocr_regions_payload", forbidden_windows)
+
+    payload = await scraper._request_local_manga_ocr_regions_payload(
+        settings=TranslationSettings(),
+        image_path=image_path,
+        image_size=(320, 480),
+        timeout_seconds=30,
+        page_number=1,
+    )
+
+    assert calls == ["rapidocr"]
+    assert payload.page_number == 1
+
+
+@pytest.mark.asyncio
 async def test_manga_translation_sends_only_ocr_text_to_text_model(monkeypatch) -> None:
     captured_payload: dict[str, object] = {}
 

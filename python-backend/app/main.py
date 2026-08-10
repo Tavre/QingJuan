@@ -9,6 +9,7 @@ import ast
 import asyncio
 import copy
 import html
+import ipaddress
 import json
 import mimetypes
 import os
@@ -19,7 +20,7 @@ import warnings
 import zipfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, urljoin, urlparse
@@ -39,10 +40,12 @@ warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 try:
     from .api.routers import (
         API_ROUTERS,
+        PUBLIC_ROUTERS,
         health_router,
         library_router,
         settings_router,
         sources_router,
+        system_router,
         tasks_router,
     )
     from .application import create_application
@@ -99,11 +102,16 @@ try:
         LinkJobRecord,
         LinkJobStartPayload,
         PreviewResponse,
+        PublicBookRecord,
+        PublicBookSourceRecord,
+        PublicLinkJobRecord,
         ReadingProgressPayload,
         ReadingProgressRecord,
+        ServiceMetaResponse,
         TaskLogRecord,
         TaskRecord,
         TranslationSettings,
+        TranslationSettingsView,
     )
     from .process_lifecycle import start_parent_process_watcher
     from .scraper import (
@@ -124,13 +132,16 @@ try:
         translate_single_manga_image,
         translated_image_payload_is_current,
     )
+    from .security import API_PREFIX, API_VERSION, authentication_enabled
 except ImportError:
     from app.api.routers import (
         API_ROUTERS,
+        PUBLIC_ROUTERS,
         health_router,
         library_router,
         settings_router,
         sources_router,
+        system_router,
         tasks_router,
     )
     from app.application import create_application
@@ -187,11 +198,16 @@ except ImportError:
         LinkJobRecord,
         LinkJobStartPayload,
         PreviewResponse,
+        PublicBookRecord,
+        PublicBookSourceRecord,
+        PublicLinkJobRecord,
         ReadingProgressPayload,
         ReadingProgressRecord,
+        ServiceMetaResponse,
         TaskLogRecord,
         TaskRecord,
         TranslationSettings,
+        TranslationSettingsView,
     )
     from app.process_lifecycle import start_parent_process_watcher
     from app.scraper import (
@@ -212,9 +228,11 @@ except ImportError:
         translate_single_manga_image,
         translated_image_payload_is_current,
     )
+    from app.security import API_PREFIX, API_VERSION, authentication_enabled
 
 LIBRARY_ROOT = DATA_DIR / "library"
 EXPORT_ROOT = DATA_DIR / "exports"
+EXPORT_TTL = timedelta(hours=24)
 TASK_QUEUE: asyncio.Queue[str] = asyncio.Queue()
 LINK_JOB_STORE = LinkJobStore()
 SOURCE_CHAPTER_CACHE_AHEAD = 20
@@ -241,9 +259,12 @@ LEGADO_SEARCH_RESULT_SETTLE_TIMEOUT = 4.0
 
 async def _run_startup(app_instance: FastAPI) -> None:
     init_db()
+    _migrate_book_storage_keys()
+    await asyncio.to_thread(_cleanup_expired_exports)
     LIBRARY_ROOT.mkdir(parents=True, exist_ok=True)
     EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
     app_instance.state.deleted_book_ids = set()
+    app_instance.state.export_cleanup_worker = asyncio.create_task(_export_cleanup_loop())
     app_instance.state.reader_cache_tasks = set()
     app_instance.state.reader_cache_keys = set()
     app_instance.state.reader_cache_locks = {}
@@ -259,6 +280,12 @@ async def _run_startup(app_instance: FastAPI) -> None:
 
 
 async def _run_shutdown(app_instance: FastAPI) -> None:
+    export_cleanup_worker = getattr(app_instance.state, "export_cleanup_worker", None)
+    if export_cleanup_worker is not None:
+        export_cleanup_worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await export_cleanup_worker
+
     link_job_tasks = getattr(app_instance.state, "link_job_tasks", set())
     if isinstance(link_job_tasks, set):
         for task in list(link_job_tasks):
@@ -289,12 +316,28 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         await _run_shutdown(app_instance)
 
 
-@health_router.get("/health")
+@health_router.get("/healthz")
+@health_router.get("/health", include_in_schema=False)
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "qingjuan-backend", "dataDir": str(DATA_DIR)}
+    return {"status": "ok"}
 
 
-@sources_router.get("/sources", response_model=list[BookSourceRecord])
+@system_router.get("/meta", response_model=ServiceMetaResponse)
+async def get_service_meta() -> ServiceMetaResponse:
+    return ServiceMetaResponse(
+        service="qingjuan-backend",
+        appVersion=app.version,
+        apiVersion=API_VERSION,
+        instanceId=_load_or_create_instance_id(),
+        capabilities={
+            "rapidOcr": True,
+            "windowsOcr": os.name == "nt",
+            "browserFallback": _browser_fallback_available(),
+        },
+    )
+
+
+@sources_router.get("/sources", response_model=list[PublicBookSourceRecord])
 async def get_sources() -> list[BookSourceRecord]:
     return list_book_sources()
 
@@ -481,7 +524,7 @@ async def post_source_import_text(payload: BookSourceTextImportPayload) -> BookS
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@sources_router.put("/sources/{source_id}", response_model=BookSourceRecord)
+@sources_router.put("/sources/{source_id}", response_model=PublicBookSourceRecord)
 async def put_source(source_id: str, payload: BookSourceRecord) -> BookSourceRecord:
     current = _get_source_or_404(source_id)
     if current.origin == "builtin":
@@ -496,7 +539,7 @@ async def put_source(source_id: str, payload: BookSourceRecord) -> BookSourceRec
     return save_book_source(updated)
 
 
-@library_router.get("/books", response_model=list[BookRecord])
+@library_router.get("/books", response_model=list[PublicBookRecord])
 async def get_books() -> list[BookRecord]:
     books: list[BookRecord] = []
     for book in list_books():
@@ -596,15 +639,18 @@ async def post_book_export(book_id: str, payload: BookExportPayload) -> BookExpo
     export_path, chapter_count, file_count = _export_book(
         book,
         payload.format,
-        payload.targetPath,
         payload.chapterIndexes,
     )
+    file_name = _book_export_file_name(book, payload.format)
     return BookExportResponse(
         bookId=book.id,
         format=payload.format,
-        fileName=export_path.name,
-        filePath=str(export_path),
-        downloadUrl=_download_url_for_export_path(book, export_path),
+        artifactId=export_path.stem,
+        fileName=file_name,
+        downloadUrl=_build_export_download_url(book.id, export_path.stem),
+        contentType=_export_content_type(export_path),
+        sizeBytes=export_path.stat().st_size,
+        expiresAt=_artifact_expiry(export_path),
         chapterCount=chapter_count,
         fileCount=file_count,
     )
@@ -624,34 +670,41 @@ async def post_chapter_export(
         book,
         chapter_index=chapter_index,
         export_format=payload.format,
-        target_path=payload.targetPath,
     )
+    chapter = _load_chapter_export_item(book, chapter_index)[1]["chapter"]
     return ChapterExportResponse(
         bookId=book.id,
         chapterIndex=chapter_index,
         format=payload.format,
-        fileName=export_path.name,
-        filePath=str(export_path),
+        artifactId=export_path.stem,
+        fileName=_chapter_export_file_name(chapter, payload.format),
+        downloadUrl=_build_export_download_url(book.id, export_path.stem),
+        contentType=_export_content_type(export_path),
+        sizeBytes=export_path.stat().st_size,
+        expiresAt=_artifact_expiry(export_path),
         fileCount=file_count,
     )
 
 
-@library_router.get("/books/{book_id}/exports/{file_name}")
-async def get_book_export(book_id: str, file_name: str) -> FileResponse:
+@library_router.get("/books/{book_id}/exports/{artifact_id}")
+async def get_book_export(book_id: str, artifact_id: str) -> FileResponse:
     _get_book_or_404(book_id)
     export_dir = (EXPORT_ROOT / book_id).resolve()
-    target_path = (export_dir / file_name).resolve()
+    if not re.fullmatch(r"[0-9a-f]{32}", artifact_id):
+        raise HTTPException(status_code=400, detail="非法导出产物 ID")
+    matches = [path for path in export_dir.glob(f"{artifact_id}.*") if path.is_file()]
+    target_path = matches[0].resolve() if len(matches) == 1 else export_dir / "missing"
     if not target_path.is_relative_to(export_dir):
-        raise HTTPException(status_code=400, detail="非法导出文件路径")
+        raise HTTPException(status_code=400, detail="非法导出产物路径")
     if not target_path.exists() or not target_path.is_file():
-        raise HTTPException(status_code=404, detail=f"导出文件不存在：{file_name}")
-    media_type = (
-        "application/epub+zip" if target_path.suffix.lower() == ".epub" else "text/plain; charset=utf-8"
-    )
-    return FileResponse(target_path, media_type=media_type, filename=target_path.name)
+        raise HTTPException(status_code=404, detail="导出产物不存在或已过期")
+    if datetime.now(UTC) - datetime.fromtimestamp(target_path.stat().st_mtime, UTC) > EXPORT_TTL:
+        target_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=404, detail="导出产物不存在或已过期")
+    return FileResponse(target_path, media_type=_export_content_type(target_path))
 
 
-@library_router.post("/books/{book_id}/cover", response_model=BookRecord)
+@library_router.post("/books/{book_id}/cover", response_model=PublicBookRecord)
 async def post_book_cover(book_id: str, file: Annotated[UploadFile, File()]) -> BookRecord:
     try:
         book = _get_book_or_404(book_id)
@@ -761,7 +814,7 @@ async def put_reading_progress(book_id: str, payload: ReadingProgressPayload) ->
         lastAnchorType=_normalize_progress_anchor_type(payload.anchorType),
         lastAnchorIndex=max(0, payload.anchorIndex),
         lastAnchorOffsetRatio=_clamp_unit_float(payload.anchorOffsetRatio),
-        lastReadAt=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        lastReadAt=_now(),
     )
     return save_reading_progress(progress)
 
@@ -851,8 +904,8 @@ async def _create_imported_book(payload: AddBookPayload, preview: PreviewRespons
         status="待处理" if lightweight_import else "已下载",
         chapterCount=len(result.chapters),
         translated=False,
-        localPath=str(result.local_path),
-        updatedAt=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        localPath=_storage_key_for_path(result.local_path),
+        updatedAt=_now(),
         synopsis=result.synopsis,
         cover=result.cover,
     )
@@ -942,7 +995,7 @@ async def _run_link_job(job_id: str) -> None:
         LINK_JOB_STORE.fail(job_id, exc)
 
 
-@library_router.post("/books/link-jobs", response_model=LinkJobRecord)
+@library_router.post("/books/link-jobs", response_model=PublicLinkJobRecord)
 async def post_link_job(request: LinkJobStartPayload) -> LinkJobRecord:
     job = LINK_JOB_STORE.create(request.mode, request.payload)
     task = asyncio.create_task(_run_link_job(job.id))
@@ -953,7 +1006,7 @@ async def post_link_job(request: LinkJobStartPayload) -> LinkJobRecord:
     return job
 
 
-@library_router.get("/books/link-jobs/{job_id}", response_model=LinkJobRecord)
+@library_router.get("/books/link-jobs/{job_id}", response_model=PublicLinkJobRecord)
 async def get_link_job(job_id: str) -> LinkJobRecord:
     try:
         return LINK_JOB_STORE.get(job_id)
@@ -961,7 +1014,7 @@ async def get_link_job(job_id: str) -> LinkJobRecord:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@library_router.post("/books/import", response_model=BookRecord)
+@library_router.post("/books/import", response_model=PublicBookRecord)
 async def post_import(payload: AddBookPayload) -> BookRecord:
     try:
         preview = await preview_from_url(payload)
@@ -970,7 +1023,7 @@ async def post_import(payload: AddBookPayload) -> BookRecord:
         raise HTTPException(status_code=400, detail=f"导入失败：{exc}") from exc
 
 
-@library_router.post("/books/import-local", response_model=BookRecord)
+@library_router.post("/books/import-local", response_model=PublicBookRecord)
 async def post_import_local(
     file: Annotated[UploadFile, File()],
     bookKind: Annotated[str, Form()],
@@ -1013,8 +1066,8 @@ async def post_import_local(
             status="已下载",
             chapterCount=len(chapter_manifest),
             translated=False,
-            localPath=str(book_dir),
-            updatedAt=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            localPath=_storage_key_for_path(book_dir),
+            updatedAt=_now(),
             synopsis=synopsis,
             cover=None,
         )
@@ -1055,14 +1108,122 @@ async def post_import_local(
         await file.close()
 
 
-@settings_router.get("/settings", response_model=TranslationSettings)
-async def get_settings() -> TranslationSettings:
-    return load_settings()
+@settings_router.get("/settings", response_model=TranslationSettingsView)
+async def get_settings() -> TranslationSettingsView:
+    return _settings_view(load_settings())
 
 
-@settings_router.put("/settings", response_model=TranslationSettings)
-async def put_settings(payload: TranslationSettings) -> TranslationSettings:
-    return save_settings(payload)
+@settings_router.put("/settings", response_model=TranslationSettingsView)
+async def put_settings(payload: TranslationSettings) -> TranslationSettingsView:
+    current = load_settings()
+    merged = payload.model_copy(deep=True)
+    merged.translationModel.apiKey = _merge_secret(
+        current.translationModel.apiKey,
+        payload.translationModel.apiKey,
+        payload.translationModel.apiKeyAction,
+    )
+    merged.mangaOcr.apiKey = _merge_secret(
+        current.mangaOcr.apiKey,
+        payload.mangaOcr.apiKey,
+        payload.mangaOcr.apiKeyAction,
+    )
+    merged.bika.password = _merge_secret(
+        current.bika.password,
+        payload.bika.password,
+        payload.bika.passwordAction,
+    )
+    if not merged.bika.email.strip():
+        merged.bika.email = current.bika.email
+    return _settings_view(save_settings(merged))
+
+
+def _merge_secret(current: str, submitted: str, action: str) -> str:
+    if action == "clear":
+        return ""
+    if action == "replace" or submitted:
+        return submitted.strip()
+    return current
+
+
+def _settings_view(settings: TranslationSettings) -> TranslationSettingsView:
+    return TranslationSettingsView(
+        systemPrompt=settings.systemPrompt,
+        autoTranslateNextChapters=settings.autoTranslateNextChapters,
+        downloadConcurrency=settings.downloadConcurrency,
+        translationModel={
+            "enabled": settings.translationModel.enabled,
+            "baseUrl": settings.translationModel.baseUrl,
+            "model": settings.translationModel.model,
+            "supportsVision": settings.translationModel.supportsVision,
+            "apiKeyConfigured": bool(settings.translationModel.apiKey),
+        },
+        mangaOcr={
+            "enabled": settings.mangaOcr.enabled,
+            "baseUrl": settings.mangaOcr.baseUrl,
+            "apiKeyConfigured": bool(settings.mangaOcr.apiKey),
+        },
+        bika={
+            "emailConfigured": bool(settings.bika.email),
+            "passwordConfigured": bool(settings.bika.password),
+        },
+    )
+
+
+def _load_or_create_instance_id() -> str:
+    instance_file = DATA_DIR / "instance-id"
+    try:
+        value = instance_file.read_text(encoding="utf-8").strip()
+        if value:
+            return value
+    except FileNotFoundError:
+        pass
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    value = str(uuid4())
+    temporary = instance_file.with_suffix(".tmp")
+    temporary.write_text(value, encoding="utf-8")
+    temporary.replace(instance_file)
+    return value
+
+
+def _browser_fallback_available() -> bool:
+    configured = os.getenv("QINGJUAN_BROWSER_EXECUTABLE", "").strip()
+    if configured:
+        return Path(configured).expanduser().is_file()
+    names = ("msedge", "msedge.exe", "chromium", "chromium-browser", "google-chrome")
+    return any(shutil.which(name) for name in names)
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.strip().strip("[]").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _startup_console_lines(host: str, port: int) -> tuple[str, ...]:
+    public_url = os.getenv("QINGJUAN_PUBLIC_URL", "").strip().rstrip("/")
+    if not public_url:
+        display_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        public_url = f"http://{display_host}:{port}"
+
+    def console_safe(value: object) -> str:
+        return "".join(character if character.isprintable() else "?" for character in str(value))
+
+    return (
+        "============================================================",
+        "青卷 FastAPI 后端已启动",
+        f"客户端地址：{console_safe(public_url)}",
+        f"监听地址：{console_safe(host)}:{port}",
+        f"业务 API：{console_safe(public_url)}/api/v1",
+        f"健康检查：{console_safe(public_url)}/healthz",
+        f"数据目录：{console_safe(DATA_DIR)}",
+        f"Bearer 认证：{'已启用' if authentication_enabled() else '未启用（仅允许回环监听）'}",
+        "原始连接 Token 不写入服务日志；管理员使用 sudo qingjuan-info 查看。",
+        "============================================================",
+    )
 
 
 def main() -> None:
@@ -1075,6 +1236,14 @@ def main() -> None:
 
     if args.command != "serve":
         raise SystemExit(f"Unsupported command: {args.command}")
+
+    if not _is_loopback_host(args.host) and not authentication_enabled():
+        raise SystemExit(
+            "监听非回环地址必须配置 QINGJUAN_AUTH_TOKEN_SHA256"
+        )
+
+    for line in _startup_console_lines(args.host, args.port):
+        print(line, flush=True)
 
     server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port, reload=False))
     if args.parent_pid:
@@ -1108,12 +1277,33 @@ def _resolve_book_dir(book: BookRecord) -> Path:
     if book_dir.is_absolute():
         return book_dir
 
-    candidate_paths = [DATA_DIR / local_path, LIBRARY_ROOT / local_path]
-    for candidate in candidate_paths:
-        if candidate.exists():
-            return candidate
+    candidate = (DATA_DIR / local_path).resolve()
+    if candidate.is_relative_to(DATA_DIR.resolve()):
+        return candidate
+    return LIBRARY_ROOT / f"{_sanitize_book_title(book.title)}-{book.id[:8]}"
 
-    return candidate_paths[0]
+
+def _storage_key_for_path(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(DATA_DIR.resolve()).as_posix()
+    except ValueError as exc:
+        raise RuntimeError("书籍目录必须位于青卷数据目录中") from exc
+
+
+def _migrate_book_storage_keys() -> None:
+    data_root = DATA_DIR.resolve()
+    for book in list_books():
+        raw = (book.localPath or "").strip()
+        if not raw:
+            continue
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            continue
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(data_root):
+            continue
+        save_book(book.model_copy(update={"localPath": resolved.relative_to(data_root).as_posix()}))
 
 
 def _contains_invalid_windows_path_chars(path_value: str) -> bool:
@@ -2758,7 +2948,7 @@ def _refresh_book_state(book: BookRecord, chapters: list[ChapterRecord] | None =
             "chapterCount": len(current_chapters),
             "translated": translated,
             "status": status,
-            "updatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "updatedAt": _now(),
         }
     )
     save_book(refreshed)
@@ -2857,16 +3047,8 @@ def _guess_asset_media_type(path: Path) -> str | None:
     return media_type
 
 
-def _build_export_download_url(book_id: str, file_name: str) -> str:
-    return f"/books/{book_id}/exports/{quote(file_name)}"
-
-
-def _download_url_for_export_path(book: BookRecord, export_path: Path) -> str:
-    export_dir = (EXPORT_ROOT / book.id).resolve()
-    resolved_path = export_path.resolve()
-    if resolved_path.is_file() and resolved_path.parent == export_dir:
-        return _build_export_download_url(book.id, resolved_path.name)
-    return ""
+def _build_export_download_url(book_id: str, artifact_id: str) -> str:
+    return f"/books/{book_id}/exports/{quote(artifact_id)}"
 
 
 def _build_file_url(path: Path) -> str:
@@ -2878,6 +3060,60 @@ def _safe_export_stem(value: str) -> str:
     return cleaned[:120] or "未命名小说"
 
 
+def _export_extension(export_format: str) -> str:
+    return {
+        "txt": ".txt",
+        "text": ".text",
+        "docx": ".docx",
+        "epub": ".epub",
+        "pdf": ".pdf",
+        "images": ".zip",
+    }[export_format]
+
+
+def _book_export_file_name(book: BookRecord, export_format: str) -> str:
+    return f"{_safe_export_stem(book.title)}{_export_extension(export_format)}"
+
+
+def _chapter_export_file_name(chapter: ChapterRecord, export_format: str) -> str:
+    stem = _safe_export_stem(f"{chapter.index:04d}-{chapter.title}")
+    return f"{stem}{_export_extension(export_format)}"
+
+
+def _export_content_type(path: Path) -> str:
+    return {
+        ".txt": "text/plain; charset=utf-8",
+        ".text": "text/plain; charset=utf-8",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".epub": "application/epub+zip",
+        ".pdf": "application/pdf",
+        ".zip": "application/zip",
+    }.get(path.suffix.lower(), "application/octet-stream")
+
+
+def _artifact_expiry(path: Path) -> str:
+    expires = datetime.fromtimestamp(path.stat().st_mtime, UTC) + EXPORT_TTL
+    return expires.isoformat().replace("+00:00", "Z")
+
+
+def _cleanup_expired_exports() -> None:
+    if not EXPORT_ROOT.exists():
+        return
+    cutoff = datetime.now(UTC) - EXPORT_TTL
+    for candidate in EXPORT_ROOT.rglob("*"):
+        if not candidate.is_file():
+            continue
+        modified = datetime.fromtimestamp(candidate.stat().st_mtime, UTC)
+        if modified < cutoff:
+            candidate.unlink(missing_ok=True)
+
+
+async def _export_cleanup_loop() -> None:
+    while True:
+        await asyncio.sleep(3600)
+        await asyncio.to_thread(_cleanup_expired_exports)
+
+
 def _epub_language(language: str) -> str:
     return {
         "中文": "zh-CN",
@@ -2886,29 +3122,22 @@ def _epub_language(language: str) -> str:
     }.get(language, "zh-CN")
 
 
-def _export_file_path(book: BookRecord, export_format: str, target_path: str | None = None) -> Path:
+def _export_file_path(book: BookRecord, export_format: str) -> Path:
     extensions = {
         "txt": ".txt",
         "text": ".text",
         "docx": ".docx",
         "epub": ".epub",
         "pdf": ".pdf",
+        "images": ".zip",
     }
     extension = extensions.get(export_format)
     if extension is None:
         raise HTTPException(status_code=400, detail=f"不支持的文件导出格式：{export_format}")
 
-    if target_path and target_path.strip():
-        candidate = Path(target_path.strip()).expanduser()
-        if candidate.suffix.lower() != extension:
-            candidate = candidate.with_suffix(extension)
-        candidate.parent.mkdir(parents=True, exist_ok=True)
-        return candidate.resolve()
-
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     export_dir = EXPORT_ROOT / book.id
     export_dir.mkdir(parents=True, exist_ok=True)
-    return export_dir / f"{_safe_export_stem(book.title)}-{timestamp}{extension}"
+    return export_dir / f"{uuid4().hex}{extension}"
 
 
 def _load_export_chapters(
@@ -3164,26 +3393,22 @@ h1, h2 { line-height: 1.4; }
             archive.write(image_path, f"OEBPS/Images/{image_name}")
 
 
-def _chapter_export_file_path(export_format: str, target_path: str) -> Path:
+def _chapter_export_file_path(book: BookRecord, export_format: str) -> Path:
     extensions = {
         "txt": ".txt",
         "text": ".text",
         "docx": ".docx",
         "epub": ".epub",
         "pdf": ".pdf",
+        "images": ".zip",
     }
     extension = extensions.get(export_format)
     if extension is None:
         raise HTTPException(status_code=400, detail=f"不支持的章节导出格式：{export_format}")
 
-    normalized_target = target_path.strip()
-    if not normalized_target:
-        raise HTTPException(status_code=400, detail="请选择导出位置")
-    candidate = Path(normalized_target).expanduser()
-    if candidate.suffix.lower() != extension:
-        candidate = candidate.with_suffix(extension)
-    candidate.parent.mkdir(parents=True, exist_ok=True)
-    return candidate.resolve()
+    export_dir = EXPORT_ROOT / book.id
+    export_dir.mkdir(parents=True, exist_ok=True)
+    return export_dir / f"{uuid4().hex}{extension}"
 
 
 def _load_chapter_export_item(
@@ -3297,43 +3522,11 @@ def _write_pdf_chapter_export(image_paths: list[Path], target_path: Path) -> Non
             page.close()
 
 
-def _write_chapter_image_folder(
-    chapter: ChapterRecord, image_paths: list[Path], target_path: str
-) -> Path:
-    if not image_paths:
-        raise HTTPException(status_code=400, detail="本章没有可导出的漫画图片")
-    normalized_target = target_path.strip()
-    if not normalized_target:
-        raise HTTPException(status_code=400, detail="请选择导出文件夹")
-
-    parent = Path(normalized_target).expanduser().resolve()
-    parent.mkdir(parents=True, exist_ok=True)
-    directory_stem = _safe_export_stem(f"{chapter.index:04d}-{chapter.title}")
-    chapter_dir = _unique_export_directory(parent, directory_stem)
-    chapter_dir.mkdir(parents=True, exist_ok=True)
-    for index, image_path in enumerate(image_paths, start=1):
-        extension = image_path.suffix.lower() or ".png"
-        shutil.copy2(image_path, chapter_dir / f"{index:03d}{extension}")
-    return chapter_dir
-
-
-def _unique_export_directory(parent: Path, directory_stem: str) -> Path:
-    candidate = parent / directory_stem
-    counter = 2
-    while candidate.exists() and any(candidate.iterdir()):
-        candidate = parent / f"{directory_stem}-{counter}"
-        counter += 1
-    return candidate
-
-
-def _write_manga_image_folder_export(
+def _write_manga_images_zip(
     book: BookRecord,
     export_items: list[dict[str, object]],
-    target_path: str,
-) -> tuple[Path, int]:
-    normalized_target = target_path.strip()
-    if not normalized_target:
-        raise HTTPException(status_code=400, detail="请选择导出文件夹")
+    target_path: Path,
+) -> int:
     missing_titles = [
         str(item["chapter"].title)
         for item in export_items
@@ -3345,24 +3538,26 @@ def _write_manga_image_folder_export(
             detail=f"以下章节没有可导出的漫画图片：{'、'.join(missing_titles)}",
         )
 
-    parent = Path(normalized_target).expanduser().resolve()
-    parent.mkdir(parents=True, exist_ok=True)
-    book_dir = _unique_export_directory(parent, _safe_export_stem(book.title))
-    book_dir.mkdir(parents=True, exist_ok=True)
     image_count = 0
-    for item in export_items:
-        chapter = item["chapter"]
-        image_paths: list[Path] = list(item["image_paths"])
-        _write_chapter_image_folder(chapter, image_paths, str(book_dir))
-        image_count += len(image_paths)
-    return book_dir, image_count
+    book_stem = _safe_export_stem(book.title)
+    with zipfile.ZipFile(target_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for item in export_items:
+            chapter = item["chapter"]
+            chapter_stem = _safe_export_stem(f"{chapter.index:04d}-{chapter.title}")
+            for index, image_path in enumerate(list(item["image_paths"]), start=1):
+                extension = image_path.suffix.lower() or ".png"
+                archive.write(
+                    image_path,
+                    f"{book_stem}/{chapter_stem}/{index:03d}{extension}",
+                )
+                image_count += 1
+    return image_count
 
 
 def _export_chapter(
     book: BookRecord,
     chapter_index: int,
     export_format: str,
-    target_path: str,
 ) -> tuple[Path, int]:
     novel_formats = {"txt", "text", "docx", "epub"}
     manga_formats = {"pdf", "images"}
@@ -3376,34 +3571,33 @@ def _export_chapter(
     manifest, export_item = _load_chapter_export_item(book, chapter_index)
     chapter = export_item["chapter"]
     image_paths: list[Path] = list(export_item["image_paths"])
-    if export_format == "images":
-        try:
-            return _write_chapter_image_folder(chapter, image_paths, target_path), len(image_paths)
-        except OSError as exc:
-            raise HTTPException(status_code=400, detail=f"漫画图片导出失败：{exc}") from exc
-
     try:
-        final_path = _chapter_export_file_path(export_format, target_path)
-        if export_format in {"txt", "text"}:
+        final_path = _chapter_export_file_path(book, export_format)
+        if export_format == "images":
+            file_count = _write_manga_images_zip(book, [export_item], final_path)
+        elif export_format in {"txt", "text"}:
             content = str(export_item["content"]).strip()
             final_path.write_text(f"{chapter.title}\n\n{content}\n", encoding="utf-8")
+            file_count = 1
         elif export_format == "docx":
             _write_docx_export(book, manifest, [export_item], final_path)
+            file_count = 1
         elif export_format == "epub":
             _write_epub_export(book, manifest, [export_item], final_path)
+            file_count = 1
         else:
             _write_pdf_chapter_export(image_paths, final_path)
+            file_count = len(image_paths)
     except HTTPException:
         raise
     except OSError as exc:
         raise HTTPException(status_code=400, detail=f"章节导出失败：{exc}") from exc
-    return final_path, len(image_paths) if export_format == "pdf" else 1
+    return final_path, file_count
 
 
 def _export_book(
     book: BookRecord,
     export_format: str,
-    target_path: str | None = None,
     chapter_indexes: list[int] | None = None,
 ) -> tuple[Path, int, int]:
     novel_formats = {"txt", "text", "docx", "epub"}
@@ -3418,15 +3612,11 @@ def _export_book(
     manifest, export_items = _load_export_chapters(book, chapter_indexes)
     chapter_count = len(export_items)
     if export_format == "images":
-        parent_path = target_path or str(EXPORT_ROOT / book.id)
-        export_path, image_count = _write_manga_image_folder_export(
-            book,
-            export_items,
-            parent_path,
-        )
+        export_path = _export_file_path(book, export_format)
+        image_count = _write_manga_images_zip(book, export_items, export_path)
         return export_path, chapter_count, image_count
 
-    final_path = _export_file_path(book, export_format, target_path)
+    final_path = _export_file_path(book, export_format)
     if export_format in {"txt", "text"}:
         _write_txt_export(book, manifest, export_items, final_path)
     elif export_format == "docx":
@@ -3616,11 +3806,14 @@ async def _process_translate_task(task: TaskRecord, book: BookRecord) -> None:
 
 
 def _now() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 app = create_application(
     routers=API_ROUTERS,
+    public_routers=PUBLIC_ROUTERS,
+    api_prefix=API_PREFIX,
+    authenticate=True,
     lifespan=lifespan,
 )
 

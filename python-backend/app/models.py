@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 BookKind = Literal["长小说", "轻小说", "漫画"]
 Language = Literal["中文", "英文", "日文"]
@@ -17,6 +17,14 @@ SourceStatus = Literal["unknown", "online", "slow", "offline", "unsupported"]
 MangaTextDirection = Literal["vertical", "horizontal"]
 MangaRegionShape = Literal["ellipse", "roundrect", "rect"]
 MangaRenderMode = Literal["ocr_pipeline", "image_edit_fallback"]
+
+
+class ServiceMetaResponse(BaseModel):
+    service: Literal["qingjuan-backend"] = "qingjuan-backend"
+    appVersion: str
+    apiVersion: str
+    instanceId: str
+    capabilities: dict[str, bool] = Field(default_factory=dict)
 
 
 class MangaOcrRegion(BaseModel):
@@ -95,7 +103,27 @@ class BookRecord(BaseModel):
     chapterCount: int
     translated: bool
     localPath: str
-    updatedAt: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    updatedAt: str = Field(
+        default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    )
+    synopsis: str = ""
+    cover: str | None = None
+    lastReadChapterIndex: int = 0
+    lastReadAt: str | None = None
+
+
+class PublicBookRecord(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    title: str
+    sourceUrl: str
+    bookKind: BookKind
+    language: Language
+    status: Literal["待处理", "解析中", "已下载", "已完成"]
+    chapterCount: int
+    translated: bool
+    updatedAt: str
     synopsis: str = ""
     cover: str | None = None
     lastReadChapterIndex: int = 0
@@ -128,6 +156,22 @@ class LinkJobRecord(BaseModel):
     updatedAt: str
 
 
+class PublicLinkJobRecord(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    mode: LinkJobMode
+    status: TaskStatus
+    progress: float = 0
+    message: str = ""
+    logs: list[LinkJobLogRecord] = Field(default_factory=list)
+    preview: PreviewResponse | None = None
+    book: PublicBookRecord | None = None
+    error: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
 class ChapterRecord(BaseModel):
     id: str
     index: int
@@ -142,6 +186,20 @@ class ChapterRecord(BaseModel):
     imageUrls: list[str] = []
     imageFiles: list[str] = []
     translatedImageFiles: list[str] = []
+    pageCount: int = 0
+
+
+class PublicChapterRecord(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    index: int
+    title: str
+    wordCount: int
+    downloaded: bool = True
+    translated: bool = False
+    illustration: bool = False
+    imageCount: int = 0
     pageCount: int = 0
 
 
@@ -169,31 +227,36 @@ class ChapterActionPayload(BaseModel):
 
 class BookExportPayload(BaseModel):
     format: Literal["txt", "text", "docx", "epub", "pdf", "images"]
-    targetPath: str | None = None
     chapterIndexes: list[int] = Field(default_factory=list)
 
 
 class BookExportResponse(BaseModel):
     bookId: str
     format: Literal["txt", "text", "docx", "epub", "pdf", "images"]
+    artifactId: str
     fileName: str
-    filePath: str
     downloadUrl: str
+    contentType: str
+    sizeBytes: int
+    expiresAt: str
     chapterCount: int
     fileCount: int
 
 
 class ChapterExportPayload(BaseModel):
     format: Literal["txt", "text", "docx", "epub", "pdf", "images"]
-    targetPath: str
 
 
 class ChapterExportResponse(BaseModel):
     bookId: str
     chapterIndex: int
     format: Literal["txt", "text", "docx", "epub", "pdf", "images"]
+    artifactId: str
     fileName: str
-    filePath: str
+    downloadUrl: str
+    contentType: str
+    sizeBytes: int
+    expiresAt: str
     fileCount: int
 
 
@@ -222,7 +285,7 @@ class TaskLogRecord(BaseModel):
 
 
 class BookDetailResponse(BaseModel):
-    book: BookRecord
+    book: PublicBookRecord
     title: str
     author: str | None = None
     synopsis: str = ""
@@ -231,12 +294,12 @@ class BookDetailResponse(BaseModel):
     downloadedChapterCount: int
     translatedChapterCount: int
     progress: ReadingProgressRecord
-    chapters: list[ChapterRecord]
+    chapters: list[PublicChapterRecord]
 
 
 class ChapterContentResponse(BaseModel):
     bookId: str
-    chapter: ChapterRecord
+    chapter: PublicChapterRecord
     content: str
     paragraphs: list[str]
     mode: Literal["original", "translated"] = "original"
@@ -251,17 +314,20 @@ class OpenAICompatibleConfig(BaseModel):
     apiKey: str = ""
     model: str = "gpt-5.4"
     supportsVision: bool = False
+    apiKeyAction: Literal["keep", "replace", "clear"] = Field(default="keep", exclude=True)
 
 
 class MangaOcrConfig(BaseModel):
     enabled: bool = False
     baseUrl: str = ""
     apiKey: str = ""
+    apiKeyAction: Literal["keep", "replace", "clear"] = Field(default="keep", exclude=True)
 
 
 class ComicSourceConfig(BaseModel):
     email: str = ""
     password: str = ""
+    passwordAction: Literal["keep", "replace", "clear"] = Field(default="keep", exclude=True)
 
 
 class TranslationSettings(BaseModel):
@@ -288,6 +354,34 @@ class TranslationSettings(BaseModel):
     bika: ComicSourceConfig = Field(default_factory=ComicSourceConfig)
 
 
+class OpenAICompatibleSettingsView(BaseModel):
+    enabled: bool
+    baseUrl: str
+    model: str
+    supportsVision: bool
+    apiKeyConfigured: bool
+
+
+class MangaOcrSettingsView(BaseModel):
+    enabled: bool
+    baseUrl: str
+    apiKeyConfigured: bool
+
+
+class ComicSourceSettingsView(BaseModel):
+    emailConfigured: bool
+    passwordConfigured: bool
+
+
+class TranslationSettingsView(BaseModel):
+    systemPrompt: str
+    autoTranslateNextChapters: int
+    downloadConcurrency: int
+    translationModel: OpenAICompatibleSettingsView
+    mangaOcr: MangaOcrSettingsView
+    bika: ComicSourceSettingsView
+
+
 class BookSourceRecord(BaseModel):
     id: str
     name: str
@@ -305,8 +399,33 @@ class BookSourceRecord(BaseModel):
     statusMessage: str = ""
     lastCheckedAt: str | None = None
     rulePayload: dict[str, Any] | None = None
-    createdAt: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    updatedAt: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    createdAt: str = Field(
+        default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    )
+    updatedAt: str = Field(
+        default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    )
+
+
+class PublicBookSourceRecord(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    baseUrl: str
+    description: str = ""
+    bookKind: BookKind | None = None
+    language: Language | None = None
+    enabled: bool = True
+    supported: bool = True
+    sampleUrl: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    origin: SourceOrigin = "manual"
+    status: SourceStatus = "unknown"
+    statusMessage: str = ""
+    lastCheckedAt: str | None = None
+    createdAt: str
+    updatedAt: str
 
 
 class BuiltinSiteSearchPayload(BaseModel):
@@ -355,7 +474,7 @@ class BookSourceCheckPayload(BaseModel):
 
 
 class BookSourceImportResult(BaseModel):
-    imported: list[BookSourceRecord] = Field(default_factory=list)
-    updated: list[BookSourceRecord] = Field(default_factory=list)
+    imported: list[PublicBookSourceRecord] = Field(default_factory=list)
+    updated: list[PublicBookSourceRecord] = Field(default_factory=list)
     duplicates: list[str] = Field(default_factory=list)
     ignored: list[str] = Field(default_factory=list)

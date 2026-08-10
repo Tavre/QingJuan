@@ -2,7 +2,8 @@
 
 ## 1. 工程目标
 
-青卷将抓取、下载、翻译和阅读能力组合为一个 Windows 本地应用。工程设计优先级为：
+青卷将抓取、下载、翻译和阅读能力组合为一个 Windows 桌面客户端，以及可在本机或 Linux
+服务器运行的单用户后端。工程设计优先级为：
 
 1. 数据与凭据安全；
 2. 功能正确、故障可恢复；
@@ -21,7 +22,7 @@ Feature Controller
         ↓ 领域模型
 ApiClient / BackendProcessManager
         ↓ HTTP / Process
-FastAPI Router
+FastAPI Router / Auth
         ↓
 Service / Scraper / Repository
         ↓
@@ -34,8 +35,14 @@ SQLite / Files / Third-party sites
 - Controller 不依赖具体页面实例，不持有 `BuildContext`。
 - `core/models` 不依赖 Feature 和 UI。
 - API 层负责序列化、状态码与错误归一化，不包含页面跳转。
+- 客户端连接配置明确区分 `local` 与 `remote`；远程失败不得隐式启动或切换到本机后端。
+- 连接 Token 只由 API 基础设施层读取，不进入领域模型、页面日志或第三方请求。
 - FastAPI Router 校验输入、调用业务函数并映射响应，不编写大段抓取或 SQL。
 - 数据层不导入 FastAPI、Flutter 或 HTTP 请求对象。
+
+后端是书籍、任务、阅读进度、模型设置和文件的唯一权威来源。客户端文件选择器产生的路径只属于
+Windows 客户端：导入时上传文件，导出时下载服务端产物，任何 API 都不得要求 Linux 后端写入
+Windows 路径。Windows TTS 始终在客户端运行；OCR、抓取与翻译能力属于后端，并通过能力握手暴露。
 
 ## 3. 目录职责
 
@@ -57,6 +64,8 @@ python-backend/
 ├─ app/db.py            # SQLite 与持久化
 ├─ app/scraper.py       # 外部站点、下载、OCR、翻译适配
 └─ tests/               # 后端测试
+
+deploy/linux/           # Linux 原生安装、systemd 服务、更新与连接信息脚本
 
 assets/                 # 品牌图片、文档截图与 Windows 应用图标
 ```
@@ -118,4 +127,5 @@ assets/                 # 品牌图片、文档截图与 Windows 应用图标
 - 改变数据目录、Schema 或迁移策略；
 - 改变本地后端启动与关闭方式；
 - 引入认证、远程监听或外部服务；
+- 改变单用户数据归属、远程文件传输或 Linux 部署方式；
 - 大规模移动文件或破坏兼容性。

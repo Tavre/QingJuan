@@ -1,6 +1,7 @@
 import 'package:fluent_ui/fluent_ui.dart' show ThemeMode;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qingjuan/app/app_state.dart';
+import 'package:qingjuan/core/backend/connection_secret_store.dart';
 import 'package:qingjuan/core/models/tts_speech_style.dart';
 import 'package:qingjuan/core/models/tts_voice.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -18,6 +19,24 @@ void main() {
     expect(state.themeMode, AppThemeMode.dark);
     expect(state.backendUrl, 'http://192.168.1.20:19453');
     expect(preferences.getString('qingjuan.theme'), 'dark');
+  });
+
+  test('remote connection stores token outside SharedPreferences', () async {
+    final preferences = await SharedPreferences.getInstance();
+    final secrets = _MemorySecretStore();
+    final state = AppState(preferences, secretStore: secrets);
+
+    await state.setBackendConnection(
+      mode: BackendConnectionMode.remote,
+      url: 'https://qingjuan.example.test///',
+      token: 'remote-secret-token',
+    );
+
+    expect(state.connectionMode, BackendConnectionMode.remote);
+    expect(state.backendUrl, 'https://qingjuan.example.test');
+    expect(secrets.token, 'remote-secret-token');
+    expect(preferences.getString('qingjuan.backendToken'), isNull);
+    expect(preferences.getString('qingjuan.backendMode'), 'remote');
   });
 
   test('AppState changes the selected section', () async {
@@ -84,4 +103,17 @@ void main() {
       TtsSpeechStyle.immersive,
     );
   });
+}
+
+class _MemorySecretStore implements ConnectionSecretStore {
+  String? token;
+
+  @override
+  Future<void> deleteToken() async => token = null;
+
+  @override
+  Future<String?> readToken() async => token;
+
+  @override
+  Future<void> writeToken(String token) async => this.token = token;
 }

@@ -4,6 +4,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 
 import '../../app/app_scope.dart';
 import '../../app/app_state.dart';
+import '../../core/backend/backend_process_manager.dart';
 import '../../core/models/settings.dart';
 import '../../core/models/tts_speech_style.dart';
 import '../../core/models/tts_voice.dart';
@@ -25,6 +26,7 @@ class _SettingsPageState extends State<SettingsPage> {
   static const _systemVoiceKey = '__system_default__';
 
   final _backendController = TextEditingController();
+  final _backendTokenController = TextEditingController();
   final _baseUrlController = TextEditingController();
   final _apiKeyController = TextEditingController();
   final _modelController = TextEditingController();
@@ -33,6 +35,8 @@ class _SettingsPageState extends State<SettingsPage> {
   final _concurrencyController = TextEditingController();
   bool _translationModelEnabled = false;
   bool _translationModelSupportsVision = false;
+  bool _clearTranslationApiKey = false;
+  BackendConnectionMode _connectionMode = BackendConnectionMode.local;
   bool _initialized = false;
   late final TtsVoiceService _voiceService;
   List<TtsVoice> _voices = const <TtsVoice>[];
@@ -109,6 +113,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _initialized = true;
     final scope = AppScope.of(context);
     _backendController.text = scope.appState.backendUrl;
+    _backendTokenController.text = scope.appState.backendToken;
+    _connectionMode = scope.appState.connectionMode;
     _loadModel(scope.settings.value);
   }
 
@@ -122,6 +128,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _concurrencyController.text = '${settings.downloadConcurrency}';
     _translationModelEnabled = translationModel.enabled;
     _translationModelSupportsVision = translationModel.supportsVision;
+    _clearTranslationApiKey = false;
   }
 
   TranslationSettings _commitTranslationModel(TranslationSettings settings) {
@@ -131,6 +138,8 @@ class _SettingsPageState extends State<SettingsPage> {
       apiKey: _apiKeyController.text.trim(),
       model: _modelController.text.trim(),
       supportsVision: _translationModelSupportsVision,
+      apiKeyConfigured: settings.translationModel.apiKeyConfigured,
+      clearApiKey: _clearTranslationApiKey,
     );
     return settings.copyWith(translationModel: translationModel);
   }
@@ -146,9 +155,42 @@ class _SettingsPageState extends State<SettingsPage> {
     );
     scope.settings.update(settings);
     try {
-      await scope.appState.setBackendUrl(_backendController.text);
+      final backendUrl = _backendController.text.trim();
+      final backendToken = _backendTokenController.text.trim();
+      final connectionChanged =
+          scope.appState.connectionMode != _connectionMode ||
+              scope.appState.backendUrl.replaceAll(RegExp(r'/+$'), '') !=
+                  backendUrl.replaceAll(RegExp(r'/+$'), '');
+      if (_connectionMode == BackendConnectionMode.remote) {
+        _validateRemoteBackendUrl(backendUrl);
+        if (backendToken.isEmpty) {
+          throw StateError('远程后端必须填写连接 Token');
+        }
+        await scope.api.testConnection(
+          baseUrl: backendUrl,
+          token: backendToken,
+        );
+      }
+      await scope.appState.setBackendConnection(
+        mode: _connectionMode,
+        url: backendUrl,
+        token: backendToken,
+      );
       await scope.backend.ensureReady();
+      if (scope.backend.status != BackendStatus.ready) {
+        throw StateError(scope.backend.message);
+      }
+      if (connectionChanged) {
+        scope.library.resetForBackendSwitch();
+        scope.sources.resetForBackendSwitch();
+        scope.tasks.resetForBackendSwitch();
+      }
       await scope.settings.save();
+      await Future.wait<void>(<Future<void>>[
+        scope.library.load(),
+        scope.sources.load(),
+        scope.tasks.load(),
+      ]);
       if (mounted) {
         displayInfoBar(
           context,
@@ -176,6 +218,7 @@ class _SettingsPageState extends State<SettingsPage> {
   void dispose() {
     unawaited(_voiceService.dispose());
     _backendController.dispose();
+    _backendTokenController.dispose();
     _baseUrlController.dispose();
     _apiKeyController.dispose();
     _modelController.dispose();
@@ -254,15 +297,52 @@ class _SettingsPageState extends State<SettingsPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   InfoLabel(
+                    label: '连接模式',
+                    child: ComboBox<BackendConnectionMode>(
+                      value: _connectionMode,
+                      isExpanded: true,
+                      items: const <ComboBoxItem<BackendConnectionMode>>[
+                        ComboBoxItem<BackendConnectionMode>(
+                          value: BackendConnectionMode.local,
+                          child: Text('本机后端'),
+                        ),
+                        ComboBoxItem<BackendConnectionMode>(
+                          value: BackendConnectionMode.remote,
+                          child: Text('Linux 远程后端'),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        if (value != null) {
+                          setState(() => _connectionMode = value);
+                        }
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  InfoLabel(
                     label: 'FastAPI 地址',
                     child: TextBox(
                       controller: _backendController,
                       placeholder: 'http://127.0.0.1:19453',
                     ),
                   ),
+                  if (_connectionMode ==
+                      BackendConnectionMode.remote) ...<Widget>[
+                    const SizedBox(height: 12),
+                    InfoLabel(
+                      label: '连接 Token',
+                      child: TextBox(
+                        controller: _backendTokenController,
+                        obscureText: true,
+                        placeholder: '由 Linux 服务端管理员生成',
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 8),
                   Text(
-                    '应用会优先启动本地后端，也可以填写其他可信 FastAPI 服务地址。',
+                    _connectionMode == BackendConnectionMode.local
+                        ? '本机模式会检查并按需启动随包后端。'
+                        : '远程模式只连接指定服务，失败时不会启动本机后端。',
                     style: FluentTheme.of(context).typography.caption,
                   ),
                 ],
@@ -317,8 +397,23 @@ class _SettingsPageState extends State<SettingsPage> {
                     child: TextBox(
                       controller: _apiKeyController,
                       obscureText: true,
+                      placeholder:
+                          scope.settings.value.translationModel.apiKeyConfigured
+                              ? '已配置；留空保持不变'
+                              : '尚未配置',
                     ),
                   ),
+                  if (scope.settings.value.translationModel.apiKeyConfigured)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: ToggleSwitch(
+                        checked: _clearTranslationApiKey,
+                        onChanged: (value) => setState(
+                          () => _clearTranslationApiKey = value,
+                        ),
+                        content: const Text('清除服务端已保存的 API 密钥'),
+                      ),
+                    ),
                   const SizedBox(height: 12),
                   InfoLabel(
                     label: '模型',
@@ -532,4 +627,40 @@ class _SettingsPageState extends State<SettingsPage> {
       ],
     );
   }
+}
+
+void _validateRemoteBackendUrl(String value) {
+  final uri = Uri.tryParse(value);
+  if (uri == null || !uri.hasAuthority || uri.host.isEmpty) {
+    throw const FormatException('FastAPI 地址格式无效');
+  }
+  if (uri.userInfo.isNotEmpty || uri.hasQuery || uri.hasFragment) {
+    throw const FormatException('FastAPI 地址不能包含账号、查询参数或片段');
+  }
+  if (uri.scheme == 'https') return;
+  if (uri.scheme == 'http' && _isPrivateBackendHost(uri.host)) return;
+  throw const FormatException('远程后端必须使用 HTTPS；私有网络 IP 可使用 HTTP');
+}
+
+bool _isPrivateBackendHost(String host) {
+  final normalized = host.toLowerCase();
+  if (normalized == 'localhost' || normalized == '::1') return true;
+  if (normalized.startsWith('fc') ||
+      normalized.startsWith('fd') ||
+      normalized.startsWith('fe80:')) {
+    return true;
+  }
+  final parts = normalized.split('.').map(int.tryParse).toList();
+  if (parts.length != 4 ||
+      parts.any((part) => part == null || part < 0 || part > 255)) {
+    return false;
+  }
+  final first = parts[0]!;
+  final second = parts[1]!;
+  return first == 10 ||
+      first == 127 ||
+      (first == 192 && second == 168) ||
+      (first == 172 && second >= 16 && second <= 31) ||
+      (first == 100 && second >= 64 && second <= 127) ||
+      (first == 169 && second == 254);
 }

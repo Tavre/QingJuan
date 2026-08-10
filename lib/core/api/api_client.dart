@@ -12,17 +12,38 @@ import '../models/task.dart';
 import 'api_exception.dart';
 
 class ApiClient {
-  ApiClient(this._baseUrl, {http.Client? client})
-      : _client = client ?? http.Client();
+  ApiClient(
+    this._baseUrl, {
+    String Function()? token,
+    http.Client? client,
+  })  : _token = token ?? (() => ''),
+        _client = client ?? http.Client();
 
+  static const _apiPrefix = '/api/v1';
   final String Function() _baseUrl;
+  final String Function() _token;
   final http.Client _client;
 
-  Uri _uri(String endpoint, [Map<String, dynamic>? query]) {
-    final base = _baseUrl().replaceAll(RegExp(r'/+$'), '');
-    return Uri.parse('$base$endpoint').replace(
+  Uri _uri(String endpoint, [Map<String, dynamic>? query]) =>
+      _uriFor(_baseUrl(), endpoint, query);
+
+  Uri _uriFor(
+    String baseUrl,
+    String endpoint, [
+    Map<String, dynamic>? query,
+  ]) {
+    final base = baseUrl.replaceAll(RegExp(r'/+$'), '');
+    return Uri.parse('$base$_apiPrefix$endpoint').replace(
       queryParameters: query?.map((key, value) => MapEntry(key, '$value')),
     );
+  }
+
+  Map<String, String> _headers({bool json = false, String? token}) {
+    final value = (token ?? _token()).trim();
+    return <String, String>{
+      if (json) 'Content-Type': 'application/json',
+      if (value.isNotEmpty) 'Authorization': 'Bearer $value',
+    };
   }
 
   Future<http.Response> _request(
@@ -35,22 +56,23 @@ class ApiClient {
     for (var attempt = 0; attempt < 4; attempt++) {
       try {
         final uri = _uri(endpoint, query);
-        final headers = body == null
-            ? null
-            : <String, String>{'Content-Type': 'application/json'};
+        final headers = _headers(json: body != null);
         final encoded = body == null ? null : jsonEncode(body);
-        final response = switch (method) {
-          'GET' => await _client.get(uri),
-          'POST' => await _client.post(uri, headers: headers, body: encoded),
-          'PUT' => await _client.put(uri, headers: headers, body: encoded),
-          'DELETE' =>
-            await _client.delete(uri, headers: headers, body: encoded),
+        final requestFuture = switch (method) {
+          'GET' => _client.get(uri, headers: headers),
+          'POST' => _client.post(uri, headers: headers, body: encoded),
+          'PUT' => _client.put(uri, headers: headers, body: encoded),
+          'DELETE' => _client.delete(uri, headers: headers, body: encoded),
           _ => throw UnsupportedError('Unsupported HTTP method: $method'),
         };
+        final response =
+            await requestFuture.timeout(const Duration(minutes: 2));
         return response;
       } on SocketException catch (error) {
         lastError = error;
       } on http.ClientException catch (error) {
+        lastError = error;
+      } on TimeoutException catch (error) {
         lastError = error;
       }
       if (attempt < 3) {
@@ -91,12 +113,39 @@ class ApiClient {
   Future<bool> health() async {
     try {
       final response = await _client
-          .get(_uri('/health'))
+          .get(
+              Uri.parse('${_baseUrl().replaceAll(RegExp(r'/+$'), '')}/healthz'))
           .timeout(const Duration(seconds: 2));
       return response.statusCode == 200;
     } catch (_) {
       return false;
     }
+  }
+
+  Future<JsonMap> fetchServiceMeta() async {
+    final payload = _decode(await _request('GET', '/meta'));
+    final meta = _map(payload);
+    if (meta['service'] != 'qingjuan-backend' || meta['apiVersion'] != '1') {
+      throw const ApiException('目标服务不是兼容的青卷后端');
+    }
+    return meta;
+  }
+
+  Future<JsonMap> testConnection({
+    required String baseUrl,
+    required String token,
+  }) async {
+    final response = await _client
+        .get(
+          _uriFor(baseUrl, '/meta'),
+          headers: _headers(token: token),
+        )
+        .timeout(const Duration(seconds: 8));
+    final meta = _map(_decode(response));
+    if (meta['service'] != 'qingjuan-backend' || meta['apiVersion'] != '1') {
+      throw const ApiException('目标服务不是兼容的青卷后端');
+    }
+    return meta;
   }
 
   Future<List<Book>> fetchBooks() async {
@@ -165,18 +214,33 @@ class ApiClient {
     required String language,
     required bool translate,
     String? title,
+    void Function(int sentBytes, int totalBytes)? onProgress,
   }) async {
-    final request = http.MultipartRequest('POST', _uri('/books/import-local'))
+    final multipart = http.MultipartRequest('POST', _uri('/books/import-local'))
+      ..headers.addAll(_headers())
       ..fields['bookKind'] = kind
       ..fields['language'] = language
       ..fields['needTranslation'] = '$translate';
     if (title != null && title.trim().isNotEmpty) {
-      request.fields['title'] = title.trim();
+      multipart.fields['title'] = title.trim();
     }
-    request.files.add(
+    multipart.files.add(
       await http.MultipartFile.fromPath('file', filePath),
     );
-    final streamed = await _client.send(request);
+    final totalBytes = multipart.contentLength;
+    final body = multipart.finalize();
+    final request = http.StreamedRequest('POST', multipart.url)
+      ..headers.addAll(multipart.headers);
+    final responseFuture =
+        _client.send(request).timeout(const Duration(minutes: 30));
+    var sentBytes = 0;
+    await for (final chunk in body) {
+      request.sink.add(chunk);
+      sentBytes += chunk.length;
+      onProgress?.call(sentBytes, totalBytes);
+    }
+    await request.sink.close();
+    final streamed = await responseFuture;
     final response = await http.Response.fromStream(streamed);
     return Book.fromJson(_map(_decode(response)));
   }
@@ -254,6 +318,7 @@ class ApiClient {
     required int chapterIndex,
     required String format,
     required String targetPath,
+    void Function(int receivedBytes, int totalBytes)? onProgress,
   }) async {
     final payload = _decode(
       await _request(
@@ -261,11 +326,12 @@ class ApiClient {
         '/books/$bookId/chapters/$chapterIndex/export',
         body: <String, dynamic>{
           'format': format,
-          'targetPath': targetPath,
         },
       ),
     );
-    return _map(payload);
+    final result = _map(payload);
+    await _downloadArtifact(result, targetPath, onProgress: onProgress);
+    return <String, dynamic>{...result, 'localFilePath': targetPath};
   }
 
   Future<JsonMap> exportBook({
@@ -273,6 +339,7 @@ class ApiClient {
     required List<int> chapterIndexes,
     required String format,
     required String targetPath,
+    void Function(int receivedBytes, int totalBytes)? onProgress,
   }) async {
     final payload = _decode(
       await _request(
@@ -280,12 +347,13 @@ class ApiClient {
         '/books/$bookId/export',
         body: <String, dynamic>{
           'format': format,
-          'targetPath': targetPath,
           'chapterIndexes': chapterIndexes,
         },
       ),
     );
-    return _map(payload);
+    final result = _map(payload);
+    await _downloadArtifact(result, targetPath, onProgress: onProgress);
+    return <String, dynamic>{...result, 'localFilePath': targetPath};
   }
 
   Future<BookTask> retryTask(String taskId) async {
@@ -311,7 +379,63 @@ class ApiClient {
         trimmed.startsWith('https://')) {
       return trimmed;
     }
-    return '${_baseUrl().replaceAll(RegExp(r'/+$'), '')}/${trimmed.replaceFirst(RegExp(r'^/+'), '')}';
+    return '${_baseUrl().replaceAll(RegExp(r'/+$'), '')}$_apiPrefix/${trimmed.replaceFirst(RegExp(r'^/+'), '')}';
+  }
+
+  Map<String, String> headersForUrl(String value) {
+    final resolved = Uri.parse(resolveUrl(value));
+    final backendBase = _baseUrl().replaceAll(RegExp(r'/+$'), '');
+    final backend = Uri.parse(backendBase);
+    final apiRoot = Uri.parse('$backendBase$_apiPrefix/');
+    final sameOrigin = resolved.scheme == backend.scheme &&
+        resolved.host == backend.host &&
+        resolved.port == backend.port &&
+        resolved.path.startsWith(apiRoot.path);
+    return sameOrigin ? _headers() : const <String, String>{};
+  }
+
+  Future<void> _downloadArtifact(
+    JsonMap artifact,
+    String targetPath, {
+    void Function(int receivedBytes, int totalBytes)? onProgress,
+  }) async {
+    final downloadUrl = artifact['downloadUrl'] as String? ?? '';
+    if (downloadUrl.isEmpty) {
+      throw const ApiException('后端未返回导出下载地址');
+    }
+    final target = File(targetPath);
+    final temporary = File('$targetPath.qingjuan-part');
+    await temporary.parent.create(recursive: true);
+    try {
+      final request = http.Request('GET', Uri.parse(resolveUrl(downloadUrl)))
+        ..headers.addAll(headersForUrl(downloadUrl));
+      final response =
+          await _client.send(request).timeout(const Duration(minutes: 2));
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        final decoded = await http.Response.fromStream(response);
+        _decode(decoded);
+      }
+      final sink = temporary.openWrite();
+      final totalBytes = response.contentLength ??
+          (artifact['sizeBytes'] as num?)?.toInt() ??
+          0;
+      var receivedBytes = 0;
+      try {
+        await for (final chunk
+            in response.stream.timeout(const Duration(minutes: 2))) {
+          sink.add(chunk);
+          receivedBytes += chunk.length;
+          onProgress?.call(receivedBytes, totalBytes);
+        }
+      } finally {
+        await sink.close();
+      }
+      if (await target.exists()) await target.delete();
+      await temporary.rename(target.path);
+    } catch (_) {
+      if (await temporary.exists()) await temporary.delete();
+      rethrow;
+    }
   }
 
   void close() => _client.close();

@@ -44,3 +44,76 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m ruff check app tests
       - run: python -m pytest
+
+  linux-native:
+    name: Linux native backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: python-backend/requirements.txt
+      - name: Validate native deployment scripts
+        shell: bash
+        run: |
+          bash -n deploy/linux/install.sh
+          bash -n deploy/linux/update.sh
+          bash -n deploy/linux/qingjuan-info.sh
+          grep -q '^ExecStart=/opt/qingjuan/venv/bin/python -m app.main serve' \
+            deploy/linux/qingjuan-backend.service
+          grep -q '^User=qingjuan$' deploy/linux/qingjuan-backend.service
+          sudo useradd --system --no-create-home qingjuan
+          sudo install -d /opt/qingjuan/venv/bin /opt/qingjuan/app/python-backend
+          sudo install -d -o qingjuan -g qingjuan /var/lib/qingjuan
+          sudo install -d -m 0700 /etc/qingjuan
+          sudo ln -s "$(command -v python)" /opt/qingjuan/venv/bin/python
+          printf '%s\n' \
+            'QINGJUAN_BIND_HOST=127.0.0.1' \
+            'QINGJUAN_PORT=19453' \
+            | sudo tee /etc/qingjuan/backend.env >/dev/null
+          systemd-analyze verify deploy/linux/qingjuan-backend.service
+      - name: Install backend dependencies
+        working-directory: python-backend
+        run: python -m pip install -r requirements.txt
+      - name: Smoke test native process, console and authentication
+        shell: bash
+        working-directory: python-backend
+        run: |
+          token='qingjuan-ci-connection-token'
+          digest="$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)"
+          data_dir="$(mktemp -d)"
+          log_file="$data_dir/backend.log"
+          QINGJUAN_AUTH_TOKEN_SHA256="$digest" \
+          QINGJUAN_DATA_DIR="$data_dir" \
+          QINGJUAN_PUBLIC_URL='http://127.0.0.1:19453' \
+            python -m app.main serve --host 127.0.0.1 --port 19453 \
+            >"$log_file" 2>&1 &
+          backend_pid=$!
+          trap 'kill "$backend_pid" >/dev/null 2>&1 || true; wait "$backend_pid" 2>/dev/null || true; rm -rf "$data_dir"' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:19453/healthz >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl --fail --silent http://127.0.0.1:19453/healthz
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:19453/api/v1/meta)" = '401'
+          QINGJUAN_TEST_TOKEN="$token" python - <<'PY'
+          import os
+          import httpx
+
+          response = httpx.get(
+              "http://127.0.0.1:19453/api/v1/meta",
+              headers={"Authorization": f"Bearer {os.environ['QINGJUAN_TEST_TOKEN']}"},
+          )
+          response.raise_for_status()
+          assert response.json()["service"] == "qingjuan-backend"
+          PY
+          grep -q '客户端地址：http://127.0.0.1:19453' "$log_file"
+          if grep -q "$token" "$log_file"; then
+            echo 'raw token leaked into backend log' >&2
+            exit 1
+          fi

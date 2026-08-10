@@ -550,10 +550,10 @@ packages:
     dependency: "direct main"
     description:
       name: window_manager
-      sha256: "05c231fd7b23d2380f14c5cc10b7b93d60d4fa4a2fb4e0f032de27e44b5560e9"
+      sha256: "732896e1416297c63c9e3fb95aea72d0355f61390263982a47fd519169dc5059"
       url: "https://pub.flutter-io.cn"
     source: hosted
-    version: "0.5.2"
+    version: "0.4.3"
   xdg_directories:
     dependency: transitive
     description:

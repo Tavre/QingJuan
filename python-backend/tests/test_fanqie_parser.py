@@ -17,7 +17,7 @@ from app.fanqie_parser import (
     parse_fanqie_book_page,
     parse_fanqie_reader_page,
 )
-from app.models import AddBookPayload, ChapterPreview, PreviewResponse
+from app.models import AddBookPayload, ChapterPreview, PreviewResponse, TranslationSettings
 
 BOOK_ID = "7143038691944959011"
 BOOK_URL = f"https://fanqienovel.com/page/{BOOK_ID}"
@@ -214,6 +214,7 @@ async def test_initial_import_attempts_restricted_chapters_without_dropping_them
         )
 
     monkeypatch.setattr(scraper, "_fetch_chapter_data", fake_fetch)
+    monkeypatch.setattr(scraper, "_load_runtime_settings", TranslationSettings)
     preview = PreviewResponse(
         title="测试小说",
         chapterCount=2,
@@ -253,6 +254,7 @@ async def test_initial_import_keeps_failed_restricted_chapter_pending(
         return scraper.ChapterFetchResult(text=f"{title}完整正文", image_urls=[])
 
     monkeypatch.setattr(scraper, "_fetch_chapter_data", fake_fetch)
+    monkeypatch.setattr(scraper, "_load_runtime_settings", TranslationSettings)
     preview = PreviewResponse(
         title="测试小说",
         chapterCount=2,

@@ -18,7 +18,7 @@ dependencies:
   path: ^1.9.0
   path_provider: ^2.1.4
   shared_preferences: ^2.3.2
-  window_manager: 0.5.2
+  window_manager: 0.4.3
 
 dev_dependencies:
   flutter_test:

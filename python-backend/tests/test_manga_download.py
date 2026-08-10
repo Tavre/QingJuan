@@ -135,6 +135,22 @@ def test_local_render_font_fallback_preserves_requested_size(monkeypatch) -> Non
     assert large_bbox[3] - large_bbox[1] >= (small_bbox[3] - small_bbox[1]) * 2
 
 
+def test_long_vertical_translation_uses_bubble_width_for_multiple_columns() -> None:
+    translation = "今天一定要带你去漂亮的花田……然后和你成为朋友！"
+
+    layout = scraper._fit_text_layout_for_render(
+        translation,
+        (339, 576),
+        "vertical",
+        preferred_font_size=180,
+        bold=True,
+    )
+
+    assert layout["fits"] is True
+    assert len(layout["columns"]) >= 2
+    assert layout["font_size"] >= 30
+
+
 def test_manga_fill_sampler_prefers_bubble_color_over_page_background() -> None:
     image = Image.new("RGB", (320, 220), (222, 224, 226))
     draw = ImageDraw.Draw(image)
@@ -461,6 +477,126 @@ def test_external_ocr_keeps_text_bbox_separate_from_bubble_body() -> None:
     assert tuple(region["body_bbox"]) != text_bbox
     assert region["body_bbox"][0] <= text_bbox[0]
     assert region["body_bbox"][2] >= text_bbox[2]
+
+
+def test_manga_ocr_coercion_preserves_body_box_around_text_box() -> None:
+    region = scraper._coerce_manga_ocr_region(
+        {
+            "order": 1,
+            "bbox": [84, 64, 156, 92],
+            "body_bbox": [30, 20, 210, 140],
+            "safe_box": [42, 32, 198, 128],
+            "source_text": "SOURCE",
+            "direction": "horizontal",
+            "shape": "rect",
+        },
+        image_size=(240, 160),
+        fallback_order=1,
+    )
+
+    assert region is not None
+    assert region.bbox == (84, 64, 156, 92)
+    assert region.body_bbox == (30, 20, 210, 140)
+    assert region.safe_box == (42, 32, 198, 128)
+
+
+def test_external_ocr_finds_white_caption_container_on_dark_artwork() -> None:
+    image = Image.new("RGB", (240, 200), (20, 20, 20))
+    draw = ImageDraw.Draw(image)
+    panel_bbox = (40, 20, 200, 180)
+    draw.rectangle(panel_bbox, fill="white", outline="black", width=4)
+    draw.rectangle((88, 48, 112, 152), fill="black")
+    draw.rectangle((128, 40, 154, 144), fill="black")
+    text_bbox = (84, 38, 158, 156)
+
+    region = scraper._build_external_ocr_region(
+        order=1,
+        text="RIGHT\nLEFT",
+        bbox=text_bbox,
+        image=image,
+        direction="vertical",
+        line_count=2,
+    )
+
+    body_bbox = tuple(region["body_bbox"])
+    safe_box = tuple(region["safe_box"])
+    assert region["background"] == "#FFFFFF"
+    assert region["shape"] == "rect"
+    assert body_bbox[0] <= panel_bbox[0] + 6
+    assert body_bbox[1] <= panel_bbox[1] + 6
+    assert body_bbox[2] >= panel_bbox[2] - 6
+    assert body_bbox[3] >= panel_bbox[3] - 6
+    assert scraper._bbox_area(safe_box) > scraper._bbox_area(text_bbox)
+
+
+def test_external_ocr_container_detection_has_python_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(scraper, "cv2", None)
+    monkeypatch.setattr(scraper, "np", None)
+    image = Image.new("RGB", (180, 150), (20, 20, 20))
+    draw = ImageDraw.Draw(image)
+    panel_bbox = (24, 18, 156, 132)
+    draw.rectangle(panel_bbox, fill="white", outline="black", width=3)
+    draw.rectangle((72, 42, 94, 112), fill="black")
+
+    region = scraper._build_external_ocr_region(
+        order=1,
+        text="TEXT",
+        bbox=(68, 38, 98, 116),
+        image=image,
+        direction="vertical",
+        line_count=1,
+    )
+
+    assert region["_container_inferred"] is True
+    assert tuple(region["body_bbox"])[0] <= panel_bbox[0] + 5
+    assert tuple(region["body_bbox"])[2] >= panel_bbox[2] - 5
+
+
+def test_external_ocr_rejects_page_background_as_container() -> None:
+    image = Image.new("RGB", (220, 180), "white")
+    ImageDraw.Draw(image).rectangle((90, 54, 124, 126), fill="black")
+
+    region = scraper._build_external_ocr_region(
+        order=1,
+        text="TEXT",
+        bbox=(86, 50, 128, 130),
+        image=image,
+        direction="vertical",
+        line_count=1,
+    )
+
+    assert region["_container_inferred"] is False
+    assert scraper._bbox_area(tuple(region["body_bbox"])) < image.width * image.height * 0.3
+
+
+def test_rapidocr_merges_split_vertical_columns_in_same_caption() -> None:
+    image = Image.new("RGB", (240, 200), (20, 20, 20))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((40, 20, 200, 180), fill="white", outline="black", width=4)
+    draw.rectangle((122, 42, 150, 108), fill="black")
+    draw.rectangle((82, 92, 110, 158), fill="black")
+    result = SimpleNamespace(
+        boxes=[
+            [[120.0, 40.0], [154.0, 40.0], [154.0, 110.0], [120.0, 110.0]],
+            [[80.0, 90.0], [114.0, 90.0], [114.0, 160.0], [80.0, 160.0]],
+        ],
+        txts=("RIGHTSIDE", "LEFTSIDE"),
+        scores=(0.99, 0.99),
+    )
+
+    payload = scraper._build_rapid_ocr_page_payload(
+        result,
+        image=image,
+        image_size=image.size,
+        page_number=1,
+    )
+
+    assert len(payload.regions) == 1
+    assert payload.regions[0].source_text == "RIGHTSIDE\nLEFTSIDE"
+    assert payload.regions[0].shape == "rect"
+    assert payload.regions[0].body_bbox is not None
+    assert payload.regions[0].body_bbox[0] <= 46
+    assert payload.regions[0].body_bbox[2] >= 194
 
 
 def test_hybrid_manga_ocr_keeps_model_layout_and_recovers_windows_text() -> None:

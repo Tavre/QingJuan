@@ -5,6 +5,7 @@ umask 077
 readonly REPO_DIR="/opt/qingjuan/app"
 readonly VENV_DIR="/opt/qingjuan/venv"
 readonly SERVICE_NAME="qingjuan-backend"
+readonly SERVICE_USER="qingjuan"
 
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   printf '更新脚本必须使用 sudo 或 root 运行。\n' >&2
@@ -31,6 +32,9 @@ trap on_exit EXIT
 git -C "$REPO_DIR" pull --ff-only
 "$VENV_DIR/bin/python" -m pip install -r "$REPO_DIR/python-backend/requirements.txt"
 "$VENV_DIR/bin/python" -m pip check
+# Restore service access after pip creates files under the script's restrictive umask.
+chown -R root:"$SERVICE_USER" "$VENV_DIR"
+chmod -R u=rwX,g=rX,o= "$VENV_DIR"
 install -o root -g root -m 0644 \
   "$REPO_DIR/deploy/linux/qingjuan-backend.service" \
   "/etc/systemd/system/${SERVICE_NAME}.service"

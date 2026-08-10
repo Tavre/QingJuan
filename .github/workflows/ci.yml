@@ -60,7 +60,9 @@ jobs:
         run: |
           bash -n deploy/linux/install.sh
           bash -n deploy/linux/update.sh
+          bash -n deploy/linux/uninstall.sh
           bash -n deploy/linux/qingjuan-info.sh
+          bash deploy/linux/uninstall.sh --help >/dev/null
           grep -q '^ExecStart=/opt/qingjuan/venv/bin/python -m app.main serve' \
             deploy/linux/qingjuan-backend.service
           grep -q '^User=qingjuan$' deploy/linux/qingjuan-backend.service

@@ -37,6 +37,9 @@ install -o root -g root -m 0644 \
 install -o root -g root -m 0755 \
   "$REPO_DIR/deploy/linux/qingjuan-info.sh" \
   "/usr/local/sbin/qingjuan-info"
+install -o root -g root -m 0755 \
+  "$REPO_DIR/deploy/linux/uninstall.sh" \
+  "/usr/local/sbin/qingjuan-uninstall"
 systemctl daemon-reload
 systemctl start "$SERVICE_NAME"
 restart_required="false"

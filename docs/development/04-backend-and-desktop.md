@@ -182,12 +182,14 @@ Compose 或随仓库分发的反向代理配置：
 sudo mkdir -p /opt/qingjuan
 sudo git clone https://github.com/Tavre/QingJuan.git /opt/qingjuan/app
 cd /opt/qingjuan/app
-sudo bash deploy/linux/install.sh --url http://10.0.0.20:19453 --bind 0.0.0.0
+sudo bash deploy/linux/install.sh
 sudo qingjuan-info
 ```
 
-`--url` 是交给 Windows 客户端的 FastAPI 根地址，不包含 `/api/v1`；`--bind 0.0.0.0` 只能配合受控私有
-网络和防火墙使用。只允许 SSH 隧道访问时使用 `--url http://127.0.0.1:19453 --bind 127.0.0.1`。
+安装脚本优先检测 Tailscale IPv4，再从服务器网卡选择私有 IPv4，自动生成 FastAPI 根地址并监听
+`0.0.0.0`。不会联网查询或自动暴露公网 IP；检测不到私有地址时，必须先配置私有网络，或使用
+`--url https://域名` 指定已配置 HTTPS 反向代理的地址。`--url` 不包含 `/api/v1`；只允许 SSH 隧道访问时
+使用 `--url http://127.0.0.1:19453 --bind 127.0.0.1`。
 安装脚本生成 32 字节随机 Token、写入服务端摘要、创建虚拟环境、安装 systemd 单实例服务并将连接信息
 打印到控制台。后续更新使用：
 
@@ -195,6 +197,15 @@ sudo qingjuan-info
 sudo bash /opt/qingjuan/app/deploy/linux/update.sh
 sudo qingjuan-info
 ```
+
+卸载程序时默认保留 `/var/lib/qingjuan`：
+
+```bash
+sudo qingjuan-uninstall
+```
+
+需要同时永久删除书库数据时，直接执行 `qingjuan-uninstall --purge-data`。卸载脚本只允许删除固定的青卷目录，
+并在保留数据时保留 `qingjuan` 系统用户，避免书库文件失去属主。
 
 备份必须同时覆盖 SQLite 与书籍文件。默认做法是停止 `qingjuan-backend`，备份整个
 `/var/lib/qingjuan` 后再启动；恢复到临时目录验证数据库与清单后才能替换生产目录。当前不承诺无停机

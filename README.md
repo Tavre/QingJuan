@@ -49,12 +49,12 @@
 sudo mkdir -p /opt/qingjuan
 sudo git clone https://github.com/Tavre/QingJuan.git /opt/qingjuan/app
 cd /opt/qingjuan/app
-sudo bash deploy/linux/install.sh --url http://10.0.0.20:19453 --bind 0.0.0.0
+sudo bash deploy/linux/install.sh
 sudo qingjuan-info
 ```
 
-将示例中的 `10.0.0.20` 改成 Windows 电脑能够访问的服务器私有 IP。安装完成后，
-`sudo qingjuan-info` 会显示 FastAPI 地址和连接 Token。
+安装脚本会自动识别服务器的 Tailscale、WireGuard 或局域网 IP。安装完成后，`sudo qingjuan-info` 会显示
+FastAPI 地址和连接 Token。公网服务器请使用 `--url https://你的域名` 指定已配置反向代理的 HTTPS 地址。
 
 然后在 Windows 应用中：
 
@@ -76,7 +76,13 @@ sudo journalctl -u qingjuan-backend -f
 
 # 更新后端
 sudo bash /opt/qingjuan/app/deploy/linux/update.sh
+
+# 卸载并保留书库数据
+sudo qingjuan-uninstall
 ```
+
+需要连同书库一起永久删除时，直接运行
+`sudo qingjuan-uninstall --purge-data`，不要先执行普通卸载。
 
 ## 数据与安全
 

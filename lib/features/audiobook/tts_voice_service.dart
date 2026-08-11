@@ -39,7 +39,7 @@ class FlutterTtsVoiceService implements TtsVoiceService {
     await _flutterTts.setPitch(style.pitchFor(voice.previewText));
     await _flutterTts.setVolume(1);
     final speakResult = await _flutterTts.speak(voice.previewText);
-    if (speakResult != 1) throw StateError('Windows TTS 未能开始试听');
+    if (speakResult != 1) throw StateError('设备 TTS 未能开始试听');
   }
 
   @override

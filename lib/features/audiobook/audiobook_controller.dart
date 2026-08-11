@@ -333,10 +333,10 @@ class AudiobookController extends ChangeNotifier {
     if (exception is PlatformException) {
       final message = exception.message?.trim();
       return message == null || message.isEmpty
-          ? 'Windows 朗读服务调用失败，请检查系统语音后重试'
-          : 'Windows 朗读失败：$message';
+          ? '设备朗读服务调用失败，请检查 TTS 引擎和语音包后重试'
+          : '设备朗读失败：$message';
     }
-    return 'Windows 朗读服务暂时不可用，请停止后重试';
+    return '设备朗读服务暂时不可用，请停止后重试';
   }
 
   void _notify() {

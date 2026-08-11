@@ -26,7 +26,7 @@ body:
       label: 影响范围
       options:
         - Flutter / Fluent UI
-        - Windows 桌面端
+        - Windows / Android 客户端
         - FastAPI / 数据层
         - 抓取与站点适配
         - 文档与工程化

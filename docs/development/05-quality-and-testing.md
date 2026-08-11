@@ -7,7 +7,7 @@
 1. Red：写出能稳定复现需求的最小失败测试；
 2. Green：实现使测试通过的最小改动；
 3. Refactor：在测试保护下拆分职责、消除重复并改善命名；
-4. Regression：运行相关测试、全量测试和真实 Windows 构建。
+4. Regression：运行相关测试、全量测试和真实 Windows / Android 构建。
 
 测试应描述用户可观察行为，不绑定私有实现。缺陷测试在修复后长期保留。
 
@@ -27,11 +27,11 @@
 
 覆盖：
 
-- 顶层 `NavigationView` 展开与紧凑模式；
+- 手机底部导航、平板侧栏及二者的宽度切换；
 - 加载、空、错误和内容状态；
 - 表单校验、按钮禁用、对话框确认；
-- 主题切换和关键键盘操作；
-- 长文本与不同桌面窗口宽度。
+- 主题切换、系统返回和关键触控操作；
+- 长文本、文字缩放与不同手机/平板宽度。
 
 测试必须显式提供 `MediaQuery`、主题和依赖，避免依赖开发机隐含环境。
 
@@ -48,26 +48,26 @@
 - 无 Token、错误 Token、正确 Token、元数据版本与服务标识。
 - 所有公开响应和错误都不包含数据目录、绝对路径或设置密钥。
 - 导入上传、导出产物、认证下载、过期清理和路径穿越防护。
-- Linux 平台不调用 Windows OCR，Chromium 能力通过显式可执行文件探测。
+- Linux Chromium 与 RapidOCR 能力通过显式配置和探测暴露。
 
 ### 远程连接与 Linux 原生服务
 
-- Dart 测试覆盖本地/远程模式、远程失败不启动本地进程、Token 安全读取和服务器切换清理。
+- Dart 测试覆盖未配置、远程成功/失败、Token 安全读取和服务器切换清理，并证明不会启动本地进程。
 - API 测试覆盖 JSON、multipart、图片和流式下载都携带正确认证头。
 - 同源测试必须证明 Token 不会发送给第三方封面 URL 或跨源重定向。
 - Bash 语法和原生进程冒烟测试验证 `/healthz`、认证元数据、可写数据目录、单 worker 与优雅关闭。
 - systemd 单元必须通过 `systemd-analyze verify`，安装脚本不得把原始 Token 写入普通日志或进程参数。
-- Windows 手工验收至少连接一次真实 Linux 后端，完成导入、阅读、任务、设置和导出下载。
+- Windows / Android 手工验收至少各连接一次真实 Linux 后端，完成导入、阅读、任务、设置和导出下载。
 
-### Windows 手工验收
+### 客户端手工验收
 
 自动化不能替代：
 
-- Release 可执行文件启动；
-- 本地后端自动启动并通过健康检查；
-- 退出后自有后端关闭；
-- 文件选择器、Windows OCR、窗口缩放；
-- 亮色/深色、键盘导航和 150%/200% 缩放。
+- Release APK 安装和首次启动；
+- 未配置状态、正确/错误 Token、断网、重连与服务器切换；
+- 系统文件选择器、上传、导出下载和 Android TTS；
+- 前后台切换、系统返回键/手势、旋转与进程恢复；
+- 亮色/深色、手机/平板布局和 150%/200% 文字缩放。
 
 ## 3. 强制命令
 
@@ -77,7 +77,7 @@
 dart format --output=none --set-exit-if-changed lib test
 flutter analyze
 flutter test
-flutter build windows --release
+flutter build apk --release
 ```
 
 后端目录：
@@ -89,11 +89,7 @@ python -m pytest
 python -m compileall -q app
 ```
 
-完整发布变更还要执行：
-
-```powershell
-./tool/build_windows.ps1
-```
+完整发布变更还要在 API 26 和当前 Android 真机/模拟器完成安装冒烟测试。
 
 ## 4. 三轮验证
 
@@ -101,9 +97,9 @@ python -m compileall -q app
 
 1. 静态轮：格式化、Analyzer、Ruff、依赖与敏感信息扫描；
 2. 行为轮：Dart/Python 单元测试和 Widget/接口测试；
-3. 产物轮：Windows Release 构建、启动、健康检查和退出。
+3. 产物轮：Windows Release 与 Android Release APK 构建、安装、远程握手和退出。
 
-涉及远程后端或部署时，产物轮还包括 Linux 原生进程启动、systemd 单元检查、认证请求和 Windows 到 Linux
+涉及后端或部署时，产物轮还包括 Linux 原生进程启动、systemd 单元检查、认证请求和 Android 到 Linux
 的真实文件往返；不得用本机共享目录替代网络传输验证。
 
 某轮失败时先修复，再从受影响的最早轮开始重跑。不得把“本地能打开”当作所有测试通过。
@@ -124,12 +120,12 @@ python -m compileall -q app
 
 变更只有同时满足以下条件才算完成：
 
-- 需求与边界明确，未引入手机端或旧技术栈；
+- 需求与边界明确，未引入手机本地后端或旧前端技术栈；
 - 架构和命名符合规范，无新增巨型文件；
 - 正常、空、错误、重试和取消/重复操作已考虑；
 - 新行为有测试，旧行为无回归；
 - 文档与命令同步；
-- 本地模式、Linux 远程模式和认证边界均按变更范围验证；
+- Windows / Android 远程连接、Linux 服务和认证边界均按变更范围验证；
 - 三轮验证通过；
 - `git status` 中无缓存、构建产物和无关文件；
 - 不包含凭据、数据库、个人数据或受版权保护内容。

@@ -1,5 +1,7 @@
 import 'package:fluent_ui/fluent_ui.dart';
 
+import 'responsive.dart';
+
 class LoadingView extends StatelessWidget {
   const LoadingView({this.label = '正在加载', super.key});
 
@@ -7,9 +9,13 @@ class LoadingView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final compact = windowClassOf(context) == WindowClass.compact;
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(48),
+        padding: EdgeInsets.symmetric(
+          horizontal: compact ? 24 : 48,
+          vertical: compact ? 16 : 48,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
@@ -39,25 +45,60 @@ class EmptyView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = FluentTheme.of(context);
+    final compact = windowClassOf(context) == WindowClass.compact;
+    final content = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        Container(
+          width: compact ? 68 : 48,
+          height: compact ? 68 : 48,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: theme.accentColor.withAlpha(
+              theme.brightness == Brightness.dark ? 54 : 24,
+            ),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            icon,
+            size: compact ? 28 : 24,
+            color: theme.accentColor,
+          ),
+        ),
+        SizedBox(height: compact ? 22 : 16),
+        Text(
+          title,
+          textAlign: TextAlign.center,
+          style: theme.typography.subtitle?.copyWith(
+            fontSize: compact ? 20 : null,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          message,
+          textAlign: TextAlign.center,
+          style: theme.typography.body?.copyWith(
+            height: 1.6,
+            color: theme.resources.textFillColorSecondary,
+          ),
+        ),
+        if (action != null) ...<Widget>[
+          const SizedBox(height: 22),
+          action!,
+        ],
+      ],
+    );
     return Center(
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 64, horizontal: 24),
+        padding: EdgeInsets.symmetric(
+          vertical: compact ? 24 : 64,
+          horizontal: compact ? 0 : 24,
+        ),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 460),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Icon(icon, size: 34, color: FluentTheme.of(context).accentColor),
-              const SizedBox(height: 16),
-              Text(title, style: FluentTheme.of(context).typography.subtitle),
-              const SizedBox(height: 8),
-              Text(message, textAlign: TextAlign.center),
-              if (action != null) ...<Widget>[
-                const SizedBox(height: 18),
-                action!
-              ],
-            ],
-          ),
+          constraints: const BoxConstraints(maxWidth: 480),
+          child: content,
         ),
       ),
     );

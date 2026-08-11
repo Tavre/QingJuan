@@ -8,12 +8,12 @@ abstract interface class ConnectionSecretStore {
   Future<void> deleteToken();
 }
 
-class WindowsConnectionSecretStore implements ConnectionSecretStore {
-  const WindowsConnectionSecretStore();
+class SecureConnectionSecretStore implements ConnectionSecretStore {
+  const SecureConnectionSecretStore();
 
   static const _tokenKey = 'qingjuan.backendToken';
   static const _storage = FlutterSecureStorage(
-    wOptions: WindowsOptions(useBackwardCompatibility: false),
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
 
   @override

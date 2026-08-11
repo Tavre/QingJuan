@@ -5,7 +5,9 @@ import '../../shared/app_surface.dart';
 import '../../shared/page_frame.dart';
 
 class AboutPage extends StatefulWidget {
-  const AboutPage({super.key});
+  const AboutPage({required this.onBack, super.key});
+
+  final VoidCallback onBack;
 
   @override
   State<AboutPage> createState() => _AboutPageState();
@@ -26,10 +28,59 @@ class _AboutPageState extends State<AboutPage> {
   Widget build(BuildContext context) {
     return PageFrame(
       title: '关于青卷',
-      subtitle: '开源的 Windows 小说与漫画阅读、下载和翻译工具。',
+      subtitle: '连接 Linux 后端的开源 Windows 与 Android 阅读、下载和翻译工具。',
+      compactHeader: Row(
+        children: <Widget>[
+          Tooltip(
+            message: '返回设置',
+            child: IconButton(
+              key: const ValueKey('mobile-about-back-button'),
+              icon: const Icon(
+                FluentIcons.back,
+                semanticLabel: '返回设置',
+              ),
+              onPressed: widget.onBack,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  '关于青卷',
+                  style: FluentTheme.of(context).typography.title?.copyWith(
+                        fontSize: 28,
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+                Text(
+                  '开源、远程、专注阅读',
+                  style: FluentTheme.of(context).typography.caption,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
+          const FeatureHero(
+            icon: FluentIcons.reading_mode,
+            title: '青卷 QingJuan',
+            message: '把下载、翻译和数据留在 Linux 服务器，把轻快、沉浸的阅读体验带到 Windows 与 Android。',
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                StatusPill('Flutter', accented: true),
+                StatusPill('FastAPI'),
+                StatusPill('GPL v3'),
+              ],
+            ),
+          ),
+          const SizedBox(height: 28),
           if (_copiedLabel != null) ...<Widget>[
             InfoBar(
               title: Text('${_copiedLabel!}已复制'),
@@ -41,6 +92,7 @@ class _AboutPageState extends State<AboutPage> {
           const SectionTitle('项目'),
           AppSurface(
             padding: const EdgeInsets.symmetric(horizontal: 16),
+            tone: AppSurfaceTone.elevated,
             child: Column(
               children: <Widget>[
                 _InformationRow(
@@ -66,13 +118,14 @@ class _AboutPageState extends State<AboutPage> {
           const SectionTitle('开源许可'),
           const AppSurface(
             padding: EdgeInsets.symmetric(horizontal: 16),
+            tone: AppSurfaceTone.elevated,
             child: Column(
               children: <Widget>[
                 _InformationRow(
-                  icon: FluentIcons.pc1,
+                  icon: FluentIcons.cell_phone,
                   label: '支持平台',
-                  value: 'Windows 10 / Windows 11',
-                  description: '青卷目前仅提供 Windows 桌面客户端。',
+                  value: 'Windows 10 / 11 · Android 8.0+',
+                  description: '客户端不运行 Python，数据与任务统一由 Linux 后端管理。',
                 ),
                 Divider(),
                 _InformationRow(

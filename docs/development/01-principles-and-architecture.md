@@ -2,13 +2,13 @@
 
 ## 1. 工程目标
 
-青卷将抓取、下载、翻译和阅读能力组合为一个 Windows 桌面客户端，以及可在本机或 Linux
-服务器运行的单用户后端。工程设计优先级为：
+青卷将抓取、下载、翻译和阅读能力组合为 Windows / Android Flutter 客户端，以及运行在 Linux 服务器上的
+单用户后端。工程设计优先级为：
 
 1. 数据与凭据安全；
 2. 功能正确、故障可恢复；
 3. 代码边界清楚、可测试；
-4. Windows 体验一致；
+4. Windows 键鼠与 Android 触控体验一致；
 5. 性能与可扩展性。
 
 避免为了“以后可能用到”提前抽象。只有出现稳定边界、重复实现或明确测试需求时才提取接口。
@@ -20,8 +20,8 @@ Flutter View / Widget
         ↓ 用户意图与展示状态
 Feature Controller
         ↓ 领域模型
-ApiClient / BackendProcessManager
-        ↓ HTTP / Process
+ApiClient / BackendConnectionManager
+        ↓ HTTPS / private-network HTTP
 FastAPI Router / Auth
         ↓
 Service / Scraper / Repository
@@ -35,14 +35,14 @@ SQLite / Files / Third-party sites
 - Controller 不依赖具体页面实例，不持有 `BuildContext`。
 - `core/models` 不依赖 Feature 和 UI。
 - API 层负责序列化、状态码与错误归一化，不包含页面跳转。
-- 客户端连接配置明确区分 `local` 与 `remote`；远程失败不得隐式启动或切换到本机后端。
+- 客户端只有远程连接；未配置、认证失败或版本不兼容时不得启动任何本地后端。
 - 连接 Token 只由 API 基础设施层读取，不进入领域模型、页面日志或第三方请求。
 - FastAPI Router 校验输入、调用业务函数并映射响应，不编写大段抓取或 SQL。
 - 数据层不导入 FastAPI、Flutter 或 HTTP 请求对象。
 
-后端是书籍、任务、阅读进度、模型设置和文件的唯一权威来源。客户端文件选择器产生的路径只属于
-Windows 客户端：导入时上传文件，导出时下载服务端产物，任何 API 都不得要求 Linux 后端写入
-Windows 路径。Windows TTS 始终在客户端运行；OCR、抓取与翻译能力属于后端，并通过能力握手暴露。
+后端是书籍、任务、阅读进度、模型设置和文件的唯一权威来源。客户端文件选择器产生的 URI 或临时路径
+只属于对应客户端设备：导入时上传文件，导出时下载服务端产物，任何 API 都不得要求 Linux 后端写入
+客户端路径。设备 TTS 始终在客户端运行；OCR、抓取与翻译能力属于后端，并通过能力握手暴露。
 
 ## 3. 目录职责
 
@@ -51,7 +51,7 @@ lib/
 ├─ app/                 # 组合根、主题、AppScope、全局偏好
 ├─ core/
 │  ├─ api/              # HTTP 客户端与统一异常
-│  ├─ backend/          # 本地后端进程生命周期
+│  ├─ backend/          # 远程后端连接状态与安全凭据
 │  ├─ models/           # 跨功能领域模型
 │  └─ state/            # 通用加载状态
 ├─ features/<feature>/  # 页面、控制器与本功能 Widget
@@ -67,7 +67,9 @@ python-backend/
 
 deploy/linux/           # Linux 原生安装、systemd 服务、更新与连接信息脚本
 
-assets/                 # 品牌图片、文档截图与 Windows 应用图标
+android/                # Android Manifest、Gradle 与原生资源
+windows/                # Windows Runner、插件注册与原生资源
+assets/                 # 品牌图片、文档截图与应用图标
 ```
 
 文件放置原则：
@@ -75,7 +77,7 @@ assets/                 # 品牌图片、文档截图与 Windows 应用图标
 - 只服务一个功能的组件放进该 Feature，不提前放入 `shared`。
 - `shared` 不导入具体 Feature。
 - 应用启动只负责依赖组装，不实现业务。
-- Windows Runner 只处理原生窗口与 Flutter 引擎，不放业务逻辑。
+- Android / Windows Runner 只承载 Flutter、权限与平台资源，不放业务逻辑。
 
 ## 4. 单一职责与拆分
 
@@ -125,7 +127,7 @@ assets/                 # 品牌图片、文档截图与 Windows 应用图标
 - 新增顶层目录或第三方框架；
 - 改变 Flutter 与后端通信协议；
 - 改变数据目录、Schema 或迁移策略；
-- 改变本地后端启动与关闭方式；
+- 改变远程后端连接、认证与服务器切换方式；
 - 引入认证、远程监听或外部服务；
 - 改变单用户数据归属、远程文件传输或 Linux 部署方式；
 - 大规模移动文件或破坏兼容性。

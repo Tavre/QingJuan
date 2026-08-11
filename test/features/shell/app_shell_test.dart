@@ -5,7 +5,7 @@ import 'package:qingjuan/app/app_scope.dart';
 import 'package:qingjuan/app/app_state.dart';
 import 'package:qingjuan/app/app_theme.dart';
 import 'package:qingjuan/core/api/api_client.dart';
-import 'package:qingjuan/core/backend/backend_process_manager.dart';
+import 'package:qingjuan/core/backend/backend_connection_manager.dart';
 import 'package:qingjuan/core/models/book.dart';
 import 'package:qingjuan/core/state/load_state.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
@@ -13,83 +13,142 @@ import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/shell/app_shell.dart';
 import 'package:qingjuan/features/sources/sources_controller.dart';
 import 'package:qingjuan/features/tasks/tasks_controller.dart';
-import 'package:qingjuan/shared/desktop_title_bar.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
 
-  testWidgets('narrow desktop window uses compact navigation pane',
-      (tester) async {
+  testWidgets('phone uses five-item bottom navigation', (tester) async {
+    final harness = await _Harness.create(const Size(390, 844));
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(find.byKey(const ValueKey('mobile-app-bar')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('mobile-bottom-navigation')),
+      findsOneWidget,
+    );
+    expect(find.byType(NavigationView), findsNothing);
+    for (final section in <AppSection>[
+      AppSection.library,
+      AppSection.search,
+      AppSection.sources,
+      AppSection.tasks,
+      AppSection.settings,
+    ]) {
+      expect(
+        find.byKey(ValueKey<String>('mobile-navigation-${section.name}')),
+        findsOneWidget,
+      );
+    }
+  });
+
+  testWidgets('phone navigation switches primary workspace', (tester) async {
     final harness = await _Harness.create(const Size(390, 844));
     addTearDown(harness.dispose);
     await tester.pumpWidget(harness.widget);
     await tester.pump(const Duration(milliseconds: 600));
 
-    final compactView =
-        tester.widget<NavigationView>(find.byType(NavigationView));
-    expect(compactView.pane?.displayMode, PaneDisplayMode.compact);
-    expect(compactView.pane?.items, hasLength(5));
-    expect(compactView.pane?.footerItems, hasLength(1));
-    expect(find.text('书架'), findsWidgets);
-  });
-
-  testWidgets('expanded layout uses persistent navigation pane',
-      (tester) async {
-    final harness = await _Harness.create(const Size(1280, 800));
-    addTearDown(harness.dispose);
-    await tester.pumpWidget(harness.widget);
-    await tester.pump(const Duration(milliseconds: 600));
-
-    final expandedView =
-        tester.widget<NavigationView>(find.byType(NavigationView));
-    expect(expandedView.pane?.displayMode, PaneDisplayMode.open);
-    expect(expandedView.pane?.items, hasLength(5));
-    expect(expandedView.pane?.footerItems, hasLength(1));
-    expect(expandedView.appBar?.automaticallyImplyLeading, isFalse);
-    expect(expandedView.appBar?.height, desktopTitleBarHeight);
-    expect(find.byKey(const ValueKey('desktop-title-bar')), findsOneWidget);
-    expect(find.byKey(const ValueKey('window-minimize')), findsOneWidget);
-    expect(find.byKey(const ValueKey('window-maximize')), findsOneWidget);
-    expect(find.byKey(const ValueKey('window-close')), findsOneWidget);
-    expect(find.byType(Image), findsNothing);
-    final transition = expandedView.transitionBuilder!(
-      const SizedBox.shrink(),
-      const AlwaysStoppedAnimation<double>(0.5),
+    await tester.tap(
+      find.byKey(const ValueKey('mobile-navigation-tasks')),
     );
-    expect(transition, isA<SuppressPageTransition>());
-  });
-
-  testWidgets('keyboard shortcuts switch primary workspaces', (tester) async {
-    final harness = await _Harness.create(const Size(1280, 800));
-    addTearDown(harness.dispose);
-    await tester.pumpWidget(harness.widget);
-    await tester.pump(const Duration(milliseconds: 600));
-
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-    await tester.sendKeyEvent(LogicalKeyboardKey.digit4);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
     await tester.pump(const Duration(milliseconds: 600));
 
     expect(harness.appState.section, AppSection.tasks);
     expect(find.text('任务'), findsWidgets);
   });
 
-  testWidgets('dark shell supports 200 percent text scaling', (tester) async {
+  testWidgets('phone tool pages use the shared reading-app visual hierarchy',
+      (tester) async {
+    final harness = await _Harness.create(const Size(390, 844));
+    addTearDown(harness.dispose);
+    harness.sources.state = LoadState.empty;
+    harness.tasks.state = LoadState.empty;
+
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 600));
+
+    await tester.tap(
+      find.byKey(const ValueKey('mobile-navigation-search')),
+    );
+    await tester.pump(const Duration(milliseconds: 180));
+    expect(find.text('发现下一本想读的书'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(const ValueKey('mobile-navigation-sources')),
+    );
+    await tester.pump(const Duration(milliseconds: 180));
+    expect(find.text('建立你的内容来源'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(const ValueKey('mobile-navigation-tasks')),
+    );
+    await tester.pump(const Duration(milliseconds: 180));
+    expect(find.text('任务队列已就绪'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(const ValueKey('mobile-navigation-settings')),
+    );
+    await tester.pump(const Duration(milliseconds: 180));
+    expect(find.text('让青卷更适合你'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('unconfigured phone opens data pages with connection guidance',
+      (tester) async {
     final harness = await _Harness.create(
-      const Size(960, 640),
-      textScaler: const TextScaler.linear(2),
-      brightness: Brightness.dark,
+      const Size(390, 844),
+      configured: false,
     );
     addTearDown(harness.dispose);
     await tester.pumpWidget(harness.widget);
     await tester.pump(const Duration(milliseconds: 600));
 
-    expect(find.byKey(const ValueKey('desktop-title-bar')), findsOneWidget);
-    expect(tester.takeException(), isNull);
+    expect(harness.appState.section, AppSection.settings);
+    expect(find.text('首次使用需要连接服务器'), findsOneWidget);
+
+    for (final section in <AppSection>[
+      AppSection.library,
+      AppSection.search,
+      AppSection.sources,
+      AppSection.tasks,
+    ]) {
+      await tester.tap(
+        find.byKey(ValueKey<String>('mobile-navigation-${section.name}')),
+      );
+      await tester.pump(const Duration(milliseconds: 150));
+
+      expect(harness.appState.section, section);
+      expect(
+        find.byKey(ValueKey<String>('backend-required-${section.name}')),
+        findsOneWidget,
+      );
+    }
+
+    await tester.tap(
+      find.byKey(const ValueKey('backend-required-open-settings')),
+    );
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(harness.appState.section, AppSection.settings);
   });
 
-  testWidgets('about navigation shows project and community information',
+  testWidgets('tablet uses persistent Fluent navigation pane', (tester) async {
+    final harness = await _Harness.create(const Size(1280, 800));
+    addTearDown(harness.dispose);
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 600));
+
+    final view = tester.widget<NavigationView>(find.byType(NavigationView));
+    expect(view.pane?.displayMode, PaneDisplayMode.open);
+    expect(view.pane?.items, hasLength(5));
+    expect(view.pane?.footerItems, hasLength(1));
+    expect(find.byKey(const ValueKey('tablet-navigation')), findsOneWidget);
+    expect(find.byKey(const ValueKey('mobile-app-bar')), findsNothing);
+  });
+
+  testWidgets('phone settings opens cross-platform project information',
       (tester) async {
     MethodCall? clipboardCall;
     final messenger =
@@ -101,25 +160,28 @@ void main() {
     addTearDown(
       () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
     );
-    final harness = await _Harness.create(const Size(1280, 800));
+    final harness = await _Harness.create(const Size(390, 844));
     addTearDown(harness.dispose);
     await tester.pumpWidget(harness.widget);
     await tester.pump(const Duration(milliseconds: 600));
 
-    final view = tester.widget<NavigationView>(find.byType(NavigationView));
-    final aboutItem = view.pane!.footerItems.single as PaneItem;
-    expect((aboutItem.title! as Text).data, '关于');
-
     await tester.tap(
-      find.byKey(const ValueKey('about-navigation-item')),
+      find.byKey(const ValueKey('mobile-navigation-settings')),
     );
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.tap(find.byKey(const ValueKey('settings-about-button')));
     await tester.pumpAndSettle();
 
     expect(find.text('关于青卷'), findsOneWidget);
+    expect(find.text('Windows 10 / 11 · Android 8.0+'), findsOneWidget);
     expect(find.text('https://github.com/Tavre/QingJuan'), findsOneWidget);
-    expect(find.text('1074882763'), findsOneWidget);
-    expect(find.text('Windows 10 / Windows 11'), findsOneWidget);
-    expect(find.text('GNU General Public License v3.0'), findsOneWidget);
+
+    await tester.binding.handlePopRoute();
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(harness.appState.section, AppSection.settings);
+
+    await tester.tap(find.byKey(const ValueKey('settings-about-button')));
+    await tester.pumpAndSettle();
 
     await tester.tap(
       find.byKey(
@@ -130,63 +192,33 @@ void main() {
 
     expect(find.text('GitHub 地址已复制'), findsOneWidget);
     expect(clipboardCall?.method, 'Clipboard.setData');
+  });
+
+  testWidgets('phone shell supports dark theme and 200 percent text scaling',
+      (tester) async {
+    final harness = await _Harness.create(
+      const Size(390, 844),
+      textScaler: const TextScaler.linear(2),
+      brightness: Brightness.dark,
+    );
+    addTearDown(harness.dispose);
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 600));
+
     expect(
-      (clipboardCall?.arguments as Map<Object?, Object?>?)?['text'],
-      'https://github.com/Tavre/QingJuan',
-    );
-  });
-
-  testWidgets('expanded navigation pane can collapse and expand',
-      (tester) async {
-    final harness = await _Harness.create(const Size(1280, 800));
-    addTearDown(harness.dispose);
-    await tester.pumpWidget(harness.widget);
-    await tester.pump(const Duration(milliseconds: 600));
-
-    await tester.tap(find.byKey(const ValueKey('navigation-pane-toggle')));
-    await tester.pump(const Duration(milliseconds: 600));
-
-    var view = tester.widget<NavigationView>(find.byType(NavigationView));
-    expect(view.pane?.displayMode, PaneDisplayMode.compact);
-
-    await tester.tap(find.byKey(const ValueKey('navigation-pane-toggle')));
-    await tester.pump(const Duration(milliseconds: 600));
-
-    view = tester.widget<NavigationView>(find.byType(NavigationView));
-    expect(view.pane?.displayMode, PaneDisplayMode.open);
-  });
-
-  testWidgets('expanded navigation pane supports drag resizing',
-      (tester) async {
-    final harness = await _Harness.create(const Size(1280, 800));
-    addTearDown(harness.dispose);
-    await tester.pumpWidget(harness.widget);
-    await tester.pump(const Duration(milliseconds: 600));
-
-    final before =
-        tester.widget<NavigationView>(find.byType(NavigationView)).pane!;
-    final initialWidth = before.size!.openWidth!;
-
-    await tester.drag(
-      find.byKey(const ValueKey('navigation-pane-resizer')),
-      const Offset(60, 0),
-    );
-    await tester.pump(const Duration(milliseconds: 600));
-
-    final after =
-        tester.widget<NavigationView>(find.byType(NavigationView)).pane!;
-    expect(after.size!.openWidth, greaterThan(initialWidth));
+        find.byKey(const ValueKey('mobile-bottom-navigation')), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('book card handles a long CJK title without overflowing',
       (tester) async {
     final harness = await _Harness.create(
-      const Size(1280, 800),
+      const Size(390, 844),
       textScaler: const TextScaler.linear(1.5),
       books: const <Book>[
         Book(
           id: 'long-title',
-          title: '[Aliceholic13]花火制服コスで竜マ＆バイオナナの非常に長い作品タイトル',
+          title: '[Aliceholic13]花火制服コスで竜マ＆バイオナナ的非常长作品标题',
           sourceUrl: '',
           kind: '漫画',
           language: '中文',
@@ -203,7 +235,15 @@ void main() {
     await tester.pumpWidget(harness.widget);
     await tester.pump(const Duration(milliseconds: 600));
 
-    expect(find.textContaining('[Aliceholic13]'), findsOneWidget);
+    expect(find.textContaining('[Aliceholic13]'), findsWidgets);
+    expect(
+      find.byKey(const ValueKey('continue-reading-card')),
+      findsOneWidget,
+    );
+    final grid = tester.widget<SliverGrid>(find.byType(SliverGrid));
+    final delegate =
+        grid.gridDelegate as SliverGridDelegateWithFixedCrossAxisCount;
+    expect(delegate.crossAxisCount, 3);
     expect(tester.takeException(), isNull);
   });
 }
@@ -221,13 +261,27 @@ class _Harness {
 
   static Future<_Harness> create(
     Size viewport, {
+    bool configured = true,
     List<Book> books = const <Book>[],
     TextScaler textScaler = TextScaler.noScaling,
     Brightness brightness = Brightness.light,
   }) async {
-    final appState = AppState(await SharedPreferences.getInstance());
+    final preferences = await SharedPreferences.getInstance();
+    if (configured) {
+      await preferences.setString(
+        'qingjuan.backendUrl',
+        'https://qingjuan.example.test',
+      );
+    }
+    final appState = AppState(
+      preferences,
+      initialBackendToken: configured ? 'test-token' : '',
+    );
     final api = ApiClient(() => appState.backendUrl);
-    final backend = BackendProcessManager(api);
+    final backend = BackendConnectionManager(
+      api,
+      isConfigured: () => appState.hasBackendConnection,
+    );
     final library = LibraryController(api);
     if (books.isNotEmpty) {
       library.books = books;
@@ -277,5 +331,6 @@ class _Harness {
     tasks.dispose();
     settings.dispose();
     api.close();
+    appState.dispose();
   }
 }

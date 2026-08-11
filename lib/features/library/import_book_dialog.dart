@@ -3,6 +3,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 
 import '../../app/app_scope.dart';
 import '../../core/models/book.dart';
+import '../../shared/app_surface.dart';
 import '../../core/models/link_job.dart';
 import 'library_controller.dart';
 
@@ -172,7 +173,11 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                const Text('导入网页地址，或选择 TXT、DOCX、EPUB 小说与 PDF 漫画。链接任务收起后会继续运行。'),
+                const FeatureHero(
+                  icon: FluentIcons.library,
+                  title: '把新作品放进书架',
+                  message: '支持网页地址、TXT、DOCX、EPUB 小说与 PDF 漫画；远程解析任务收起后仍会继续。',
+                ),
                 if (controller.importProgress case final progress?) ...<Widget>[
                   const SizedBox(height: 12),
                   ProgressBar(value: (progress * 100).clamp(0, 100)),
@@ -184,6 +189,7 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
                 InfoLabel(
                   label: '作品地址',
                   child: TextBox(
+                    key: const ValueKey('import-book-url'),
                     controller: _urlController,
                     placeholder: 'https://...',
                     enabled: !busy,
@@ -277,6 +283,44 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
                       : (value) => setState(() => _translate = value),
                   content: const Text('导入后启用翻译'),
                 ),
+                const SizedBox(height: 16),
+                AppSurface(
+                  tone: AppSurfaceTone.muted,
+                  padding: const EdgeInsets.all(10),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: <Widget>[
+                      Button(
+                        onPressed: busy ? null : _importLocal,
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            Icon(FluentIcons.folder_open, size: 15),
+                            SizedBox(width: 7),
+                            Text('导入本地文件'),
+                          ],
+                        ),
+                      ),
+                      Button(
+                        onPressed: busy ? null : _previewRemote,
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            Icon(FluentIcons.view, size: 15),
+                            SizedBox(width: 7),
+                            Text('预览'),
+                          ],
+                        ),
+                      ),
+                      if (job != null && !job.isActive)
+                        Button(
+                          onPressed: controller.clearLinkJob,
+                          child: const Text('新建任务'),
+                        ),
+                    ],
+                  ),
+                ),
                 if (job != null) ...<Widget>[
                   const SizedBox(height: 18),
                   _LinkJobProgress(
@@ -316,19 +360,6 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
             Button(
               onPressed: _loading ? null : _close,
               child: Text(job?.isActive ?? false ? '收起' : '取消'),
-            ),
-            if (job != null && !job.isActive)
-              Button(
-                onPressed: controller.clearLinkJob,
-                child: const Text('新建'),
-              ),
-            Button(
-              onPressed: busy ? null : _importLocal,
-              child: const Text('导入本地文件'),
-            ),
-            Button(
-              onPressed: busy ? null : _previewRemote,
-              child: const Text('预览'),
             ),
             FilledButton(
               onPressed: busy

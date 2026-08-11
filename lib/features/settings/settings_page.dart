@@ -4,10 +4,12 @@ import 'package:fluent_ui/fluent_ui.dart';
 
 import '../../app/app_scope.dart';
 import '../../app/app_state.dart';
-import '../../core/backend/backend_process_manager.dart';
+import '../../core/backend/backend_connection_manager.dart';
+import '../../core/backend/backend_url_validator.dart';
 import '../../core/models/settings.dart';
 import '../../core/models/tts_speech_style.dart';
 import '../../core/models/tts_voice.dart';
+import '../../shared/app_surface.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
 import '../audiobook/tts_voice_service.dart';
@@ -36,7 +38,6 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _translationModelEnabled = false;
   bool _translationModelSupportsVision = false;
   bool _clearTranslationApiKey = false;
-  BackendConnectionMode _connectionMode = BackendConnectionMode.local;
   bool _initialized = false;
   late final TtsVoiceService _voiceService;
   List<TtsVoice> _voices = const <TtsVoice>[];
@@ -65,7 +66,7 @@ class _SettingsPageState extends State<SettingsPage> {
         _voices = voices;
         _voicesLoading = false;
         if (voices.isEmpty) {
-          _voiceError = 'Windows 当前没有可用的系统声音，请先安装语音包。';
+          _voiceError = '当前设备没有可用的系统声音，请先安装或启用 TTS 语音包。';
         }
       });
     } catch (error) {
@@ -114,7 +115,6 @@ class _SettingsPageState extends State<SettingsPage> {
     final scope = AppScope.of(context);
     _backendController.text = scope.appState.backendUrl;
     _backendTokenController.text = scope.appState.backendToken;
-    _connectionMode = scope.appState.connectionMode;
     _loadModel(scope.settings.value);
   }
 
@@ -158,21 +158,18 @@ class _SettingsPageState extends State<SettingsPage> {
       final backendUrl = _backendController.text.trim();
       final backendToken = _backendTokenController.text.trim();
       final connectionChanged =
-          scope.appState.connectionMode != _connectionMode ||
-              scope.appState.backendUrl.replaceAll(RegExp(r'/+$'), '') !=
-                  backendUrl.replaceAll(RegExp(r'/+$'), '');
-      if (_connectionMode == BackendConnectionMode.remote) {
-        _validateRemoteBackendUrl(backendUrl);
-        if (backendToken.isEmpty) {
-          throw StateError('远程后端必须填写连接 Token');
-        }
-        await scope.api.testConnection(
-          baseUrl: backendUrl,
-          token: backendToken,
-        );
+          scope.appState.backendUrl.replaceAll(RegExp(r'/+$'), '') !=
+                  backendUrl.replaceAll(RegExp(r'/+$'), '') ||
+              scope.appState.backendToken != backendToken;
+      validateBackendUrl(backendUrl);
+      if (backendToken.isEmpty) {
+        throw StateError('Linux 后端必须填写连接 Token');
       }
+      await scope.api.testConnection(
+        baseUrl: backendUrl,
+        token: backendToken,
+      );
       await scope.appState.setBackendConnection(
-        mode: _connectionMode,
         url: backendUrl,
         token: backendToken,
       );
@@ -180,6 +177,7 @@ class _SettingsPageState extends State<SettingsPage> {
       if (scope.backend.status != BackendStatus.ready) {
         throw StateError(scope.backend.message);
       }
+      scope.appState.clearNotice();
       if (connectionChanged) {
         scope.library.resetForBackendSwitch();
         scope.sources.resetForBackendSwitch();
@@ -237,14 +235,86 @@ class _SettingsPageState extends State<SettingsPage> {
       animation: Listenable.merge(<Listenable>[scope.appState, settings]),
       builder: (context, _) => PageFrame(
         title: '设置',
-        subtitle: '管理界面主题、听书声音、后端连接和翻译服务。',
-        command: FilledButton(
-          onPressed: settings.saving ? null : _save,
-          child: const Text('保存设置'),
+        subtitle: '管理界面主题、设备听书、Linux 后端和翻译服务。',
+        compactHeader: ReadingPageHeader(
+          title: '设置',
+          subtitle: '偏好、听书与服务器连接',
+          actions: <Widget>[
+            Tooltip(
+              message: '关于青卷',
+              child: IconButton(
+                key: const ValueKey('settings-about-button'),
+                icon: const Icon(
+                  FluentIcons.info,
+                  semanticLabel: '关于青卷',
+                ),
+                onPressed: () => scope.appState.selectSection(AppSection.about),
+              ),
+            ),
+            const SizedBox(width: 7),
+            FilledButton(
+              onPressed: settings.saving ? null : _save,
+              child: const Text('保存'),
+            ),
+          ],
+        ),
+        command: Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: <Widget>[
+            if (compact)
+              Button(
+                key: const ValueKey('settings-about-button'),
+                onPressed: () => scope.appState.selectSection(AppSection.about),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Icon(FluentIcons.info, size: 16),
+                    SizedBox(width: 8),
+                    Text('关于青卷'),
+                  ],
+                ),
+              ),
+            FilledButton(
+              onPressed: settings.saving ? null : _save,
+              child: const Text('保存设置'),
+            ),
+          ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
+            if (compact) ...<Widget>[
+              FeatureHero(
+                icon: FluentIcons.settings,
+                title: '让青卷更适合你',
+                message: '界面与设备偏好保存在手机，连接、书架和任务数据由 Linux 后端统一管理。',
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: <Widget>[
+                    StatusPill(
+                      switch (scope.appState.themeMode) {
+                        AppThemeMode.system => '跟随系统',
+                        AppThemeMode.light => '浅色外观',
+                        AppThemeMode.dark => '深色外观',
+                      },
+                      accented: true,
+                      icon: FluentIcons.color,
+                    ),
+                    StatusPill(
+                      scope.backend.status == BackendStatus.ready
+                          ? '服务器已连接'
+                          : '服务器待检查',
+                      icon: scope.backend.status == BackendStatus.ready
+                          ? FluentIcons.plug_connected
+                          : FluentIcons.warning,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 28),
+            ],
             const SectionTitle('界面主题'),
             SettingsSectionCard(
               icon: FluentIcons.color,
@@ -260,7 +330,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '跟随系统可自动响应 Windows 的浅色与深色设置。',
+                    '跟随系统可自动响应 Android 的浅色与深色设置。',
                     style: FluentTheme.of(context).typography.caption,
                   ),
                   const SizedBox(height: 14),
@@ -273,10 +343,16 @@ class _SettingsPageState extends State<SettingsPage> {
                         AppThemeMode.light => '浅色',
                         AppThemeMode.dark => '深色',
                       };
-                      return ToggleButton(
-                        checked: scope.appState.themeMode == mode,
-                        onChanged: (_) => scope.appState.setThemeMode(mode),
-                        child: Text(label),
+                      final icon = switch (mode) {
+                        AppThemeMode.system => FluentIcons.cell_phone,
+                        AppThemeMode.light => FluentIcons.sunny,
+                        AppThemeMode.dark => FluentIcons.clear_night,
+                      };
+                      return _ThemeModeChoice(
+                        label: label,
+                        icon: icon,
+                        selected: scope.appState.themeMode == mode,
+                        onPressed: () => scope.appState.setThemeMode(mode),
                       );
                     }).toList(),
                   ),
@@ -296,53 +372,29 @@ class _SettingsPageState extends State<SettingsPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  InfoLabel(
-                    label: '连接模式',
-                    child: ComboBox<BackendConnectionMode>(
-                      value: _connectionMode,
-                      isExpanded: true,
-                      items: const <ComboBoxItem<BackendConnectionMode>>[
-                        ComboBoxItem<BackendConnectionMode>(
-                          value: BackendConnectionMode.local,
-                          child: Text('本机后端'),
-                        ),
-                        ComboBoxItem<BackendConnectionMode>(
-                          value: BackendConnectionMode.remote,
-                          child: Text('Linux 远程后端'),
-                        ),
-                      ],
-                      onChanged: (value) {
-                        if (value != null) {
-                          setState(() => _connectionMode = value);
-                        }
-                      },
-                    ),
-                  ),
+                  _connectionStatusBar(scope),
                   const SizedBox(height: 12),
                   InfoLabel(
                     label: 'FastAPI 地址',
                     child: TextBox(
                       controller: _backendController,
-                      placeholder: 'http://127.0.0.1:19453',
+                      placeholder: 'https://qingjuan.example.com',
                     ),
                   ),
-                  if (_connectionMode ==
-                      BackendConnectionMode.remote) ...<Widget>[
-                    const SizedBox(height: 12),
-                    InfoLabel(
-                      label: '连接 Token',
-                      child: TextBox(
-                        controller: _backendTokenController,
-                        obscureText: true,
-                        placeholder: '由 Linux 服务端管理员生成',
-                      ),
+                  const SizedBox(height: 12),
+                  InfoLabel(
+                    label: '连接 Token',
+                    child: TextBox(
+                      controller: _backendTokenController,
+                      obscureText: true,
+                      enableSuggestions: false,
+                      autocorrect: false,
+                      placeholder: '由 Linux 服务端管理员生成',
                     ),
-                  ],
+                  ),
                   const SizedBox(height: 8),
                   Text(
-                    _connectionMode == BackendConnectionMode.local
-                        ? '本机模式会检查并按需启动随包后端。'
-                        : '远程模式只连接指定服务，失败时不会启动本机后端。',
+                    '公网地址必须使用 HTTPS；局域网、Tailscale 或 WireGuard 私有地址可使用 HTTP。',
                     style: FluentTheme.of(context).typography.caption,
                   ),
                 ],
@@ -358,7 +410,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   const InfoBar(
                     title: Text('OpenAI 兼容接口'),
                     content: Text(
-                      '统一使用 /v1/chat/completions。漫画默认由本地 RapidOCR 与 Windows OCR 识字，纯文本模型也可以翻译。',
+                      '统一使用 /v1/chat/completions。漫画由 Linux 后端的 RapidOCR 识字，纯文本模型也可以翻译。',
                     ),
                     severity: InfoBarSeverity.info,
                   ),
@@ -476,6 +528,30 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  Widget _connectionStatusBar(AppScope scope) {
+    final status = scope.backend.status;
+    final title = switch (status) {
+      BackendStatus.unconfigured => '首次使用需要连接服务器',
+      BackendStatus.checking => '正在检查 Linux 后端',
+      BackendStatus.ready => 'Linux 后端已连接',
+      BackendStatus.failed => 'Linux 后端连接失败',
+    };
+    final content = status == BackendStatus.failed
+        ? scope.backend.message
+        : '客户端不会在当前设备运行 Python。请填写 Linux 服务端提供的地址和 Token。';
+    final severity = switch (status) {
+      BackendStatus.unconfigured => InfoBarSeverity.warning,
+      BackendStatus.checking => InfoBarSeverity.info,
+      BackendStatus.ready => InfoBarSeverity.success,
+      BackendStatus.failed => InfoBarSeverity.error,
+    };
+    return InfoBar(
+      title: Text(title),
+      content: Text(content),
+      severity: severity,
+    );
+  }
+
   Widget _buildVoiceSettings(AppState appState, bool compact) {
     final selected = appState.ttsVoice;
     final selectedAvailable = selected == null ||
@@ -590,7 +666,7 @@ class _SettingsPageState extends State<SettingsPage> {
         const SizedBox(height: 8),
         Text(
           _voicesLoading
-              ? '正在读取 Windows 已安装声音…'
+              ? '正在读取设备已安装声音…'
               : '已发现 ${_voices.length} 个系统声音。选择会立即保存，并用于之后打开的听书页面。',
           style: FluentTheme.of(context).typography.caption,
         ),
@@ -605,7 +681,7 @@ class _SettingsPageState extends State<SettingsPage> {
             content: Text(
               _voices.any((voice) => voice.isNatural)
                   ? '自然声线配合朗读风格，可获得更接近真人的节奏和语调。'
-                  : '朗读风格会改善节奏、停顿和语调，但基础音色仍由 Windows 声线决定；标准声线可能保留机械感。',
+                  : '朗读风格会改善节奏、停顿和语调，但基础音色仍由系统 TTS 引擎决定；标准声线可能保留机械感。',
             ),
             severity: _voices.any((voice) => voice.isNatural)
                 ? InfoBarSeverity.success
@@ -629,38 +705,51 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 }
 
-void _validateRemoteBackendUrl(String value) {
-  final uri = Uri.tryParse(value);
-  if (uri == null || !uri.hasAuthority || uri.host.isEmpty) {
-    throw const FormatException('FastAPI 地址格式无效');
-  }
-  if (uri.userInfo.isNotEmpty || uri.hasQuery || uri.hasFragment) {
-    throw const FormatException('FastAPI 地址不能包含账号、查询参数或片段');
-  }
-  if (uri.scheme == 'https') return;
-  if (uri.scheme == 'http' && _isPrivateBackendHost(uri.host)) return;
-  throw const FormatException('远程后端必须使用 HTTPS；私有网络 IP 可使用 HTTP');
-}
+class _ThemeModeChoice extends StatelessWidget {
+  const _ThemeModeChoice({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onPressed,
+  });
 
-bool _isPrivateBackendHost(String host) {
-  final normalized = host.toLowerCase();
-  if (normalized == 'localhost' || normalized == '::1') return true;
-  if (normalized.startsWith('fc') ||
-      normalized.startsWith('fd') ||
-      normalized.startsWith('fe80:')) {
-    return true;
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = FluentTheme.of(context);
+    return SizedBox(
+      width: 92,
+      child: AppSurface(
+        onPressed: onPressed,
+        selected: selected,
+        tone: selected ? AppSurfaceTone.accent : AppSurfaceTone.muted,
+        borderRadius: 16,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+        child: Column(
+          children: <Widget>[
+            Icon(
+              icon,
+              size: 20,
+              color: selected
+                  ? theme.accentColor
+                  : theme.resources.textFillColorSecondary,
+            ),
+            const SizedBox(height: 7),
+            Text(
+              label,
+              maxLines: 1,
+              style: theme.typography.caption?.copyWith(
+                color: selected ? theme.accentColor : null,
+                fontWeight: selected ? FontWeight.w700 : null,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
-  final parts = normalized.split('.').map(int.tryParse).toList();
-  if (parts.length != 4 ||
-      parts.any((part) => part == null || part < 0 || part > 255)) {
-    return false;
-  }
-  final first = parts[0]!;
-  final second = parts[1]!;
-  return first == 10 ||
-      first == 127 ||
-      (first == 192 && second == 168) ||
-      (first == 172 && second >= 16 && second <= 31) ||
-      (first == 100 && second >= 64 && second <= 127) ||
-      (first == 169 && second == 254);
 }

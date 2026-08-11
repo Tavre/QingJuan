@@ -5,7 +5,8 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/api/api_client.dart';
-import '../core/backend/backend_process_manager.dart';
+import '../core/backend/backend_connection_manager.dart';
+import '../core/backend/backend_url_validator.dart';
 import '../core/backend/connection_secret_store.dart';
 import '../features/library/library_controller.dart';
 import '../features/settings/settings_controller.dart';
@@ -29,7 +30,7 @@ class QingJuanApp extends StatefulWidget {
 
   static Future<QingJuanApp> bootstrap() async {
     final preferences = await SharedPreferences.getInstance();
-    const secretStore = WindowsConnectionSecretStore();
+    const secretStore = SecureConnectionSecretStore();
     final token = await secretStore.readToken() ?? '';
     final appState = AppState(
       preferences,
@@ -40,9 +41,10 @@ class QingJuanApp extends StatefulWidget {
       () => appState.backendUrl,
       token: () => appState.backendToken,
     );
-    final backend = BackendProcessManager(
+    final backend = BackendConnectionManager(
       api,
-      isRemote: () => appState.connectionMode == BackendConnectionMode.remote,
+      isConfigured: () => appState.hasBackendConnection,
+      validateConfiguration: () => validateBackendUrl(appState.backendUrl),
     );
     return QingJuanApp._(
       appState: appState,
@@ -57,7 +59,7 @@ class QingJuanApp extends StatefulWidget {
 
   final AppState appState;
   final ApiClient api;
-  final BackendProcessManager backend;
+  final BackendConnectionManager backend;
   final LibraryController library;
   final SourcesController sources;
   final TasksController tasks;
@@ -84,6 +86,8 @@ class _QingJuanAppState extends State<QingJuanApp> {
         widget.tasks.load(),
         widget.settings.load(),
       ]);
+    } else {
+      widget.appState.selectSection(AppSection.settings);
     }
   }
 
@@ -94,7 +98,6 @@ class _QingJuanAppState extends State<QingJuanApp> {
     widget.tasks.dispose();
     widget.settings.dispose();
     widget.api.close();
-    unawaited(widget.backend.dispose());
     widget.appState.dispose();
     super.dispose();
   }

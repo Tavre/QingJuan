@@ -36,8 +36,7 @@ if ($ValidateVersionOnly) {
 
 $requiredFiles = @(
     (Join-Path $releaseOutput "qingjuan.exe"),
-    (Join-Path $releaseOutput "flutter_windows.dll"),
-    (Join-Path $releaseOutput "backend/qingjuan-desktop.exe")
+    (Join-Path $releaseOutput "flutter_windows.dll")
 )
 foreach ($requiredFile in $requiredFiles) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
@@ -47,6 +46,10 @@ foreach ($requiredFile in $requiredFiles) {
 $flutterAssets = Join-Path $releaseOutput "data/flutter_assets"
 if (-not (Test-Path -LiteralPath $flutterAssets -PathType Container)) {
     throw "Release package is missing Flutter assets: $flutterAssets"
+}
+$localBackend = Join-Path $releaseOutput "backend"
+if (Test-Path -LiteralPath $localBackend) {
+    throw "Windows release must be a remote-only client and cannot contain a local backend."
 }
 
 $clientVersion = (Get-Item -LiteralPath (Join-Path $releaseOutput "qingjuan.exe")).VersionInfo
@@ -79,8 +82,7 @@ try {
     $entryNames = @($archive.Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
     $requiredEntries = @(
         "qingjuan-windows/qingjuan.exe",
-        "qingjuan-windows/flutter_windows.dll",
-        "qingjuan-windows/backend/qingjuan-desktop.exe"
+        "qingjuan-windows/flutter_windows.dll"
     )
     foreach ($requiredEntry in $requiredEntries) {
         if ($requiredEntry -notin $entryNames) {
@@ -89,6 +91,9 @@ try {
     }
     if (-not ($entryNames | Where-Object { $_.StartsWith("qingjuan-windows/data/flutter_assets/") })) {
         throw "Release archive is missing data/flutter_assets."
+    }
+    if ($entryNames | Where-Object { $_.StartsWith("qingjuan-windows/backend/") }) {
+        throw "Release archive contains a forbidden local backend."
     }
 }
 finally {

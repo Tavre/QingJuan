@@ -17,7 +17,7 @@ body:
     id: environment
     attributes:
       label: 运行环境
-      placeholder: Windows 11 24H2 / Flutter 3.24.3 / Python 3.13
+      placeholder: Windows 11 或 Android 14 / 设备型号 / 后端 Linux 发行版
     validations:
       required: true
   - type: textarea

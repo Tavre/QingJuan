@@ -85,6 +85,29 @@ class SourcesPage extends StatelessWidget {
         title: '书源',
         subtitle: '维护内置、手动和 Legado 兼容书源。',
         scrollable: false,
+        compactHeader: ReadingPageHeader(
+          title: '书源',
+          subtitle: controller.sources.isEmpty
+              ? '连接内容来源'
+              : '${controller.sources.where((source) => source.enabled).length} 个书源已启用',
+          actions: <Widget>[
+            Tooltip(
+              message: '粘贴书源配置',
+              child: IconButton(
+                icon: const Icon(
+                  FluentIcons.clipboard_list,
+                  semanticLabel: '粘贴书源配置',
+                ),
+                onPressed: () => _showImportDialog(context, fromUrl: false),
+              ),
+            ),
+            const SizedBox(width: 7),
+            FilledButton(
+              onPressed: () => _showImportDialog(context, fromUrl: true),
+              child: const Text('导入'),
+            ),
+          ],
+        ),
         command: Wrap(
           spacing: 8,
           runSpacing: 8,
@@ -108,19 +131,87 @@ class SourcesPage extends StatelessWidget {
                 message: controller.error ?? '未知错误',
                 onRetry: controller.load,
               ),
-            LoadState.empty => const EmptyView(
-                icon: FluentIcons.database,
-                title: '暂无书源',
-                message: '导入书源配置后即可使用全网搜索。',
+            LoadState.empty => Column(
+                children: <Widget>[
+                  FeatureHero(
+                    icon: FluentIcons.database,
+                    title: '建立你的内容来源',
+                    message: '支持直接粘贴 JSON、Legado 书源文本，或从可信网址导入配置。',
+                    child: Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: Button(
+                            onPressed: () => _showImportDialog(
+                              context,
+                              fromUrl: false,
+                            ),
+                            child: const Text('粘贴配置'),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: FilledButton(
+                            onPressed: () => _showImportDialog(
+                              context,
+                              fromUrl: true,
+                            ),
+                            child: const Text('导入网址'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Expanded(
+                    child: EmptyView(
+                      icon: FluentIcons.database,
+                      title: '暂未配置书源',
+                      message: '导入并启用至少一个兼容书源后，即可在搜索页发现作品。',
+                    ),
+                  ),
+                ],
               ),
-            _ => ListView.builder(
-                cacheExtent: 360,
-                itemCount: controller.sources.length,
-                itemBuilder: (context, index) =>
-                    _SourceTile(source: controller.sources[index]),
+            _ => Column(
+                children: <Widget>[
+                  _SourcesOverview(sources: controller.sources),
+                  const SizedBox(height: 18),
+                  Expanded(
+                    child: ListView.builder(
+                      cacheExtent: 360,
+                      itemCount: controller.sources.length,
+                      itemBuilder: (context, index) =>
+                          _SourceTile(source: controller.sources[index]),
+                    ),
+                  ),
+                ],
               ),
           },
         ),
+      ),
+    );
+  }
+}
+
+class _SourcesOverview extends StatelessWidget {
+  const _SourcesOverview({required this.sources});
+
+  final List<BookSource> sources;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = sources.where((source) => source.enabled).length;
+    final supported = sources.where((source) => source.supported).length;
+    return FeatureHero(
+      icon: FluentIcons.database,
+      title: '书源运行状态',
+      message: enabled == 0 ? '当前没有启用的书源。' : '$enabled 个书源正在为搜索提供内容。',
+      child: Row(
+        children: <Widget>[
+          Expanded(child: AppMetric(label: '全部', value: '${sources.length}')),
+          Expanded(
+              child:
+                  AppMetric(label: '已启用', value: '$enabled', accented: true)),
+          Expanded(child: AppMetric(label: '兼容搜索', value: '$supported')),
+        ],
       ),
     );
   }
@@ -135,7 +226,8 @@ class _SourceTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
     return AppSurface(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: const EdgeInsets.only(bottom: 10),
+      tone: AppSurfaceTone.elevated,
       child: Row(
         children: <Widget>[
           AccentIcon(
@@ -161,6 +253,17 @@ class _SourceTile extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: theme.typography.caption,
                 ),
+                if (source.tags.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: source.tags
+                        .take(3)
+                        .map((tag) => StatusPill(tag))
+                        .toList(growable: false),
+                  ),
+                ],
               ],
             ),
           ),

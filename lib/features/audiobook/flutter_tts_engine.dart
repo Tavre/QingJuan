@@ -16,21 +16,19 @@ class FlutterTtsEngine implements TtsEngine {
 
   @override
   Future<void> initialize(String language) async {
-    // flutter_tts 4.2.5 的 Windows awaitSpeakCompletion 路径会把原生
-    // MethodResult 指针交给后台回调。停止、退出或快速切章时容易形成竞态。
-    // 改用插件的完成/取消事件等待，避开该原生生命周期问题。
+    // 统一使用完成、取消和错误事件驱动状态，兼容不同平台的 TTS 引擎。
     await _flutterTts.awaitSpeakCompletion(false);
     _flutterTts.setCompletionHandler(_completeSpeech);
     _flutterTts.setCancelHandler(_completeSpeech);
     _flutterTts.setErrorHandler(
       (message) => _completeSpeechError(
-        StateError('Windows TTS 播放失败：${message.toString()}'),
+        StateError('设备 TTS 播放失败：${message.toString()}'),
       ),
     );
     if (voice == null) {
       final languageResult = await _flutterTts.setLanguage(language);
       if (languageResult != 1) {
-        throw StateError('Windows 未安装 $language 对应的系统语音');
+        throw StateError('设备未安装 $language 对应的系统语音');
       }
     } else {
       final voiceResult = await _flutterTts.setVoice(voice!.pluginValue);
@@ -43,9 +41,9 @@ class FlutterTtsEngine implements TtsEngine {
 
   @override
   Future<void> speak(String text) async {
-    if (_disposed) throw StateError('Windows TTS 已关闭');
+    if (_disposed) throw StateError('设备 TTS 已关闭');
     if (_speechCompletion?.isCompleted == false) {
-      throw StateError('Windows TTS 正在处理上一段文字');
+      throw StateError('设备 TTS 正在处理上一段文字');
     }
     final completion = Completer<void>();
     _speechCompletion = completion;
@@ -53,7 +51,7 @@ class FlutterTtsEngine implements TtsEngine {
       final result = await _flutterTts.speak(text);
       if (result != 1) {
         _completeSpeech();
-        throw StateError('Windows TTS 未能开始朗读');
+        throw StateError('设备 TTS 未能开始朗读');
       }
       await completion.future;
     } catch (_) {
@@ -69,13 +67,13 @@ class FlutterTtsEngine implements TtsEngine {
   @override
   Future<void> pause() async {
     final result = await _flutterTts.pause();
-    if (result != 1) throw StateError('Windows TTS 未能暂停朗读');
+    if (result != 1) throw StateError('设备 TTS 未能暂停朗读');
   }
 
   @override
   Future<void> resume() async {
     final result = await _flutterTts.speak('');
-    if (result != 1) throw StateError('Windows TTS 未能继续朗读');
+    if (result != 1) throw StateError('设备 TTS 未能继续朗读');
   }
 
   @override
@@ -86,7 +84,7 @@ class FlutterTtsEngine implements TtsEngine {
     }
     try {
       final result = await _flutterTts.stop();
-      if (result != 1) throw StateError('Windows TTS 未能停止朗读');
+      if (result != 1) throw StateError('设备 TTS 未能停止朗读');
     } finally {
       _completeSpeech();
     }

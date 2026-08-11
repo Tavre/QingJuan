@@ -8,7 +8,7 @@ import 'package:qingjuan/app/app_scope.dart';
 import 'package:qingjuan/app/app_state.dart';
 import 'package:qingjuan/app/app_theme.dart';
 import 'package:qingjuan/core/api/api_client.dart';
-import 'package:qingjuan/core/backend/backend_process_manager.dart';
+import 'package:qingjuan/core/backend/backend_connection_manager.dart';
 import 'package:qingjuan/core/models/task.dart';
 import 'package:qingjuan/core/state/load_state.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
@@ -62,7 +62,7 @@ void main() {
     await tester.pumpWidget(harness.widget);
     await tester.pumpAndSettle();
 
-    expect(find.text('任务'), findsOneWidget);
+    expect(find.text('任务中心'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -207,7 +207,7 @@ class _Harness {
     final scope = AppScope(
       appState: appState,
       api: api,
-      backend: BackendProcessManager(api),
+      backend: BackendConnectionManager(api, isConfigured: () => false),
       library: LibraryController(api),
       sources: SourcesController(api),
       tasks: tasks,

@@ -32,7 +32,7 @@ void main() {
     expect(plugin.selectedVoice, isNull);
   });
 
-  test('speech waits for the Windows completion event without native await',
+  test('speech waits for the device completion event without native await',
       () async {
     final plugin = _FakeFlutterTts();
     final engine = FlutterTtsEngine(flutterTts: plugin);

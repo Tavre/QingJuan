@@ -15,6 +15,9 @@ class SettingsSectionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AppSurface(
+      tone: AppSurfaceTone.elevated,
+      borderRadius: 24,
+      padding: const EdgeInsets.all(18),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[

@@ -22,7 +22,7 @@
 1. 领域模型和 API 契约；
 2. Controller 用例与状态；
 3. 最小 Fluent UI；
-4. 错误、空状态、键盘与窗口适配；
+4. 错误、空状态、触控、系统返回与手机/平板适配；
 5. 重构重复代码；
 6. 三轮验证；
 7. 同步 README 或对应规范。
@@ -49,15 +49,15 @@ PR 描述应包含：
 
 ## 4. CI 与依赖
 
-GitHub Actions 必须验证：
+Pull Request、`main` / `master` 推送（包括 PR 合并后的推送）和手动运行必须先并行通过 3 个 CI 门禁：
 
-- Windows 上 Flutter 格式化、分析、测试和 Release 构建；
-- Python 上 Ruff 与 Pytest。
-- Linux 部署变更还要检查 Bash/systemd 配置，并以原生 Python 进程执行健康、认证和数据目录冒烟测试。
+1. Flutter 格式化、分析与测试；
+2. Python Ruff 与 Pytest；
+3. Bash/systemd 校验，以及 Linux 原生后端的健康、认证和数据目录冒烟测试。
 
-Windows 客户端 CI 固定使用 `windows-2022`，与项目要求的 Flutter `3.24.3` 和
-Visual Studio 2022 工具链保持一致；不要改回会随 GitHub 镜像迁移而变化的
-`windows-latest`。工作流必须在获取依赖前显式启用 Windows Desktop 支持。
+3 个门禁全部成功后，CI 才并行构建 Android Release APK 与 Windows x64 远程客户端，并将两端产物上传到
+该次 Actions 运行。任一门禁失败时不得启动产物构建。Android 使用固定 JDK 17，两个客户端统一使用
+Flutter `3.24.3`；构建不得依赖开发机全局 Gradle、签名文件或已缓存的私有配置。
 
 Dependabot 只维护当前技术栈：
 
@@ -65,66 +65,67 @@ Dependabot 只维护当前技术栈：
 - `pip`：FastAPI 后端；
 - `github-actions`：CI Actions。
 
-升级依赖时先阅读变更说明，尤其关注 Dart SDK、Windows 插件、FastAPI/Pydantic 和 PyInstaller。
+升级依赖时先阅读变更说明，尤其关注 Dart SDK、Android Gradle Plugin、平台插件和 FastAPI/Pydantic。
 不要在一个 PR 中无差别升级所有大版本。
 
-## 5. Windows 发布
+## 5. Windows 与 Android 发布
 
 ### 版本规则
 
-- `pubspec.yaml` 是客户端、Windows EXE 与后端的唯一发布版本源，格式为
+- `pubspec.yaml` 是 Windows / Android 客户端与后端的唯一发布版本源，格式为
   `major.minor.patch+build`；对外发布标签使用 `vmajor.minor.patch`。
 - 默认情况下，每次准备发布更新都自动递增 patch 和 build。例如
   `1.0.0+5` 的下一次普通更新为 `1.0.1+6`。
 - 用户或发布负责人明确指定版本时，以指定的语义版本为准，build 仍必须大于上一版；
   major、minor、预发布版或跳号不得自行推断。
 - 日常调试和重复构建不得修改版本号；只有准备形成新的发布更新时才执行递增。
-- 修改版本后必须验证 FastAPI 元数据与 Windows 文件属性均来自同一版本源，禁止在
-  Dart、Python、C++ 或发布脚本中新增独立硬编码版本。
-- 当前发布基线为 `1.3.3+15`；后续正式发布的 build 必须大于 `15`，不得回退版本或复用已发布 build。
-- 本次更新按默认 patch 与 build 递增规则使用 `1.3.4+16`，对外标签为 `v1.3.4`。
+- 修改版本后必须验证 Android `versionName` / `versionCode`、FastAPI 元数据与 Windows 文件属性均来自同一版本源，禁止在
+  Dart、Python、Kotlin、C++ 或发布脚本中新增独立硬编码版本。
+- 当前发布基线为 `1.3.4+16`；后续正式发布的 build 必须大于 `16`，不得回退版本或复用已发布 build。
+- 本次跨平台更新使用 `1.4.0+17`，对外标签为 `v1.4.0`。
 
 发布前：
 
 1. 按上述规则更新 `pubspec.yaml` 版本；
 2. 执行全部质量门禁；
-3. 执行 `tool/build_windows.ps1`；
-4. 在无 Python 开发环境的 Windows 机器启动；
-5. 验证自动后端、导入、任务、阅读、设置和退出；
-6. 扫描发布目录，不得包含数据库、缓存、日志和密钥；
+3. 执行 `./tool/build_windows.ps1` 与 `flutter build apk --release`，商店分发时再执行
+   `flutter build appbundle --release`；
+4. 在没有 Python 环境的 Windows 10 / 11 与 API 26 Android 设备安装；
+5. 两端都验证首次远程连接、导入、任务、阅读、设置和退出；
+6. 扫描产物与构建配置，不得包含本地后端、数据库、缓存、日志、Token、签名材料和密钥；
 7. 记录已知站点兼容性与实验功能。
 
 合并并确认 `main` 的 CI 全绿后，推送与 `pubspec.yaml` 语义版本一致的标签即可触发
 `.github/workflows/release.yml`：
 
 ```powershell
-git tag v1.3.4
-git push origin v1.3.4
+git tag v1.4.0
+git push origin v1.4.0
 ```
 
-发布工作流会在 `windows-2022` 上重新执行 Flutter 格式化、分析、测试，执行
-`python -m ruff check app tests` 与 `python -m pytest`，再构建完整 Windows 包。只有标签、
-`pubspec.yaml`、`qingjuan.exe` 文件版本和后端 OpenAPI 版本完全一致，且打包后端的
-`/health` 冒烟测试通过时，工作流才会上传压缩包及 SHA-256 文件并创建 GitHub Release。
+发布工作流重新执行 Flutter 格式化、分析、测试，执行 `python -m ruff check app tests` 与
+`python -m pytest`，再并行构建 Windows ZIP 与签名 Android APK。只有标签、`pubspec.yaml`、两个客户端
+版本和后端元数据版本完全一致时，工作流才可上传两端产物及 SHA-256 并创建 GitHub Release。
 不得手工跳过失败门禁或从未提交的本地工作区制作正式发布包。
 
-分发时打包整个 `release/qingjuan-windows/`，不能只提供单个 EXE。
-压缩包统一命名为 `QingJuan-v<语义版本>-windows-x64.zip`，发布前必须：
+GitHub 产物命名为 `QingJuan-v<语义版本>-windows-x64.zip` 与
+`QingJuan-v<语义版本>-android.apk`。发布前必须：
 
-- 验证 `qingjuan.exe` 的 `FileVersion` 与 `ProductVersion`；
-- 启动打包后的 `backend/qingjuan-desktop.exe`，检查 `/health` 与 OpenAPI 版本；
-- 确认压缩包包含 Flutter DLL、原生插件、`data/` 与独立后端；
-- 扫描 `.env`、数据库、日志、设置和凭据文件，并记录 SHA-256。
+- 验证 `versionName`、`versionCode`、包名和签名证书；
+- 在最低支持版本与当前 Android 版本安装并连接真实 Linux 后端；
+- 在 Windows 10 / 11 x64 安装并连接真实 Linux 后端；
+- 确认 Windows ZIP 与 APK 不包含 Python、服务端数据或桌面伴随后端；
+- 扫描 `.env`、数据库、日志、设置、Token、签名文件和凭据，并记录 SHA-256。
 
 ## 6. 技术栈迁移规则
 
-当前唯一客户端技术栈是 Flutter Windows。以下内容视为遗留并禁止重新引入：
+当前唯一客户端技术栈是 Flutter Windows / Android。以下内容视为遗留或不在范围内并禁止重新引入：
 
 - Vue、Vite、Pinia、Vitest、npm 前端依赖；
 - Electron 主进程、preload 与 electron-builder；
-- Capacitor、Android、iOS、PWA、Service Worker；
+- Capacitor、iOS、PWA、Service Worker；
 - Web 专用 Fluent UI 包；
-- 手机端底部导航和移动端断点。
+- Windows 本机伴随后端、PyInstaller 客户端打包与独立桌面业务分支。
 
 删除旧栈时必须成套清理：
 
@@ -135,13 +136,13 @@ git push origin v1.3.4
 - 文档、示例和生成目录；
 - 未使用的条件分支与资源。
 
-任何恢复多平台支持的提案都属于新的产品与架构决策，不能作为普通功能顺手加入。
+任何恢复 iOS / Web 客户端或 Windows 本地后端的提案都属于新的产品与架构决策，不能作为普通功能顺手加入。
 
-### 本机后端到 Linux 远程后端
+### Windows 本机方案到 Windows / Android + Linux
 
-- Windows 客户端保持唯一客户端平台；Linux 只新增后端运行目标，不等同于新增 Linux GUI。
-- 连接配置迁移必须给旧用户生成显式 `local` 模式，不能把已有回环地址误判为远程服务。
-- 远程模式首次保存前完成认证和 API 版本握手；失败时保留旧配置与旧页面数据，成功切换后再清空重载。
+- Windows / Android 客户端首次启动不迁移旧回环地址或本机模式，必须由用户显式填写 Linux 服务地址和 Token。
+- 首次保存前完成认证和 API 版本握手；失败时保留输入和诊断，成功后再加载服务器数据。
+- 客户端代码删除 `local` / `remote` 模式分支和本地进程启动逻辑，连接状态只保留未配置、检查中、就绪与失败。
 - 旧 API 的绝对 `localPath` 只可用于内部数据迁移，不能继续进入公开 DTO。
 - 旧导出请求中的 `targetPath` 迁移为服务端产物下载；漫画图片目录迁移为 ZIP，导出内容与顺序保持兼容。
 - 现有 Windows 数据迁移到 Linux 时先复制到隔离目录，校验清单后将绝对路径转换为相对存储键；不得直接复用 Windows 路径。
@@ -158,7 +159,7 @@ git push origin v1.3.4
 - 硬编码密钥、用户路径、远程地址或魔术端口；
 - 默认让无认证后端监听局域网；
 - 将连接 Token 写入 `SharedPreferences`、命令行、URL、日志或第三方请求；
-- 把 Windows 目标路径发送给 Linux 后端，或把服务端绝对路径作为 API 结果；
+- 把 Android URI/目标路径发送给 Linux 后端，或把服务端绝对路径作为 API 结果；
 - 使用多个 Uvicorn worker 或多个 systemd 实例共享同一 SQLite 数据目录；
 - 删除目录前不验证绝对目标；
 - 用公网实时请求作为稳定单元测试；

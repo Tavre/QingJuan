@@ -9,7 +9,7 @@ import 'package:qingjuan/app/app_scope.dart';
 import 'package:qingjuan/app/app_state.dart';
 import 'package:qingjuan/app/app_theme.dart';
 import 'package:qingjuan/core/api/api_client.dart';
-import 'package:qingjuan/core/backend/backend_process_manager.dart';
+import 'package:qingjuan/core/backend/backend_connection_manager.dart';
 import 'package:qingjuan/features/detail/book_detail_page.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
 import 'package:qingjuan/features/settings/settings_controller.dart';
@@ -468,7 +468,7 @@ class _Harness {
   }) async {
     final appState = AppState(await SharedPreferences.getInstance());
     final api = ApiClient(() => appState.backendUrl, client: client);
-    final backend = BackendProcessManager(api);
+    final backend = BackendConnectionManager(api, isConfigured: () => false);
     final library = LibraryController(api);
     final sources = SourcesController(api);
     final tasks = TasksController(api);

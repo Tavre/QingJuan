@@ -1,9 +1,12 @@
+import 'dart:ui' as ui;
+
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter/services.dart';
 
 import '../../app/app_scope.dart';
 import '../../app/app_state.dart';
-import '../../shared/desktop_title_bar.dart';
+import '../../shared/feedback_widgets.dart';
+import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
 import '../about/about_page.dart';
 import '../library/library_page.dart';
@@ -12,68 +15,44 @@ import '../settings/settings_page.dart';
 import '../sources/sources_page.dart';
 import '../tasks/tasks_page.dart';
 
-class AppShell extends StatefulWidget {
+class AppShell extends StatelessWidget {
   const AppShell({super.key});
 
-  @override
-  State<AppShell> createState() => _AppShellState();
-}
-
-class _AppShellState extends State<AppShell> {
-  static const _defaultPaneWidth = 256.0;
-  static const _minimumPaneWidth = 220.0;
-  static const _maximumPaneWidth = 420.0;
-
-  static const _sections = <AppSection>[
+  static const _primarySections = <AppSection>[
     AppSection.library,
     AppSection.search,
     AppSection.sources,
     AppSection.tasks,
     AppSection.settings,
-    AppSection.about,
   ];
 
-  double _paneWidth = _defaultPaneWidth;
-  bool _paneCollapsed = false;
-  bool _resizeHandleHovered = false;
+  static const _backendSections = <AppSection>{
+    AppSection.library,
+    AppSection.search,
+    AppSection.sources,
+    AppSection.tasks,
+  };
 
-  @override
-  void initState() {
-    super.initState();
-    HardwareKeyboard.instance.addHandler(_handleKeyEvent);
-  }
-
-  @override
-  void dispose() {
-    HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
-    super.dispose();
-  }
-
-  bool _handleKeyEvent(KeyEvent event) {
-    if (event is! KeyDownEvent || !HardwareKeyboard.instance.isControlPressed) {
-      return false;
+  Widget _page(AppState app, AppSection section) {
+    if (!app.hasBackendConnection && _backendSections.contains(section)) {
+      return _BackendRequiredPage(
+        section: section,
+        label: _label(section),
+        icon: _icon(section),
+        onOpenSettings: () => _selectSection(app, AppSection.settings),
+      );
     }
-    int? index;
-    for (var candidate = 0; candidate < _sections.length; candidate++) {
-      if (event.logicalKey == _shortcutKey(candidate) ||
-          event.physicalKey == _shortcutPhysicalKey(candidate)) {
-        index = candidate;
-        break;
-      }
-    }
-    if (index == null) return false;
-    AppScope.of(context).appState.selectSection(_sections[index]);
-    return true;
+    return switch (section) {
+      AppSection.library => const LibraryPage(),
+      AppSection.search => const SearchPage(),
+      AppSection.sources => const SourcesPage(),
+      AppSection.tasks => const TasksPage(),
+      AppSection.settings => const SettingsPage(),
+      AppSection.about => AboutPage(
+          onBack: () => _selectSection(app, AppSection.settings),
+        ),
+    };
   }
-
-  Widget _page(AppSection section) => switch (section) {
-        AppSection.library => const LibraryPage(),
-        AppSection.search => const SearchPage(),
-        AppSection.sources => const SourcesPage(),
-        AppSection.tasks => const TasksPage(),
-        AppSection.settings => const SettingsPage(),
-        AppSection.about => const AboutPage(),
-      };
 
   String _label(AppSection section) => switch (section) {
         AppSection.library => '书架',
@@ -93,151 +72,351 @@ class _AppShellState extends State<AppShell> {
         AppSection.about => FluentIcons.info,
       };
 
-  void _togglePane() {
-    setState(() => _paneCollapsed = !_paneCollapsed);
-  }
-
-  void _resizePane(DragUpdateDetails details, double maximumWidth) {
-    setState(() {
-      _paneWidth = (_paneWidth + details.delta.dx)
-          .clamp(_minimumPaneWidth, maximumWidth)
-          .toDouble();
-    });
-  }
-
-  Widget _paneToggleButton() {
-    return SizedBox(
-      width: 48,
-      height: 40,
-      child: Tooltip(
-        message: _paneCollapsed ? '展开导航栏' : '收起导航栏',
-        child: IconButton(
-          key: const ValueKey('navigation-pane-toggle'),
-          icon: const Icon(FluentIcons.global_nav_button, size: 16),
-          onPressed: _togglePane,
-        ),
-      ),
-    );
+  void _selectSection(AppState app, AppSection section) {
+    app.clearNotice();
+    app.selectSection(section);
   }
 
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context).appState;
-    return ValueListenableBuilder<AppSection>(
-      valueListenable: app.sectionListenable,
-      builder: (context, section, _) {
+    return AnimatedBuilder(
+      animation: app,
+      builder: (context, _) {
         final theme = FluentTheme.of(context);
-        final windowClass = windowClassOf(context);
-        final isExpanded = windowClass == WindowClass.expanded;
-        final maximumPaneWidth = (MediaQuery.sizeOf(context).width * 0.36)
-            .clamp(_minimumPaneWidth, _maximumPaneWidth)
-            .toDouble();
-        final paneWidth =
-            _paneWidth.clamp(_minimumPaneWidth, maximumPaneWidth).toDouble();
-        final selectedIndex = _sections.indexOf(section);
-        final displayMode = isExpanded && !_paneCollapsed
-            ? PaneDisplayMode.open
-            : PaneDisplayMode.compact;
-
-        return Stack(
-          children: <Widget>[
-            NavigationView(
-              transitionBuilder: (child, animation) =>
-                  SuppressPageTransition(child: child),
-              appBar: NavigationAppBar(
-                automaticallyImplyLeading: false,
-                height: desktopTitleBarHeight,
-                backgroundColor: theme.micaBackgroundColor,
-                title: const DesktopTitleBar(),
-              ),
-              pane: NavigationPane(
-                selected: selectedIndex,
-                onChanged: (index) => app.selectSection(_sections[index]),
-                displayMode: displayMode,
-                size: NavigationPaneSize(
-                  openWidth: paneWidth,
-                  openMinWidth: _minimumPaneWidth,
-                  openMaxWidth: maximumPaneWidth,
-                ),
-                menuButton: isExpanded ? _paneToggleButton() : null,
-                header: Text(
-                  '工作区',
-                  style: theme.typography.caption?.copyWith(
-                    color: theme.resources.textFillColorSecondary,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                items: <NavigationPaneItem>[
-                  for (final section
-                      in _sections.where((item) => item != AppSection.about))
-                    PaneItem(
-                      icon: Icon(_icon(section)),
-                      title: Text(_label(section)),
-                      body: _page(section),
-                    ),
-                ],
-                footerItems: <NavigationPaneItem>[
-                  PaneItem(
-                    key: const ValueKey('about-navigation-item'),
-                    icon: Icon(_icon(AppSection.about)),
-                    title: Text(_label(AppSection.about)),
-                    body: _page(AppSection.about),
-                  ),
-                ],
-              ),
-            ),
-            if (isExpanded && !_paneCollapsed)
-              PositionedDirectional(
-                start: paneWidth - 4,
-                top: desktopTitleBarHeight,
-                bottom: 0,
-                width: 8,
-                child: Semantics(
-                  label: '调整导航栏宽度',
-                  child: MouseRegion(
-                    key: const ValueKey('navigation-pane-resizer'),
-                    cursor: SystemMouseCursors.resizeColumn,
-                    onEnter: (_) => setState(() => _resizeHandleHovered = true),
-                    onExit: (_) => setState(() => _resizeHandleHovered = false),
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.translucent,
-                      onHorizontalDragUpdate: (details) =>
-                          _resizePane(details, maximumPaneWidth),
-                      child: Center(
-                        child: Container(
-                          width: _resizeHandleHovered ? 2 : 1,
-                          color: _resizeHandleHovered
-                              ? FluentTheme.of(context).accentColor
-                              : FluentTheme.of(context)
-                                  .resources
-                                  .cardStrokeColorDefault,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-          ],
+        final dark = theme.brightness == Brightness.dark;
+        final content = windowClassOf(context) == WindowClass.compact
+            ? _MobileShell(
+                section: app.section,
+                page: _page(app, app.section),
+                primarySections: _primarySections,
+                labelFor: _label,
+                iconFor: _icon,
+                onSelected: (section) => _selectSection(app, section),
+              )
+            : _TabletShell(
+                section: app.section,
+                pageFor: (section) => _page(app, section),
+                primarySections: _primarySections,
+                labelFor: _label,
+                iconFor: _icon,
+                onSelected: (section) => _selectSection(app, section),
+              );
+        return AnnotatedRegion<SystemUiOverlayStyle>(
+          value: SystemUiOverlayStyle(
+            statusBarColor: const Color(0x00000000),
+            statusBarIconBrightness: dark ? Brightness.light : Brightness.dark,
+            systemNavigationBarColor: const Color(0x00000000),
+            systemNavigationBarIconBrightness:
+                dark ? Brightness.light : Brightness.dark,
+            systemNavigationBarDividerColor: const Color(0x00000000),
+          ),
+          child: ColoredBox(
+            color: theme.scaffoldBackgroundColor,
+            child: SafeArea(child: content),
+          ),
         );
       },
     );
   }
+}
 
-  LogicalKeyboardKey _shortcutKey(int index) => switch (index) {
-        0 => LogicalKeyboardKey.digit1,
-        1 => LogicalKeyboardKey.digit2,
-        2 => LogicalKeyboardKey.digit3,
-        3 => LogicalKeyboardKey.digit4,
-        4 => LogicalKeyboardKey.digit5,
-        _ => LogicalKeyboardKey.digit6,
-      };
+class _BackendRequiredPage extends StatelessWidget {
+  const _BackendRequiredPage({
+    required this.section,
+    required this.label,
+    required this.icon,
+    required this.onOpenSettings,
+  });
 
-  PhysicalKeyboardKey _shortcutPhysicalKey(int index) => switch (index) {
-        0 => PhysicalKeyboardKey.digit1,
-        1 => PhysicalKeyboardKey.digit2,
-        2 => PhysicalKeyboardKey.digit3,
-        3 => PhysicalKeyboardKey.digit4,
-        4 => PhysicalKeyboardKey.digit5,
-        _ => PhysicalKeyboardKey.digit6,
-      };
+  final AppSection section;
+  final String label;
+  final IconData icon;
+  final VoidCallback onOpenSettings;
+
+  @override
+  Widget build(BuildContext context) {
+    return PageFrame(
+      key: ValueKey<String>('backend-required-${section.name}'),
+      title: label,
+      subtitle: '此区域的数据由 Linux 后端提供。',
+      child: EmptyView(
+        icon: icon,
+        title: '尚未连接 Linux 后端',
+        message: '导航已经可用。连接服务器后，青卷会在这里加载最新数据。',
+        action: FilledButton(
+          key: const ValueKey('backend-required-open-settings'),
+          onPressed: onOpenSettings,
+          child: const Text('前往设置'),
+        ),
+      ),
+    );
+  }
+}
+
+class _MobileShell extends StatelessWidget {
+  const _MobileShell({
+    required this.section,
+    required this.page,
+    required this.primarySections,
+    required this.labelFor,
+    required this.iconFor,
+    required this.onSelected,
+  });
+
+  final AppSection section;
+  final Widget page;
+  final List<AppSection> primarySections;
+  final String Function(AppSection) labelFor;
+  final IconData Function(AppSection) iconFor;
+  final ValueChanged<AppSection> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = FluentTheme.of(context);
+    return PopScope(
+      canPop: section != AppSection.about,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) onSelected(AppSection.settings);
+      },
+      child: ColoredBox(
+        color: theme.scaffoldBackgroundColor,
+        child: Column(
+          children: <Widget>[
+            Expanded(
+              child: TweenAnimationBuilder<double>(
+                key: ValueKey<AppSection>(section),
+                tween: Tween<double>(begin: 0, end: 1),
+                duration: MediaQuery.disableAnimationsOf(context)
+                    ? Duration.zero
+                    : theme.fastAnimationDuration,
+                curve: Curves.easeOutCubic,
+                builder: (context, value, child) {
+                  return Opacity(
+                    opacity: value,
+                    child: Transform.translate(
+                      offset: Offset(8 * (1 - value), 0),
+                      child: child,
+                    ),
+                  );
+                },
+                child: page,
+              ),
+            ),
+            _MobileNavigationBar(
+              section: section,
+              sections: primarySections,
+              labelFor: labelFor,
+              iconFor: iconFor,
+              onSelected: onSelected,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MobileNavigationBar extends StatelessWidget {
+  const _MobileNavigationBar({
+    required this.section,
+    required this.sections,
+    required this.labelFor,
+    required this.iconFor,
+    required this.onSelected,
+  });
+
+  final AppSection section;
+  final List<AppSection> sections;
+  final String Function(AppSection) labelFor;
+  final IconData Function(AppSection) iconFor;
+  final ValueChanged<AppSection> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = FluentTheme.of(context);
+    final dark = theme.brightness == Brightness.dark;
+    return SizedBox(
+      key: const ValueKey('mobile-bottom-navigation'),
+      height: 78,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(10, 5, 10, 9),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(21),
+          child: BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: dark ? const Color(0xE821201D) : const Color(0xEFFFFBF4),
+                borderRadius: BorderRadius.circular(21),
+                border: Border.all(
+                  color:
+                      dark ? const Color(0x2AFFFFFF) : const Color(0xB3FFFFFF),
+                ),
+                boxShadow: <BoxShadow>[
+                  BoxShadow(
+                    color: const Color(0xFF4B3529).withAlpha(dark ? 42 : 18),
+                    blurRadius: 22,
+                    offset: const Offset(0, 7),
+                  ),
+                ],
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                child: Row(
+                  children: <Widget>[
+                    for (final item in sections)
+                      Expanded(
+                        child: Semantics(
+                          selected: item == section,
+                          button: true,
+                          label: labelFor(item),
+                          child: Button(
+                            key: ValueKey<String>(
+                              'mobile-navigation-${item.name}',
+                            ),
+                            style: ButtonStyle(
+                              padding: const WidgetStatePropertyAll(
+                                EdgeInsets.zero,
+                              ),
+                              shape: WidgetStatePropertyAll(
+                                RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                              ),
+                              backgroundColor: const WidgetStatePropertyAll(
+                                Color(0x00000000),
+                              ),
+                            ),
+                            onPressed: () => onSelected(item),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: <Widget>[
+                                AnimatedScale(
+                                  duration:
+                                      MediaQuery.disableAnimationsOf(context)
+                                          ? Duration.zero
+                                          : theme.fastAnimationDuration,
+                                  curve: Curves.easeOutBack,
+                                  scale: item == section ? 1.06 : 1,
+                                  child: AnimatedContainer(
+                                    duration:
+                                        MediaQuery.disableAnimationsOf(context)
+                                            ? Duration.zero
+                                            : theme.fastAnimationDuration,
+                                    curve: Curves.easeOutCubic,
+                                    width: 42,
+                                    height: 27,
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      color: item == section
+                                          ? theme.accentColor.withAlpha(
+                                              dark ? 52 : 26,
+                                            )
+                                          : const Color(0x00000000),
+                                      borderRadius: BorderRadius.circular(99),
+                                    ),
+                                    child: Icon(
+                                      iconFor(item),
+                                      size: 20,
+                                      color: item == section
+                                          ? theme.accentColor
+                                          : theme
+                                              .resources.textFillColorSecondary,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  labelFor(item),
+                                  maxLines: 1,
+                                  style: theme.typography.caption?.copyWith(
+                                    fontSize: 11,
+                                    fontWeight: item == section
+                                        ? FontWeight.w700
+                                        : FontWeight.w400,
+                                    color: item == section
+                                        ? theme.accentColor
+                                        : theme
+                                            .resources.textFillColorSecondary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TabletShell extends StatelessWidget {
+  const _TabletShell({
+    required this.section,
+    required this.pageFor,
+    required this.primarySections,
+    required this.labelFor,
+    required this.iconFor,
+    required this.onSelected,
+  });
+
+  final AppSection section;
+  final Widget Function(AppSection) pageFor;
+  final List<AppSection> primarySections;
+  final String Function(AppSection) labelFor;
+  final IconData Function(AppSection) iconFor;
+  final ValueChanged<AppSection> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final selectedIndex = section == AppSection.about
+        ? primarySections.length
+        : primarySections.indexOf(section);
+    return NavigationView(
+      key: const ValueKey('tablet-navigation'),
+      transitionBuilder: (child, animation) =>
+          SuppressPageTransition(child: child),
+      appBar: const NavigationAppBar(
+        automaticallyImplyLeading: false,
+        title: Padding(
+          padding: EdgeInsetsDirectional.only(start: 12),
+          child: Text('青卷'),
+        ),
+      ),
+      pane: NavigationPane(
+        selected: selectedIndex,
+        displayMode: PaneDisplayMode.open,
+        onChanged: (index) {
+          final next = index == primarySections.length
+              ? AppSection.about
+              : primarySections[index];
+          onSelected(next);
+        },
+        header: const Text('工作区'),
+        items: <NavigationPaneItem>[
+          for (final item in primarySections)
+            PaneItem(
+              icon: Icon(iconFor(item)),
+              title: Text(labelFor(item)),
+              body: pageFor(item),
+            ),
+        ],
+        footerItems: <NavigationPaneItem>[
+          PaneItem(
+            key: const ValueKey('about-navigation-item'),
+            icon: Icon(iconFor(AppSection.about)),
+            title: Text(labelFor(AppSection.about)),
+            body: pageFor(AppSection.about),
+          ),
+        ],
+      ),
+    );
+  }
 }

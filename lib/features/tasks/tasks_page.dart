@@ -25,9 +25,25 @@ class _TasksPageState extends State<TasksPage> {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) => PageFrame(
-        title: '任务',
+        title: '任务中心',
         subtitle: '查看下载、翻译与失败重试进度。',
         scrollable: false,
+        compactHeader: ReadingPageHeader(
+          title: '任务中心',
+          subtitle: '下载与翻译状态集中在这里',
+          actions: <Widget>[
+            Tooltip(
+              message: '刷新任务',
+              child: IconButton(
+                icon: const Icon(
+                  FluentIcons.refresh,
+                  semanticLabel: '刷新任务',
+                ),
+                onPressed: controller.load,
+              ),
+            ),
+          ],
+        ),
         command: Tooltip(
           message: '刷新任务',
           child: IconButton(
@@ -44,10 +60,49 @@ class _TasksPageState extends State<TasksPage> {
                 message: controller.error ?? '未知错误',
                 onRetry: controller.load,
               ),
-            LoadState.empty => const EmptyView(
-                icon: FluentIcons.history,
-                title: '暂无任务',
-                message: '从作品详情页创建下载或翻译任务后，进度会显示在这里。',
+            LoadState.empty => ListView(
+                children: const <Widget>[
+                  FeatureHero(
+                    icon: FluentIcons.processing,
+                    title: '任务队列已就绪',
+                    message: '下载、翻译和漫画逐页识别都会在这里持续同步状态。',
+                    child: Row(
+                      children: <Widget>[
+                        Expanded(child: AppMetric(value: '0', label: '进行中')),
+                        Expanded(child: AppMetric(value: '0', label: '等待中')),
+                        Expanded(child: AppMetric(value: '0', label: '失败')),
+                      ],
+                    ),
+                  ),
+                  SizedBox(height: 20),
+                  AppSurface(
+                    tone: AppSurfaceTone.muted,
+                    padding: EdgeInsets.symmetric(
+                      horizontal: 22,
+                      vertical: 24,
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        AccentIcon(FluentIcons.history, size: 46),
+                        SizedBox(width: 15),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                '暂无任务',
+                                style: TextStyle(fontWeight: FontWeight.w700),
+                              ),
+                              SizedBox(height: 6),
+                              Text('从作品详情页创建下载或翻译任务后，实时进度会显示在这里。'),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
             _ => _TaskList(
                 tasks: controller.tasks,
@@ -176,37 +231,49 @@ class _TaskSummary extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
+    final textScale = MediaQuery.textScalerOf(context).scale(1);
     return SizedBox(
-      width: 150,
+      width: 78,
+      height: 70 + 18 * (textScale - 1).clamp(0, 1),
       child: Semantics(
         button: true,
         selected: selected,
         label: '$label，$count 个任务',
         child: AppSurface(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
+          tone: selected ? AppSurfaceTone.accent : AppSurfaceTone.muted,
           selected: selected,
           onPressed: onPressed,
-          child: Row(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: <Widget>[
-              Icon(
-                icon,
-                size: 16,
-                color: selected
-                    ? theme.accentColor.defaultBrushFor(theme.brightness)
-                    : theme.resources.textFillColorSecondary,
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: <Widget>[
+                  Icon(
+                    icon,
+                    size: 15,
+                    color: selected
+                        ? theme.accentColor
+                        : theme.resources.textFillColorSecondary,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    '$count',
+                    style: theme.typography.bodyStrong?.copyWith(
+                      color: selected ? theme.accentColor : null,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 6),
+              const SizedBox(height: 6),
               Text(
-                '$count',
-                style: theme.typography.bodyStrong,
+                label,
+                maxLines: 1,
+                style: theme.typography.caption?.copyWith(
+                  fontWeight: selected ? FontWeight.w700 : null,
+                  color: selected ? theme.accentColor : null,
+                ),
               ),
             ],
           ),
@@ -240,6 +307,7 @@ class _TaskTile extends StatelessWidget {
         .toList(growable: false);
     return AppSurface(
       margin: const EdgeInsets.only(bottom: 10),
+      tone: AppSurfaceTone.elevated,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[

@@ -12,7 +12,13 @@ enum AppSection { library, search, sources, tasks, settings, about }
 
 enum AppThemeMode { system, light, dark }
 
-enum BackendConnectionMode { local, remote }
+enum ReaderFlowMode { paged, continuous }
+
+enum ReaderPaletteMode { white, parchment, eyeCare, mist, night }
+
+enum ReaderPageAnimation { cover, slide, fade, none }
+
+enum ReaderLineSpacing { compact, standard, relaxed }
 
 class AppState extends ChangeNotifier {
   AppState(
@@ -24,47 +30,80 @@ class AppState extends ChangeNotifier {
           (mode) => mode.name == _preferences.getString(_themeKey),
           orElse: () => AppThemeMode.system,
         ),
-        _connectionMode = BackendConnectionMode.values.firstWhere(
-          (mode) => mode.name == _preferences.getString(_backendModeKey),
-          orElse: () => BackendConnectionMode.local,
-        ),
-        _backendUrl = _preferences.getString(_backendKey) ?? _defaultBackendUrl,
+        _backendUrl = _preferences.getString(_backendKey)?.trim() ?? '',
         _backendToken = initialBackendToken,
         _ttsVoice = _readTtsVoice(_preferences),
         _ttsSpeechStyle = parseTtsSpeechStyle(
           _preferences.getString(_ttsSpeechStyleKey),
-        ) {
+        ),
+        _readerFlowMode = ReaderFlowMode.values.firstWhere(
+          (mode) => mode.name == _preferences.getString(_readerFlowModeKey),
+          orElse: () => ReaderFlowMode.paged,
+        ),
+        _readerPaletteMode = ReaderPaletteMode.values.firstWhere(
+          (mode) => mode.name == _preferences.getString(_readerPaletteKey),
+          orElse: () => ReaderPaletteMode.parchment,
+        ),
+        _readerPageAnimation = ReaderPageAnimation.values.firstWhere(
+          (mode) => mode.name == _preferences.getString(_readerAnimationKey),
+          orElse: () => ReaderPageAnimation.cover,
+        ),
+        _readerLineSpacing = ReaderLineSpacing.values.firstWhere(
+          (mode) => mode.name == _preferences.getString(_readerSpacingKey),
+          orElse: () => ReaderLineSpacing.standard,
+        ),
+        _readerFontSize =
+            (_preferences.getDouble(_readerFontSizeKey) ?? 19).clamp(15, 30),
+        _volumeKeyReadingEnabled =
+            _preferences.getBool(_volumeKeyReadingKey) ?? false {
+    _section = hasBackendConnection ? AppSection.library : AppSection.settings;
+    _sectionListenable = ValueNotifier<AppSection>(_section);
     _themeModeListenable = ValueNotifier<ThemeMode>(fluentThemeMode);
   }
 
   static const _themeKey = 'qingjuan.theme';
   static const _backendKey = 'qingjuan.backendUrl';
-  static const _backendModeKey = 'qingjuan.backendMode';
   static const _ttsVoiceKey = 'qingjuan.ttsVoice';
   static const _ttsSpeechStyleKey = 'qingjuan.ttsSpeechStyle';
-  static const _defaultBackendUrl = 'http://127.0.0.1:19453';
+  static const _readerFlowModeKey = 'qingjuan.readerFlowMode';
+  static const _readerPaletteKey = 'qingjuan.readerPalette';
+  static const _readerAnimationKey = 'qingjuan.readerPageAnimation';
+  static const _readerSpacingKey = 'qingjuan.readerLineSpacing';
+  static const _readerFontSizeKey = 'qingjuan.readerFontSize';
+  static const _volumeKeyReadingKey = 'qingjuan.volumeKeyReading';
 
   final SharedPreferences _preferences;
   final ConnectionSecretStore? _secretStore;
-  AppSection _section = AppSection.library;
-  final ValueNotifier<AppSection> _sectionListenable =
-      ValueNotifier<AppSection>(AppSection.library);
+  late AppSection _section;
+  late final ValueNotifier<AppSection> _sectionListenable;
   AppThemeMode _themeMode;
   late final ValueNotifier<ThemeMode> _themeModeListenable;
   String _backendUrl;
   String _backendToken;
-  BackendConnectionMode _connectionMode;
   TtsVoice? _ttsVoice;
   TtsSpeechStyle _ttsSpeechStyle;
+  ReaderFlowMode _readerFlowMode;
+  ReaderPaletteMode _readerPaletteMode;
+  ReaderPageAnimation _readerPageAnimation;
+  ReaderLineSpacing _readerLineSpacing;
+  double _readerFontSize;
+  bool _volumeKeyReadingEnabled;
   String? _notice;
 
   AppSection get section => _section;
   AppThemeMode get themeMode => _themeMode;
   String get backendUrl => _backendUrl;
   String get backendToken => _backendToken;
-  BackendConnectionMode get connectionMode => _connectionMode;
+  bool get hasBackendConnection =>
+      _backendUrl.isNotEmpty && _backendToken.isNotEmpty;
   TtsVoice? get ttsVoice => _ttsVoice;
   TtsSpeechStyle get ttsSpeechStyle => _ttsSpeechStyle;
+  ReaderFlowMode get readerFlowMode => _readerFlowMode;
+  ReaderPaletteMode get readerPaletteMode => _readerPaletteMode;
+  ReaderPageAnimation get readerPageAnimation => _readerPageAnimation;
+  ReaderLineSpacing get readerLineSpacing => _readerLineSpacing;
+  double get readerFontSize => _readerFontSize;
+  bool get volumeKeyReadingEnabled => _volumeKeyReadingEnabled;
   String? get notice => _notice;
   ValueListenable<AppSection> get sectionListenable => _sectionListenable;
   ValueListenable<ThemeMode> get themeModeListenable => _themeModeListenable;
@@ -97,28 +136,13 @@ class AppState extends ChangeNotifier {
     await _preferences.setString(_themeKey, value.name);
   }
 
-  Future<void> setBackendUrl(String value) async {
-    final normalized = value.trim().replaceAll(RegExp(r'/+$'), '');
-    if (normalized.isEmpty || normalized == _backendUrl) return;
-    _backendUrl = normalized;
-    await _preferences.setString(_backendKey, normalized);
-    notifyListeners();
-  }
-
   Future<void> setBackendConnection({
-    required BackendConnectionMode mode,
     required String url,
     required String token,
   }) async {
     final normalized = url.trim().replaceAll(RegExp(r'/+$'), '');
     if (normalized.isEmpty) return;
-    final normalizedToken =
-        mode == BackendConnectionMode.remote ? token.trim() : '';
-    _connectionMode = mode;
-    _backendUrl = normalized;
-    _backendToken = normalizedToken;
-    await _preferences.setString(_backendModeKey, mode.name);
-    await _preferences.setString(_backendKey, normalized);
+    final normalizedToken = token.trim();
     final secretStore = _secretStore;
     if (secretStore != null) {
       if (normalizedToken.isEmpty) {
@@ -127,6 +151,10 @@ class AppState extends ChangeNotifier {
         await secretStore.writeToken(normalizedToken);
       }
     }
+    await _preferences.setString(_backendKey, normalized);
+    await _preferences.remove('qingjuan.backendMode');
+    _backendUrl = normalized;
+    _backendToken = normalizedToken;
     notifyListeners();
   }
 
@@ -146,6 +174,49 @@ class AppState extends ChangeNotifier {
     _ttsSpeechStyle = value;
     notifyListeners();
     await _preferences.setString(_ttsSpeechStyleKey, value.name);
+  }
+
+  Future<void> setReaderFlowMode(ReaderFlowMode value) async {
+    if (_readerFlowMode == value) return;
+    _readerFlowMode = value;
+    notifyListeners();
+    await _preferences.setString(_readerFlowModeKey, value.name);
+  }
+
+  Future<void> setReaderPaletteMode(ReaderPaletteMode value) async {
+    if (_readerPaletteMode == value) return;
+    _readerPaletteMode = value;
+    notifyListeners();
+    await _preferences.setString(_readerPaletteKey, value.name);
+  }
+
+  Future<void> setReaderPageAnimation(ReaderPageAnimation value) async {
+    if (_readerPageAnimation == value) return;
+    _readerPageAnimation = value;
+    notifyListeners();
+    await _preferences.setString(_readerAnimationKey, value.name);
+  }
+
+  Future<void> setReaderLineSpacing(ReaderLineSpacing value) async {
+    if (_readerLineSpacing == value) return;
+    _readerLineSpacing = value;
+    notifyListeners();
+    await _preferences.setString(_readerSpacingKey, value.name);
+  }
+
+  Future<void> setReaderFontSize(double value) async {
+    final normalized = value.clamp(15, 30).toDouble();
+    if (_readerFontSize == normalized) return;
+    _readerFontSize = normalized;
+    notifyListeners();
+    await _preferences.setDouble(_readerFontSizeKey, normalized);
+  }
+
+  Future<void> setVolumeKeyReadingEnabled(bool value) async {
+    if (_volumeKeyReadingEnabled == value) return;
+    _volumeKeyReadingEnabled = value;
+    notifyListeners();
+    await _preferences.setBool(_volumeKeyReadingKey, value);
   }
 
   void showNotice(String message) {

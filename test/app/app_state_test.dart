@@ -9,34 +9,29 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
 
-  test('AppState persists theme and normalizes backend URL', () async {
+  test('AppState starts in settings until a server is configured', () async {
     final preferences = await SharedPreferences.getInstance();
     final state = AppState(preferences);
 
-    await state.setThemeMode(AppThemeMode.dark);
-    await state.setBackendUrl('http://192.168.1.20:19453///');
-
-    expect(state.themeMode, AppThemeMode.dark);
-    expect(state.backendUrl, 'http://192.168.1.20:19453');
-    expect(preferences.getString('qingjuan.theme'), 'dark');
+    expect(state.section, AppSection.settings);
+    expect(state.backendUrl, isEmpty);
+    expect(state.hasBackendConnection, isFalse);
   });
 
-  test('remote connection stores token outside SharedPreferences', () async {
+  test('server connection stores token outside SharedPreferences', () async {
     final preferences = await SharedPreferences.getInstance();
     final secrets = _MemorySecretStore();
     final state = AppState(preferences, secretStore: secrets);
 
     await state.setBackendConnection(
-      mode: BackendConnectionMode.remote,
       url: 'https://qingjuan.example.test///',
       token: 'remote-secret-token',
     );
 
-    expect(state.connectionMode, BackendConnectionMode.remote);
     expect(state.backendUrl, 'https://qingjuan.example.test');
+    expect(state.hasBackendConnection, isTrue);
     expect(secrets.token, 'remote-secret-token');
     expect(preferences.getString('qingjuan.backendToken'), isNull);
-    expect(preferences.getString('qingjuan.backendMode'), 'remote');
   });
 
   test('AppState changes the selected section', () async {
@@ -56,7 +51,6 @@ void main() {
     state.themeModeListenable.addListener(() => themeNotifications++);
 
     state.showNotice('后端已连接');
-    await state.setBackendUrl('http://127.0.0.1:20000');
     await state.setThemeMode(AppThemeMode.dark);
 
     expect(themeNotifications, 1);
@@ -69,7 +63,6 @@ void main() {
     state.sectionListenable.addListener(() => sectionNotifications++);
 
     state.showNotice('后端已连接');
-    await state.setBackendUrl('http://127.0.0.1:20000');
     state.selectSection(AppSection.tasks);
 
     expect(sectionNotifications, 1);
@@ -115,6 +108,26 @@ void main() {
       AppState(preferences).ttsSpeechStyle,
       TtsSpeechStyle.immersive,
     );
+  });
+
+  test('AppState persists reader controls and clamps the font size', () async {
+    final preferences = await SharedPreferences.getInstance();
+    final state = AppState(preferences);
+
+    await state.setReaderFlowMode(ReaderFlowMode.continuous);
+    await state.setReaderPaletteMode(ReaderPaletteMode.eyeCare);
+    await state.setReaderPageAnimation(ReaderPageAnimation.fade);
+    await state.setReaderLineSpacing(ReaderLineSpacing.relaxed);
+    await state.setReaderFontSize(42);
+    await state.setVolumeKeyReadingEnabled(true);
+    final restored = AppState(preferences);
+
+    expect(restored.readerFlowMode, ReaderFlowMode.continuous);
+    expect(restored.readerPaletteMode, ReaderPaletteMode.eyeCare);
+    expect(restored.readerPageAnimation, ReaderPageAnimation.fade);
+    expect(restored.readerLineSpacing, ReaderLineSpacing.relaxed);
+    expect(restored.readerFontSize, 30);
+    expect(restored.volumeKeyReadingEnabled, isTrue);
   });
 }
 

@@ -8,7 +8,7 @@ import 'package:qingjuan/app/app_scope.dart';
 import 'package:qingjuan/app/app_state.dart';
 import 'package:qingjuan/app/app_theme.dart';
 import 'package:qingjuan/core/api/api_client.dart';
-import 'package:qingjuan/core/backend/backend_process_manager.dart';
+import 'package:qingjuan/core/backend/backend_connection_manager.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
 import 'package:qingjuan/features/library/library_page.dart';
 import 'package:qingjuan/features/settings/settings_controller.dart';
@@ -40,7 +40,7 @@ void main() {
     await tester.tap(find.text('添加书籍'));
     await tester.pump(const Duration(milliseconds: 300));
     await tester.enterText(
-      find.byType(TextBox).at(1),
+      find.byKey(const ValueKey('import-book-url')),
       'https://fanqienovel.com/page/123456',
     );
     await tester.pump();
@@ -111,7 +111,7 @@ void main() {
     expect(find.textContaining('DOCX、EPUB 小说与 PDF 漫画'), findsOneWidget);
 
     await tester.enterText(
-      find.byType(TextBox).at(1),
+      find.byKey(const ValueKey('import-book-url')),
       'https://example.com/comic/1',
     );
     await tester.tap(find.text('预览'));
@@ -179,7 +179,7 @@ class _Harness {
   static Future<_Harness> create(http.Client client) async {
     final appState = AppState(await SharedPreferences.getInstance());
     final api = ApiClient(() => appState.backendUrl, client: client);
-    final backend = BackendProcessManager(api);
+    final backend = BackendConnectionManager(api, isConfigured: () => false);
     final library = LibraryController(api);
     final sources = SourcesController(api);
     final tasks = TasksController(api);

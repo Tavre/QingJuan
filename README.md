@@ -6,12 +6,11 @@
 <h1 align="center">青卷 QingJuan</h1>
 
 <p align="center">
-  Windows 小说与漫画下载、翻译和阅读工具
+  Windows 与 Android 小说、漫画下载、翻译和阅读客户端
 </p>
 
-青卷支持 Windows 本机使用，也支持把后端部署到 Linux 服务器，再由 Windows 客户端远程连接。
-
-![青卷应用截图](./assets/应用截图.png)
+青卷使用 Flutter 构建 Windows 与 Android 客户端。书库、下载、翻译和任务统一由现有 Linux FastAPI
+后端管理，电脑和手机都不安装、打包或启动本地 Python 后端。
 
 > 项目仍在持续开发。网站规则变化时，部分下载功能可能暂时失效。请只保存你有权访问的内容。
 
@@ -23,25 +22,25 @@
 - 使用 OpenAI 兼容接口翻译小说和漫画
 - 导出 `TXT`、`DOCX`、`EPUB`、`PDF` 或图片压缩包
 - 阅读原文和译文，保存阅读进度
-- 使用 Windows TTS 听书
+- 使用设备系统 TTS 听书
 - 支持亮色、深色和跟随系统主题
 
 目前支持番茄小说、哔哩轻小说、Kakuyomu、Syosetu、Novel18、Pixiv、Webtoon、拷贝漫画、动漫之家、
 18Comic、Bika 等站点，也支持导入 Legado / 阅读 App JSON 书源。
 
+## 支持平台
+
+| 平台 | 支持范围 | 安装包 |
+| --- | --- | --- |
+| Windows | Windows 10 / 11 x64 | `QingJuan-v<版本>-windows-x64.zip` |
+| Android | Android 8.0（API 26）或更高版本 | `QingJuan-v<版本>-android.apk` |
+| Linux | x86_64、systemd、Python 3.11+ 服务端 | 原生部署脚本 |
+
+Windows 和 Android 只是远程客户端，必须连接 Linux 服务端；Windows ZIP 不包含旧版 PyInstaller 本地后端。
+
 ## 使用方法
 
-### 便捷版
-
-适合直接在一台 Windows 电脑上使用：
-
-1. 前往 [Releases](https://github.com/Tavre/QingJuan/releases/latest) 下载 Windows ZIP。
-2. 完整解压 ZIP，不要单独移动或删除其中的文件。
-3. 双击 `qingjuan.exe`。
-
-应用默认使用“本机后端”，不需要另外安装 Python。
-
-### Linux 后端 + Windows 客户端
+### 1. 部署 Linux 后端
 
 先在 Linux 服务器执行：
 
@@ -56,12 +55,20 @@ sudo qingjuan-info
 安装脚本会自动识别服务器的 Tailscale、WireGuard 或局域网 IP。安装完成后，`sudo qingjuan-info` 会显示
 FastAPI 地址和连接 Token。公网服务器请使用 `--url https://你的域名` 指定已配置反向代理的 HTTPS 地址。
 
-然后在 Windows 应用中：
+### 2. 安装客户端
+
+从 [Releases](https://github.com/Tavre/QingJuan/releases/latest) 下载对应平台的安装包：
+
+- Windows：完整解压 Windows x64 ZIP，运行 `qingjuan.exe`。
+- Android：下载 APK，在手机或平板确认来源后安装。
+
+### 3. 连接服务器
+
+首次打开 Windows 或 Android 客户端后：
 
 1. 打开 **设置 → 后端连接**。
-2. 将“连接模式”改为 **Linux 远程后端**。
-3. 填写服务器显示的“FastAPI 地址”和“连接 Token”。
-4. 点击 **保存设置**。
+2. 填写服务器显示的“FastAPI 地址”和“连接 Token”。
+3. 点击 **保存设置**。
 
 FastAPI 地址不要添加 `/api/v1`。公网访问必须使用 HTTPS，不要直接暴露公网 HTTP 端口。
 
@@ -86,15 +93,33 @@ sudo qingjuan-uninstall
 
 ## 数据与安全
 
-- Windows 数据保存在应用目录的 `backend/data/`
 - Linux 数据保存在 `/var/lib/qingjuan`
-- 更新或迁移前请先备份数据目录
+- Windows 与 Android 只保存界面偏好和平台安全存储保护的连接 Token
+- 更新或迁移前请先备份 Linux 数据目录
 - 不要公开连接 Token、翻译 API 密钥、Cookie、数据库和下载内容
-- 远程连接建议使用局域网、Tailscale / WireGuard 或 HTTPS
+- 连接建议使用局域网、Tailscale / WireGuard；公网访问必须使用 HTTPS
 
-## 开发与贡献
+## 开发、构建与 CI
 
-开发环境、项目结构、测试和发布说明见[开发文档](./docs/development/README.md)。
+开发环境、项目结构、测试和发布规范见[开发文档](./docs/development/README.md)。本地常用构建命令：
+
+```powershell
+# Windows x64 远程客户端
+./tool/build_windows.ps1
+
+# Android Release APK
+flutter build apk --release
+```
+
+`.github/workflows/ci.yml` 在 Pull Request、推送到 `main` / `master`（包括 PR 合并）以及手动触发时运行：
+
+1. Flutter 格式、分析和测试；
+2. Python Ruff 与 Pytest；
+3. Linux 部署脚本与原生后端冒烟测试。
+
+只有这 3 个 CI 门禁全部成功后，工作流才会并行构建 Windows x64 与 Android Release 产物，并上传到该次
+Actions 运行的 **Artifacts**。推送与 `pubspec.yaml` 版本一致的 `v<版本>` 标签时，发布工作流会进一步生成
+Windows ZIP、签名 Android APK 和对应 SHA-256，并上传到 GitHub Releases。
 
 欢迎提交 [Issue](https://github.com/Tavre/QingJuan/issues) 或 Pull Request。提交代码前请移除密钥、账号和个人数据。
 

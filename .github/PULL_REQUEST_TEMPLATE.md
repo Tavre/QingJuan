@@ -9,7 +9,7 @@
 - [ ] `flutter test`
 - [ ] `python -m ruff check app tests`
 - [ ] `python -m pytest`
-- [ ] 已验证 Windows 亮色、深色主题和窄窗口布局（如涉及 UI）
+- [ ] 已验证 Windows 与 Android 的亮色、深色、响应式布局和系统返回（如涉及 UI）
 - [ ] 已更新测试和文档
 - [ ] 不包含密钥、数据库、下载内容或无关改动
 

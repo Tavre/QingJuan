@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:qingjuan/app/app_scope.dart';
 import 'package:qingjuan/app/app_state.dart';
 import 'package:qingjuan/core/api/api_client.dart';
-import 'package:qingjuan/core/backend/backend_process_manager.dart';
+import 'package:qingjuan/core/backend/backend_connection_manager.dart';
 import 'package:qingjuan/core/models/settings.dart';
 import 'package:qingjuan/core/models/tts_speech_style.dart';
 import 'package:qingjuan/core/models/tts_voice.dart';
@@ -42,7 +42,7 @@ void main() {
     expect(settings.toJson().containsKey('defaultProvider'), isFalse);
   });
 
-  testWidgets('settings lists, persists and previews Windows voices',
+  testWidgets('settings lists, persists and previews device voices',
       (tester) async {
     const voice = TtsVoice(
       name: 'Microsoft Xiaoxiao',
@@ -60,7 +60,7 @@ void main() {
         home: AppScope(
           appState: appState,
           api: api,
-          backend: BackendProcessManager(api),
+          backend: BackendConnectionManager(api, isConfigured: () => false),
           library: LibraryController(api),
           sources: SourcesController(api),
           tasks: TasksController(api),

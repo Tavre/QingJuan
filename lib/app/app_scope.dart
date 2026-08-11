@@ -1,7 +1,7 @@
 import 'package:flutter/widgets.dart';
 
 import '../core/api/api_client.dart';
-import '../core/backend/backend_process_manager.dart';
+import '../core/backend/backend_connection_manager.dart';
 import '../features/library/library_controller.dart';
 import '../features/settings/settings_controller.dart';
 import '../features/sources/sources_controller.dart';
@@ -23,7 +23,7 @@ class AppScope extends InheritedWidget {
 
   final AppState appState;
   final ApiClient api;
-  final BackendProcessManager backend;
+  final BackendConnectionManager backend;
   final LibraryController library;
   final SourcesController sources;
   final TasksController tasks;

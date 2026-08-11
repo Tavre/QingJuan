@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:qingjuan/app/app_theme.dart';
 
 void main() {
-  test('theme uses responsive desktop motion timings', () {
+  test('theme uses short responsive motion timings', () {
     final theme = buildQingJuanTheme(Brightness.light);
 
     expect(theme.fasterAnimationDuration, const Duration(milliseconds: 60));

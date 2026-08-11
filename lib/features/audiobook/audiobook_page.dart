@@ -5,6 +5,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 import '../../core/models/book.dart';
 import '../../core/models/tts_speech_style.dart';
 import '../../core/models/tts_voice.dart';
+import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
 import 'audiobook_controller.dart';
 import 'flutter_tts_engine.dart';
@@ -61,82 +62,145 @@ class _AudiobookPageState extends State<AudiobookPage> {
       animation: _controller,
       builder: (context, _) {
         final theme = FluentTheme.of(context);
+        final dark = theme.brightness == Brightness.dark;
         return NavigationView(
-          appBar: NavigationAppBar(
-            automaticallyImplyLeading: false,
-            leading: Tooltip(
-              message: '返回作品详情',
-              child: IconButton(
-                icon: const Icon(
-                  FluentIcons.back,
-                  semanticLabel: '返回作品详情',
-                ),
-                onPressed: () => Navigator.pop(context),
+          content: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: dark
+                    ? const <Color>[Color(0xFF18352F), Color(0xFF111715)]
+                    : const <Color>[Color(0xFFE0F1EA), Color(0xFFF7F7F4)],
+                stops: const <double>[0, .58],
               ),
             ),
-            title: Text('听书 · ${widget.detail.book.title}'),
-          ),
-          content: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 760),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(28, 28, 28, 24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: <Widget>[
-                    Text(
-                      _controller.currentChapter.title,
-                      style: theme.typography.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      '第 ${_controller.chapterIndex} / ${widget.detail.chapters.length} 章 · ${_stateLabel(_controller.state)}',
-                      style: theme.typography.caption,
-                    ),
-                    const SizedBox(height: 20),
-                    ProgressBar(value: _controller.chapterProgress),
-                    const SizedBox(height: 24),
-                    Expanded(
-                      child: Container(
-                        padding: const EdgeInsets.all(22),
-                        decoration: BoxDecoration(
-                          color: theme.cardColor,
-                          border: Border.all(
-                            color: theme.resources.cardStrokeColorDefault,
-                          ),
-                          borderRadius: BorderRadius.circular(10),
+            child: SafeArea(
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 760),
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(18, 12, 18, 28),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: <Widget>[
+                        Row(
+                          children: <Widget>[
+                            Tooltip(
+                              message: '返回作品详情',
+                              child: IconButton(
+                                icon: const Icon(
+                                  FluentIcons.back,
+                                  semanticLabel: '返回作品详情',
+                                ),
+                                onPressed: () => Navigator.pop(context),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                '听书 · ${widget.detail.book.title}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.typography.subtitle?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                            StatusPill(
+                              _stateLabel(_controller.state),
+                              accented: _controller.isPlaying,
+                              icon: _controller.isPlaying
+                                  ? FluentIcons.volume3
+                                  : FluentIcons.headset,
+                            ),
+                          ],
                         ),
-                        child: _controller.isLoading
-                            ? const LoadingView(label: '正在加载章节正文')
-                            : _controller.error != null
-                                ? ErrorView(
-                                    message: _controller.error!,
-                                    onRetry: _controller.initialize,
-                                  )
-                                : SingleChildScrollView(
-                                    child: SelectionArea(
-                                      child: Text(
-                                        _controller.currentText,
-                                        style: theme.typography.bodyLarge
-                                            ?.copyWith(height: 1.8),
-                                      ),
-                                    ),
-                                  ),
-                      ),
+                        const SizedBox(height: 22),
+                        Center(
+                          child: _AudiobookArtwork(
+                            title: widget.detail.book.title,
+                          ),
+                        ),
+                        const SizedBox(height: 22),
+                        Text(
+                          _controller.currentChapter.title,
+                          textAlign: TextAlign.center,
+                          style: theme.typography.title?.copyWith(
+                            fontSize: 25,
+                            fontWeight: FontWeight.w800,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 7),
+                        Text(
+                          '第 ${_controller.chapterIndex} / ${widget.detail.chapters.length} 章',
+                          textAlign: TextAlign.center,
+                          style: theme.typography.caption,
+                        ),
+                        const SizedBox(height: 18),
+                        ProgressBar(
+                          value: _controller.chapterProgress,
+                          strokeWidth: 4,
+                        ),
+                        const SizedBox(height: 20),
+                        _PlaybackControls(controller: _controller),
+                        const SizedBox(height: 22),
+                        AppSurface(
+                          tone: AppSurfaceTone.elevated,
+                          borderRadius: 24,
+                          padding: const EdgeInsets.all(18),
+                          child: _SpeechSettings(
+                            controller: _controller,
+                            onStyleChanged: (style) async {
+                              await _controller.setStyle(style);
+                              await widget.onStyleChanged?.call(style);
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        AppSurface(
+                          tone: AppSurfaceTone.muted,
+                          borderRadius: 22,
+                          padding: const EdgeInsets.all(18),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                '本章文字',
+                                style: theme.typography.subtitle?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              ConstrainedBox(
+                                constraints:
+                                    const BoxConstraints(maxHeight: 240),
+                                child: _controller.isLoading
+                                    ? const LoadingView(label: '正在加载章节正文')
+                                    : _controller.error != null
+                                        ? ErrorView(
+                                            message: _controller.error!,
+                                            onRetry: _controller.initialize,
+                                          )
+                                        : SingleChildScrollView(
+                                            child: SelectionArea(
+                                              child: Text(
+                                                _controller.currentText,
+                                                style: theme
+                                                    .typography.bodyLarge
+                                                    ?.copyWith(height: 1.8),
+                                              ),
+                                            ),
+                                          ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 20),
-                    _PlaybackControls(controller: _controller),
-                    const SizedBox(height: 18),
-                    _SpeechSettings(
-                      controller: _controller,
-                      onStyleChanged: (style) async {
-                        await _controller.setStyle(style);
-                        await widget.onStyleChanged?.call(style);
-                      },
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -157,6 +221,57 @@ class _AudiobookPageState extends State<AudiobookPage> {
       };
 }
 
+class _AudiobookArtwork extends StatelessWidget {
+  const _AudiobookArtwork({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = FluentTheme.of(context);
+    final dark = theme.brightness == Brightness.dark;
+    return Container(
+      width: 138,
+      height: 184,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: dark
+              ? const <Color>[Color(0xFF236D63), Color(0xFF18251F)]
+              : const <Color>[Color(0xFF4BAA9E), Color(0xFFB9D9C9)],
+        ),
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: const Color(0xFF102A26).withAlpha(dark ? 76 : 42),
+            blurRadius: 24,
+            offset: const Offset(0, 12),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: <Widget>[
+          const Icon(FluentIcons.headset, color: Color(0xFFFFFFFF), size: 38),
+          const SizedBox(height: 14),
+          Text(
+            title,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: theme.typography.bodyLarge?.copyWith(
+              color: const Color(0xFFFFFFFF),
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _PlaybackControls extends StatelessWidget {
   const _PlaybackControls({required this.controller});
 
@@ -164,13 +279,10 @@ class _PlaybackControls extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Wrap(
-      alignment: WrapAlignment.center,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      spacing: 14,
-      runSpacing: 10,
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
       children: <Widget>[
-        Button(
+        IconButton(
           onPressed: controller.chapterIndex > 1 && !controller.isLoading
               ? () => unawaited(
                     controller.moveChapter(
@@ -179,8 +291,13 @@ class _PlaybackControls extends StatelessWidget {
                     ),
                   )
               : null,
-          child: const Text('上一章'),
+          icon: const Icon(
+            FluentIcons.previous,
+            semanticLabel: '上一章',
+            size: 22,
+          ),
         ),
+        const SizedBox(width: 12),
         Tooltip(
           message: '停止播放',
           child: IconButton(
@@ -194,7 +311,16 @@ class _PlaybackControls extends StatelessWidget {
                 : () => unawaited(controller.stop()),
           ),
         ),
+        const SizedBox(width: 12),
         FilledButton(
+          style: ButtonStyle(
+            padding: const WidgetStatePropertyAll(
+              EdgeInsets.symmetric(horizontal: 24, vertical: 15),
+            ),
+            shape: WidgetStatePropertyAll(
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(99)),
+            ),
+          ),
           onPressed: controller.isLoading
               ? null
               : () => unawaited(
@@ -218,7 +344,8 @@ class _PlaybackControls extends StatelessWidget {
             ],
           ),
         ),
-        Button(
+        const SizedBox(width: 12),
+        IconButton(
           onPressed:
               controller.chapterIndex < controller.detail.chapters.length &&
                       !controller.isLoading
@@ -229,7 +356,11 @@ class _PlaybackControls extends StatelessWidget {
                         ),
                       )
                   : null,
-          child: const Text('下一章'),
+          icon: const Icon(
+            FluentIcons.next,
+            semanticLabel: '下一章',
+            size: 22,
+          ),
         ),
       ],
     );
@@ -247,13 +378,19 @@ class _SpeechSettings extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Wrap(
-      crossAxisAlignment: WrapCrossAlignment.center,
-      spacing: 18,
-      runSpacing: 12,
+    final theme = FluentTheme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
+        Text(
+          '播放设置',
+          style: theme.typography.subtitle?.copyWith(
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 16),
         SizedBox(
-          width: 230,
+          width: double.infinity,
           child: InfoLabel(
             label: '朗读风格',
             child: ComboBox<TtsSpeechStyle>(
@@ -278,11 +415,17 @@ class _SpeechSettings extends StatelessWidget {
             ),
           ),
         ),
+        const SizedBox(height: 16),
         Row(
-          mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            const Text('朗读版本'),
-            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                '朗读版本',
+                style: theme.typography.body?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
             ToggleButton(
               checked: controller.mode == 'original',
               onChanged: controller.isLoading
@@ -296,8 +439,9 @@ class _SpeechSettings extends StatelessWidget {
             ),
           ],
         ),
+        const SizedBox(height: 16),
         SizedBox(
-          width: 250,
+          width: double.infinity,
           child: Row(
             children: <Widget>[
               const Text('语速'),
@@ -314,8 +458,9 @@ class _SpeechSettings extends StatelessWidget {
             ],
           ),
         ),
+        const SizedBox(height: 12),
         SizedBox(
-          width: 250,
+          width: double.infinity,
           child: Row(
             children: <Widget>[
               const Text('音量'),
@@ -332,11 +477,12 @@ class _SpeechSettings extends StatelessWidget {
             ],
           ),
         ),
+        const SizedBox(height: 12),
         SizedBox(
-          width: 320,
+          width: double.infinity,
           child: Text(
             controller.style.description,
-            style: FluentTheme.of(context).typography.caption,
+            style: theme.typography.caption?.copyWith(height: 1.45),
           ),
         ),
       ],

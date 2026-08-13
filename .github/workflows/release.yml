@@ -30,6 +30,11 @@ jobs:
           python-version: '3.13'
           cache: pip
           cache-dependency-path: python-backend/requirements-dev.txt
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: admin-web/package-lock.json
       - name: Validate tag and source versions
         shell: pwsh
         run: |
@@ -40,6 +45,7 @@ jobs:
           flutter pub get
           python -m pip install -r python-backend/requirements-dev.txt
           python -m pip check
+          npm ci --prefix admin-web --ignore-scripts --no-audit
       - name: Run Flutter quality gates
         run: |
           dart format --output=none --set-exit-if-changed lib test
@@ -50,6 +56,11 @@ jobs:
         run: |
           python -m ruff check app tests
           python -m pytest
+      - name: Run React admin quality gates
+        run: |
+          npm test --prefix admin-web
+          npm run build --prefix admin-web
+          git diff --exit-code -- python-backend/app/admin_static
 
   android-release:
     name: Build signed Android release
@@ -119,10 +130,17 @@ jobs:
           flutter-version: '3.24.3'
           channel: stable
           cache: true
-      - name: Build remote-only Windows client
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: python-backend/requirements-dev.txt
+      - name: Install Windows backend build dependencies
+        run: python -m pip install -r python-backend/requirements-dev.txt
+      - name: Build Windows client and local backend
         shell: pwsh
         run: ./tool/build_windows.ps1
-      - name: Smoke test Windows package structure
+      - name: Smoke test Windows client and packaged backend
         shell: pwsh
         run: ./tool/smoke_test_windows_release.ps1
       - name: Package Windows release

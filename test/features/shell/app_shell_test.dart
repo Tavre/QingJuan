@@ -275,7 +275,7 @@ class _Harness {
     }
     final appState = AppState(
       preferences,
-      initialBackendToken: configured ? 'test-token' : '',
+      initialRemoteBackendToken: configured ? 'test-token' : '',
     );
     final api = ApiClient(() => appState.backendUrl);
     final backend = BackendConnectionManager(

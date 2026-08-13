@@ -5,13 +5,15 @@ import os
 import shutil
 import sqlite3
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .models import (
     BookRecord,
     BookSourceRecord,
     ComicSourceConfig,
+    DeviceRecord,
+    DeviceView,
     MangaOcrConfig,
     OpenAICompatibleConfig,
     ReadingProgressRecord,
@@ -331,6 +333,26 @@ def init_db() -> None:
             ON book_sources (origin, name)
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS devices (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                ip_address TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                banned INTEGER NOT NULL DEFAULT 0,
+                banned_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_devices_last_seen
+            ON devices (last_seen_at DESC)
+            """
+        )
         _seed_builtin_book_sources(conn)
 
 
@@ -351,6 +373,115 @@ def _ensure_book_source_columns(conn: sqlite3.Connection) -> None:
     existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(book_sources)").fetchall()}
     if "rule_payload" not in existing_columns:
         conn.execute("ALTER TABLE book_sources ADD COLUMN rule_payload TEXT")
+
+
+DEVICE_ONLINE_WINDOW_SECONDS = 120
+DEVICE_TOUCH_INTERVAL_SECONDS = 30
+
+
+def touch_device(
+    *,
+    device_id: str,
+    name: str,
+    platform: str,
+    ip_address: str,
+    seen_at: datetime | None = None,
+) -> DeviceRecord:
+    timestamp = seen_at or datetime.now(UTC)
+    timestamp_text = _datetime_text(timestamp)
+    update_before = _datetime_text(timestamp - timedelta(seconds=DEVICE_TOUCH_INTERVAL_SECONDS))
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT id, name, platform, ip_address, first_seen_at, last_seen_at,
+                   banned, banned_at
+            FROM devices
+            WHERE id = ?
+            """,
+            (device_id,),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                """
+                INSERT INTO devices (
+                    id, name, platform, ip_address, first_seen_at, last_seen_at,
+                    banned, banned_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 0, NULL)
+                """,
+                (device_id, name, platform, ip_address, timestamp_text, timestamp_text),
+            )
+        elif not bool(row[6]) and (
+            row[1] != name
+            or row[2] != platform
+            or row[3] != ip_address
+            or row[5] <= update_before
+        ):
+            conn.execute(
+                """
+                UPDATE devices
+                SET name = ?, platform = ?, ip_address = ?, last_seen_at = ?
+                WHERE id = ?
+                """,
+                (name, platform, ip_address, timestamp_text, device_id),
+            )
+        refreshed = conn.execute(
+            """
+            SELECT id, name, platform, ip_address, first_seen_at, last_seen_at,
+                   banned, banned_at
+            FROM devices
+            WHERE id = ?
+            """,
+            (device_id,),
+        ).fetchone()
+    if refreshed is None:
+        raise RuntimeError("设备登记失败")
+    return _row_to_device(refreshed)
+
+
+def list_devices(*, now: datetime | None = None) -> list[DeviceView]:
+    current_time = now or datetime.now(UTC)
+    online_after = current_time - timedelta(seconds=DEVICE_ONLINE_WINDOW_SECONDS)
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, platform, ip_address, first_seen_at, last_seen_at,
+                   banned, banned_at
+            FROM devices
+            ORDER BY banned ASC, last_seen_at DESC, first_seen_at DESC
+            """
+        ).fetchall()
+    devices: list[DeviceView] = []
+    for row in rows:
+        record = _row_to_device(row)
+        devices.append(
+            DeviceView(
+                **record.model_dump(),
+                online=not record.banned and _parse_datetime(record.lastSeenAt) >= online_after,
+            )
+        )
+    return devices
+
+
+def set_device_banned(
+    device_id: str,
+    *,
+    banned: bool,
+    changed_at: datetime | None = None,
+) -> DeviceView | None:
+    timestamp_text = _datetime_text(changed_at or datetime.now(UTC))
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE devices
+            SET banned = ?, banned_at = ?
+            WHERE id = ?
+            """,
+            (int(banned), timestamp_text if banned else None, device_id),
+        )
+        if cursor.rowcount == 0:
+            return None
+    return next((device for device in list_devices() if device.id == device_id), None)
 
 
 def list_books() -> list[BookRecord]:
@@ -826,6 +957,37 @@ def _row_to_book(row: sqlite3.Row | tuple) -> BookRecord:
         lastReadChapterIndex=row[11] if len(row) > 11 else 0,
         lastReadAt=row[12] if len(row) > 12 else None,
     )
+
+
+def _row_to_device(row: sqlite3.Row | tuple) -> DeviceRecord:
+    platform = str(row[2] or "other").lower()
+    if platform not in {"android", "windows", "linux", "macos", "ios", "other"}:
+        platform = "other"
+    return DeviceRecord(
+        id=row[0],
+        name=row[1],
+        platform=platform,
+        ipAddress=row[3],
+        firstSeenAt=row[4],
+        lastSeenAt=row[5],
+        banned=bool(row[6]),
+        bannedAt=row[7],
+    )
+
+
+def _datetime_text(value: datetime) -> str:
+    normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return normalized.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _parse_datetime(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _normalize_book_kind(value: object) -> str:

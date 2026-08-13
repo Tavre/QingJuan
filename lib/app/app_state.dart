@@ -12,6 +12,17 @@ enum AppSection { library, search, sources, tasks, settings, about }
 
 enum AppThemeMode { system, light, dark }
 
+enum BackendConnectionMode { local, remote }
+
+class BackendConnectionProfile {
+  const BackendConnectionProfile({required this.url, required this.token});
+
+  final String url;
+  final String token;
+
+  bool get isConfigured => url.isNotEmpty && token.isNotEmpty;
+}
+
 enum ReaderFlowMode { paged, continuous }
 
 enum ReaderPaletteMode { white, parchment, eyeCare, mist, night }
@@ -24,14 +35,22 @@ class AppState extends ChangeNotifier {
   AppState(
     this._preferences, {
     ConnectionSecretStore? secretStore,
-    String initialBackendToken = '',
+    String initialRemoteBackendToken = '',
+    bool localBackendSupported = false,
   })  : _secretStore = secretStore,
+        _localBackendSupported = localBackendSupported,
         _themeMode = AppThemeMode.values.firstWhere(
           (mode) => mode.name == _preferences.getString(_themeKey),
           orElse: () => AppThemeMode.system,
         ),
-        _backendUrl = _preferences.getString(_backendKey)?.trim() ?? '',
-        _backendToken = initialBackendToken,
+        _connectionMode = _readConnectionMode(
+          _preferences,
+          localBackendSupported: localBackendSupported,
+        ),
+        _remoteBackendConnection = BackendConnectionProfile(
+          url: _readRemoteBackendUrl(_preferences),
+          token: initialRemoteBackendToken,
+        ),
         _ttsVoice = _readTtsVoice(_preferences),
         _ttsSpeechStyle = parseTtsSpeechStyle(
           _preferences.getString(_ttsSpeechStyleKey),
@@ -62,7 +81,14 @@ class AppState extends ChangeNotifier {
   }
 
   static const _themeKey = 'qingjuan.theme';
-  static const _backendKey = 'qingjuan.backendUrl';
+  static const _legacyBackendUrlKey = 'qingjuan.backendUrl';
+  static const _remoteBackendUrlKey = 'qingjuan.backend.remote.url';
+  static const _backendModeKey = 'qingjuan.backendMode';
+  static const defaultLocalBackendUrl = 'http://127.0.0.1:19453';
+  static const localBackendConnection = BackendConnectionProfile(
+    url: defaultLocalBackendUrl,
+    token: '',
+  );
   static const _ttsVoiceKey = 'qingjuan.ttsVoice';
   static const _ttsSpeechStyleKey = 'qingjuan.ttsSpeechStyle';
   static const _readerFlowModeKey = 'qingjuan.readerFlowMode';
@@ -74,12 +100,13 @@ class AppState extends ChangeNotifier {
 
   final SharedPreferences _preferences;
   final ConnectionSecretStore? _secretStore;
+  final bool _localBackendSupported;
   late AppSection _section;
   late final ValueNotifier<AppSection> _sectionListenable;
   AppThemeMode _themeMode;
   late final ValueNotifier<ThemeMode> _themeModeListenable;
-  String _backendUrl;
-  String _backendToken;
+  BackendConnectionMode _connectionMode;
+  BackendConnectionProfile _remoteBackendConnection;
   TtsVoice? _ttsVoice;
   TtsSpeechStyle _ttsSpeechStyle;
   ReaderFlowMode _readerFlowMode;
@@ -92,10 +119,22 @@ class AppState extends ChangeNotifier {
 
   AppSection get section => _section;
   AppThemeMode get themeMode => _themeMode;
-  String get backendUrl => _backendUrl;
-  String get backendToken => _backendToken;
+  bool get localBackendSupported => _localBackendSupported;
+  BackendConnectionMode get connectionMode => _connectionMode;
+  BackendConnectionProfile get activeBackendConnection =>
+      _connectionMode == BackendConnectionMode.local
+          ? localBackendConnection
+          : _remoteBackendConnection;
+  BackendConnectionProfile get remoteBackendConnection =>
+      _remoteBackendConnection;
+  String get backendUrl => activeBackendConnection.url;
+  String get backendToken => activeBackendConnection.token;
+  String get remoteBackendUrl => _remoteBackendConnection.url;
+  String get remoteBackendToken => _remoteBackendConnection.token;
   bool get hasBackendConnection =>
-      _backendUrl.isNotEmpty && _backendToken.isNotEmpty;
+      _connectionMode == BackendConnectionMode.local
+          ? _localBackendSupported
+          : _remoteBackendConnection.isConfigured;
   TtsVoice? get ttsVoice => _ttsVoice;
   TtsSpeechStyle get ttsSpeechStyle => _ttsSpeechStyle;
   ReaderFlowMode get readerFlowMode => _readerFlowMode;
@@ -136,7 +175,7 @@ class AppState extends ChangeNotifier {
     await _preferences.setString(_themeKey, value.name);
   }
 
-  Future<void> setBackendConnection({
+  Future<void> saveRemoteBackendConnection({
     required String url,
     required String token,
   }) async {
@@ -151,10 +190,22 @@ class AppState extends ChangeNotifier {
         await secretStore.writeToken(normalizedToken);
       }
     }
-    await _preferences.setString(_backendKey, normalized);
-    await _preferences.remove('qingjuan.backendMode');
-    _backendUrl = normalized;
-    _backendToken = normalizedToken;
+    await _preferences.setString(_remoteBackendUrlKey, normalized);
+    await _preferences.remove(_legacyBackendUrlKey);
+    _remoteBackendConnection = BackendConnectionProfile(
+      url: normalized,
+      token: normalizedToken,
+    );
+    notifyListeners();
+  }
+
+  Future<void> selectBackendMode(BackendConnectionMode mode) async {
+    if (mode == BackendConnectionMode.local && !_localBackendSupported) {
+      throw StateError('当前平台不支持本机后端');
+    }
+    if (_connectionMode == mode) return;
+    _connectionMode = mode;
+    await _preferences.setString(_backendModeKey, mode.name);
     notifyListeners();
   }
 
@@ -241,5 +292,30 @@ class AppState extends ChangeNotifier {
     } catch (_) {
       return null;
     }
+  }
+
+  static BackendConnectionMode _readConnectionMode(
+    SharedPreferences preferences, {
+    required bool localBackendSupported,
+  }) {
+    if (!localBackendSupported) return BackendConnectionMode.remote;
+    final persisted = preferences.getString(_backendModeKey);
+    if (persisted == BackendConnectionMode.local.name) {
+      return BackendConnectionMode.local;
+    }
+    if (persisted == BackendConnectionMode.remote.name) {
+      return BackendConnectionMode.remote;
+    }
+    return _readRemoteBackendUrl(preferences).isEmpty
+        ? BackendConnectionMode.local
+        : BackendConnectionMode.remote;
+  }
+
+  static String _readRemoteBackendUrl(SharedPreferences preferences) {
+    final value = (preferences.getString(_remoteBackendUrlKey) ??
+            preferences.getString(_legacyBackendUrlKey))
+        ?.trim();
+    final normalized = (value ?? '').replaceAll(RegExp(r'/+$'), '');
+    return normalized == defaultLocalBackendUrl ? '' : normalized;
   }
 }

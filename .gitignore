@@ -32,6 +32,7 @@ python-backend/build/
 python-backend/dist/
 python-backend/*.spec
 test-results/
+admin-web/node_modules/
 
 # Runtime data, downloads and local databases
 python-backend/data/

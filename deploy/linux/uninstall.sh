@@ -11,6 +11,7 @@ readonly SERVICE_NAME="qingjuan-backend"
 readonly SERVICE_USER="qingjuan"
 readonly SERVICE_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 readonly INFO_COMMAND="/usr/local/sbin/qingjuan-info"
+readonly PASSWORD_COMMAND="/usr/local/sbin/qingjuan-password"
 readonly UNINSTALL_COMMAND="/usr/local/sbin/qingjuan-uninstall"
 
 purge_data="false"
@@ -65,7 +66,7 @@ remove_tree() {
 }
 
 systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
-rm -f -- "$SERVICE_UNIT" "$INFO_COMMAND" "$UNINSTALL_COMMAND"
+rm -f -- "$SERVICE_UNIT" "$INFO_COMMAND" "$PASSWORD_COMMAND" "$UNINSTALL_COMMAND"
 systemctl daemon-reload
 systemctl reset-failed "$SERVICE_NAME" >/dev/null 2>&1 || true
 

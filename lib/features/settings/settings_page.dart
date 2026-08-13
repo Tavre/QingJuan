@@ -29,15 +29,9 @@ class _SettingsPageState extends State<SettingsPage> {
 
   final _backendController = TextEditingController();
   final _backendTokenController = TextEditingController();
-  final _baseUrlController = TextEditingController();
-  final _apiKeyController = TextEditingController();
-  final _modelController = TextEditingController();
-  final _promptController = TextEditingController();
-  final _autoTranslateController = TextEditingController();
-  final _concurrencyController = TextEditingController();
-  bool _translationModelEnabled = false;
-  bool _translationModelSupportsVision = false;
-  bool _clearTranslationApiKey = false;
+  BackendConnectionMode _connectionMode = BackendConnectionMode.remote;
+  bool _savingConnection = false;
+  bool _modelChecking = false;
   bool _initialized = false;
   late final TtsVoiceService _voiceService;
   List<TtsVoice> _voices = const <TtsVoice>[];
@@ -113,66 +107,40 @@ class _SettingsPageState extends State<SettingsPage> {
     if (_initialized) return;
     _initialized = true;
     final scope = AppScope.of(context);
-    _backendController.text = scope.appState.backendUrl;
-    _backendTokenController.text = scope.appState.backendToken;
-    _loadModel(scope.settings.value);
-  }
-
-  void _loadModel(TranslationSettings settings) {
-    final translationModel = settings.translationModel;
-    _baseUrlController.text = translationModel.baseUrl;
-    _apiKeyController.text = translationModel.apiKey;
-    _modelController.text = translationModel.model;
-    _promptController.text = settings.systemPrompt;
-    _autoTranslateController.text = '${settings.autoTranslateNextChapters}';
-    _concurrencyController.text = '${settings.downloadConcurrency}';
-    _translationModelEnabled = translationModel.enabled;
-    _translationModelSupportsVision = translationModel.supportsVision;
-    _clearTranslationApiKey = false;
-  }
-
-  TranslationSettings _commitTranslationModel(TranslationSettings settings) {
-    final translationModel = TranslationModelSettings(
-      enabled: _translationModelEnabled,
-      baseUrl: _baseUrlController.text.trim(),
-      apiKey: _apiKeyController.text.trim(),
-      model: _modelController.text.trim(),
-      supportsVision: _translationModelSupportsVision,
-      apiKeyConfigured: settings.translationModel.apiKeyConfigured,
-      clearApiKey: _clearTranslationApiKey,
-    );
-    return settings.copyWith(translationModel: translationModel);
+    _backendController.text = scope.appState.remoteBackendUrl;
+    _backendTokenController.text = scope.appState.remoteBackendToken;
+    _connectionMode = scope.appState.connectionMode;
   }
 
   Future<void> _save() async {
     final scope = AppScope.of(context);
-    var settings = _commitTranslationModel(scope.settings.value);
-    settings = settings.copyWith(
-      systemPrompt: _promptController.text,
-      autoTranslateNextChapters:
-          int.tryParse(_autoTranslateController.text) ?? 2,
-      downloadConcurrency: int.tryParse(_concurrencyController.text) ?? 4,
-    );
-    scope.settings.update(settings);
+    setState(() => _savingConnection = true);
     try {
       final backendUrl = _backendController.text.trim();
       final backendToken = _backendTokenController.text.trim();
-      final connectionChanged =
-          scope.appState.backendUrl.replaceAll(RegExp(r'/+$'), '') !=
-                  backendUrl.replaceAll(RegExp(r'/+$'), '') ||
-              scope.appState.backendToken != backendToken;
-      validateBackendUrl(backendUrl);
-      if (backendToken.isEmpty) {
-        throw StateError('Linux 后端必须填写连接 Token');
+      final connectionChanged = scope.appState.connectionMode !=
+              _connectionMode ||
+          (_connectionMode == BackendConnectionMode.remote &&
+              (scope.appState.remoteBackendUrl.replaceAll(RegExp(r'/+$'), '') !=
+                      backendUrl.replaceAll(RegExp(r'/+$'), '') ||
+                  scope.appState.remoteBackendToken != backendToken));
+      if (_connectionMode == BackendConnectionMode.remote) {
+        validateBackendUrl(backendUrl);
+        if (backendToken.isEmpty) {
+          throw StateError('Linux 后端必须填写连接 Token');
+        }
+        await scope.api.testConnection(
+          baseUrl: backendUrl,
+          token: backendToken,
+        );
       }
-      await scope.api.testConnection(
-        baseUrl: backendUrl,
-        token: backendToken,
-      );
-      await scope.appState.setBackendConnection(
-        url: backendUrl,
-        token: backendToken,
-      );
+      if (_connectionMode == BackendConnectionMode.remote) {
+        await scope.appState.saveRemoteBackendConnection(
+          url: backendUrl,
+          token: backendToken,
+        );
+      }
+      await scope.appState.selectBackendMode(_connectionMode);
       await scope.backend.ensureReady();
       if (scope.backend.status != BackendStatus.ready) {
         throw StateError(scope.backend.message);
@@ -183,18 +151,22 @@ class _SettingsPageState extends State<SettingsPage> {
         scope.sources.resetForBackendSwitch();
         scope.tasks.resetForBackendSwitch();
       }
-      await scope.settings.save();
       await Future.wait<void>(<Future<void>>[
         scope.library.load(),
         scope.sources.load(),
         scope.tasks.load(),
+        scope.settings.load(),
       ]);
       if (mounted) {
+        final modelReady =
+            scope.backend.translationModelCheck?.available == true;
         displayInfoBar(
           context,
-          builder: (_, __) => const InfoBar(
-            title: Text('设置已保存'),
-            severity: InfoBarSeverity.success,
+          builder: (_, __) => InfoBar(
+            title: Text(modelReady ? '连接与模型自检已完成' : '连接已保存'),
+            content: Text(scope.backend.message),
+            severity:
+                modelReady ? InfoBarSeverity.success : InfoBarSeverity.warning,
           ),
         );
       }
@@ -209,6 +181,8 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         );
       }
+    } finally {
+      if (mounted) setState(() => _savingConnection = false);
     }
   }
 
@@ -217,12 +191,6 @@ class _SettingsPageState extends State<SettingsPage> {
     unawaited(_voiceService.dispose());
     _backendController.dispose();
     _backendTokenController.dispose();
-    _baseUrlController.dispose();
-    _apiKeyController.dispose();
-    _modelController.dispose();
-    _promptController.dispose();
-    _autoTranslateController.dispose();
-    _concurrencyController.dispose();
     super.dispose();
   }
 
@@ -235,7 +203,7 @@ class _SettingsPageState extends State<SettingsPage> {
       animation: Listenable.merge(<Listenable>[scope.appState, settings]),
       builder: (context, _) => PageFrame(
         title: '设置',
-        subtitle: '管理界面主题、设备听书、Linux 后端和翻译服务。',
+        subtitle: '管理界面主题、设备听书、后端连接和翻译服务。',
         compactHeader: ReadingPageHeader(
           title: '设置',
           subtitle: '偏好、听书与服务器连接',
@@ -253,8 +221,8 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             const SizedBox(width: 7),
             FilledButton(
-              onPressed: settings.saving ? null : _save,
-              child: const Text('保存'),
+              onPressed: _savingConnection || settings.saving ? null : _save,
+              child: const Text('保存连接'),
             ),
           ],
         ),
@@ -276,8 +244,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ),
             FilledButton(
-              onPressed: settings.saving ? null : _save,
-              child: const Text('保存设置'),
+              onPressed: _savingConnection || settings.saving ? null : _save,
+              child: const Text('保存连接'),
             ),
           ],
         ),
@@ -288,7 +256,9 @@ class _SettingsPageState extends State<SettingsPage> {
               FeatureHero(
                 icon: FluentIcons.settings,
                 title: '让青卷更适合你',
-                message: '界面与设备偏好保存在手机，连接、书架和任务数据由 Linux 后端统一管理。',
+                message: scope.appState.localBackendSupported
+                    ? '界面与设备偏好保存在本机，书架和任务由当前选择的后端管理。'
+                    : '界面与设备偏好保存在手机，连接、书架和任务数据由 Linux 后端统一管理。',
                 child: Wrap(
                   spacing: 8,
                   runSpacing: 8,
@@ -304,8 +274,11 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                     StatusPill(
                       scope.backend.status == BackendStatus.ready
-                          ? '服务器已连接'
-                          : '服务器待检查',
+                          ? scope.appState.connectionMode ==
+                                  BackendConnectionMode.local
+                              ? '本机后端已连接'
+                              : '服务器已连接'
+                          : '后端待检查',
                       icon: scope.backend.status == BackendStatus.ready
                           ? FluentIcons.plug_connected
                           : FluentIcons.warning,
@@ -374,27 +347,77 @@ class _SettingsPageState extends State<SettingsPage> {
                 children: <Widget>[
                   _connectionStatusBar(scope),
                   const SizedBox(height: 12),
-                  InfoLabel(
-                    label: 'FastAPI 地址',
-                    child: TextBox(
-                      controller: _backendController,
-                      placeholder: 'https://qingjuan.example.com',
+                  if (scope.appState.localBackendSupported) ...<Widget>[
+                    InfoLabel(
+                      label: '连接模式',
+                      child: ComboBox<BackendConnectionMode>(
+                        key: const ValueKey('backend-connection-mode'),
+                        value: _connectionMode,
+                        isExpanded: true,
+                        items: const <ComboBoxItem<BackendConnectionMode>>[
+                          ComboBoxItem<BackendConnectionMode>(
+                            value: BackendConnectionMode.local,
+                            child: Text('本机后端'),
+                          ),
+                          ComboBoxItem<BackendConnectionMode>(
+                            value: BackendConnectionMode.remote,
+                            child: Text('Linux 远程后端'),
+                          ),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) {
+                            setState(() => _connectionMode = value);
+                          }
+                        },
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  InfoLabel(
-                    label: '连接 Token',
-                    child: TextBox(
-                      controller: _backendTokenController,
-                      obscureText: true,
-                      enableSuggestions: false,
-                      autocorrect: false,
-                      placeholder: '由 Linux 服务端管理员生成',
+                    const SizedBox(height: 12),
+                  ],
+                  if (_connectionMode ==
+                      BackendConnectionMode.remote) ...<Widget>[
+                    const InfoBar(
+                      title: Text('Linux 连接参数独立保存'),
+                      content: Text(
+                        '此处的地址与 Token 只属于 Linux 远程后端，切换到本机后端不会覆盖或清空。',
+                      ),
+                      severity: InfoBarSeverity.info,
                     ),
-                  ),
+                    const SizedBox(height: 12),
+                    InfoLabel(
+                      label: 'FastAPI 地址',
+                      child: TextBox(
+                        key: const ValueKey('linux-backend-url'),
+                        controller: _backendController,
+                        placeholder: 'https://qingjuan.example.com',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    InfoLabel(
+                      label: '连接 Token',
+                      child: TextBox(
+                        key: const ValueKey('linux-backend-token'),
+                        controller: _backendTokenController,
+                        obscureText: true,
+                        enableSuggestions: false,
+                        autocorrect: false,
+                        placeholder: '由 Linux 服务端管理员生成',
+                      ),
+                    ),
+                  ] else ...<Widget>[
+                    const InfoBar(
+                      title: Text('本机模式使用固定回环地址'),
+                      content: Text(
+                        '${AppState.defaultLocalBackendUrl}；保存后会检查并按需启动随包后端，无需连接 Token。'
+                        '服务设置入口：${AppState.defaultLocalBackendUrl}/admin/',
+                      ),
+                      severity: InfoBarSeverity.info,
+                    ),
+                  ],
                   const SizedBox(height: 8),
                   Text(
-                    '公网地址必须使用 HTTPS；局域网、Tailscale 或 WireGuard 私有地址可使用 HTTP。',
+                    _connectionMode == BackendConnectionMode.local
+                        ? '切换到远程模式时会停止本应用启动的本机后端；已保存的远程地址和 Token 会继续保留。'
+                        : '公网地址必须使用 HTTPS；局域网、Tailscale 或 WireGuard 私有地址可使用 HTTP。远程失败不会回退本机。',
                     style: FluentTheme.of(context).typography.caption,
                   ),
                 ],
@@ -408,82 +431,38 @@ class _SettingsPageState extends State<SettingsPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   const InfoBar(
-                    title: Text('OpenAI 兼容接口'),
+                    title: Text('由后端管理界面统一配置'),
                     content: Text(
-                      '统一使用 /v1/chat/completions。漫画由 Linux 后端的 RapidOCR 识字，纯文本模型也可以翻译。',
+                      '客户端只创建服务端翻译任务，不保存模型密钥或直连模型供应商；每次连接都会执行模型自检。',
                     ),
                     severity: InfoBarSeverity.info,
                   ),
                   const SizedBox(height: 14),
-                  ToggleSwitch(
-                    checked: _translationModelEnabled,
-                    onChanged: (value) => setState(
-                      () => _translationModelEnabled = value,
-                    ),
-                    content: const Text('启用翻译模型'),
-                  ),
-                  const SizedBox(height: 10),
-                  ToggleSwitch(
-                    checked: _translationModelSupportsVision,
-                    onChanged: (value) => setState(
-                      () => _translationModelSupportsVision = value,
-                    ),
-                    content: const Text('使用模型辅助识图'),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    '仅当模型明确支持图片输入时开启；关闭后图片不会发送给模型。',
-                    style: FluentTheme.of(context).typography.caption,
-                  ),
-                  const SizedBox(height: 14),
-                  InfoLabel(
-                    label: 'API 地址',
-                    child: TextBox(
-                      controller: _baseUrlController,
-                      placeholder: 'https://api.openai.com/v1',
-                    ),
-                  ),
+                  _translationModelStatusBar(scope),
                   const SizedBox(height: 12),
-                  InfoLabel(
-                    label: 'API 密钥',
-                    child: TextBox(
-                      controller: _apiKeyController,
-                      obscureText: true,
-                      placeholder:
-                          scope.settings.value.translationModel.apiKeyConfigured
-                              ? '已配置；留空保持不变'
-                              : '尚未配置',
+                  Button(
+                    onPressed: scope.backend.status == BackendStatus.ready &&
+                            !_modelChecking
+                        ? () => _checkTranslationModel(scope)
+                        : null,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        if (_modelChecking) ...<Widget>[
+                          const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: ProgressRing(strokeWidth: 2),
+                          ),
+                          const SizedBox(width: 8),
+                        ] else ...<Widget>[
+                          const Icon(FluentIcons.refresh, size: 14),
+                          const SizedBox(width: 8),
+                        ],
+                        Text(_modelChecking ? '正在检测' : '重新检测模型'),
+                      ],
                     ),
                   ),
-                  if (scope.settings.value.translationModel.apiKeyConfigured)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: ToggleSwitch(
-                        checked: _clearTranslationApiKey,
-                        onChanged: (value) => setState(
-                          () => _clearTranslationApiKey = value,
-                        ),
-                        content: const Text('清除服务端已保存的 API 密钥'),
-                      ),
-                    ),
-                  const SizedBox(height: 12),
-                  InfoLabel(
-                    label: '模型',
-                    child: TextBox(
-                      controller: _modelController,
-                      placeholder: '文本模型名称',
-                    ),
-                  ),
-                  const SizedBox(height: 26),
-                  InfoLabel(
-                    label: '系统提示词',
-                    child: TextBox(
-                      controller: _promptController,
-                      maxLines: 5,
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  _buildNumberSettings(compact),
                 ],
               ),
             ),
@@ -501,47 +480,76 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _buildNumberSettings(bool compact) {
-    final autoTranslate = InfoLabel(
-      label: '自动翻译后续章节数',
-      child: TextBox(controller: _autoTranslateController),
+  Future<void> _checkTranslationModel(AppScope scope) async {
+    setState(() => _modelChecking = true);
+    final result = await scope.backend.checkTranslationModel();
+    if (!mounted) return;
+    setState(() => _modelChecking = false);
+    displayInfoBar(
+      context,
+      builder: (_, __) => InfoBar(
+        title: Text(result.available ? '模型自检通过' : '模型自检未通过'),
+        content: Text(result.message),
+        severity: result.available
+            ? InfoBarSeverity.success
+            : InfoBarSeverity.warning,
+      ),
     );
-    final concurrency = InfoLabel(
-      label: '下载并发数',
-      child: TextBox(controller: _concurrencyController),
-    );
-    if (compact) {
-      return Column(
-        children: <Widget>[
-          autoTranslate,
-          const SizedBox(height: 12),
-          concurrency,
-        ],
+  }
+
+  Widget _translationModelStatusBar(AppScope scope) {
+    final check = scope.backend.translationModelCheck;
+    if (check == null) {
+      return const InfoBar(
+        title: Text('等待服务端模型自检'),
+        content: Text('连接后端后会自动检查管理界面保存的翻译模型。'),
+        severity: InfoBarSeverity.info,
       );
     }
-    return Row(
-      children: <Widget>[
-        Expanded(child: autoTranslate),
-        const SizedBox(width: 12),
-        Expanded(child: concurrency),
-      ],
+    final title = switch (check.status) {
+      TranslationModelCheckStatus.ready => '服务端翻译模型可用',
+      TranslationModelCheckStatus.disabled => '服务端翻译模型未启用',
+      TranslationModelCheckStatus.unconfigured => '服务端翻译模型未配置完整',
+      TranslationModelCheckStatus.failed => '服务端翻译模型自检失败',
+    };
+    final details = <String>[
+      if (check.model != null && check.model!.isNotEmpty) check.model!,
+      if (check.latencyMs != null) '${check.latencyMs} ms',
+      if (check.available) check.supportsVision ? '支持视觉' : '仅文本',
+      if (check.cached) '近期检查结果',
+    ];
+    return InfoBar(
+      title: Text(title),
+      content: Text(check.available && details.isNotEmpty
+          ? details.join(' · ')
+          : check.message),
+      severity: switch (check.status) {
+        TranslationModelCheckStatus.ready => InfoBarSeverity.success,
+        TranslationModelCheckStatus.failed => InfoBarSeverity.error,
+        _ => InfoBarSeverity.warning,
+      },
     );
   }
 
   Widget _connectionStatusBar(AppScope scope) {
     final status = scope.backend.status;
+    final isLocal =
+        scope.appState.connectionMode == BackendConnectionMode.local;
     final title = switch (status) {
       BackendStatus.unconfigured => '首次使用需要连接服务器',
       BackendStatus.checking => '正在检查 Linux 后端',
-      BackendStatus.ready => 'Linux 后端已连接',
-      BackendStatus.failed => 'Linux 后端连接失败',
+      BackendStatus.starting => '正在启动本机后端',
+      BackendStatus.ready => isLocal ? '本机后端已连接' : 'Linux 后端已连接',
+      BackendStatus.failed => isLocal ? '本机后端启动失败' : 'Linux 后端连接失败',
     };
-    final content = status == BackendStatus.failed
-        ? scope.backend.message
-        : '客户端不会在当前设备运行 Python。请填写 Linux 服务端提供的地址和 Token。';
+    final content = switch (status) {
+      BackendStatus.ready || BackendStatus.failed => scope.backend.message,
+      BackendStatus.starting => '正在检查固定回环端口并按需启动随包后端。',
+      _ => '请填写 Linux 服务端提供的地址和 Token。',
+    };
     final severity = switch (status) {
       BackendStatus.unconfigured => InfoBarSeverity.warning,
-      BackendStatus.checking => InfoBarSeverity.info,
+      BackendStatus.checking || BackendStatus.starting => InfoBarSeverity.info,
       BackendStatus.ready => InfoBarSeverity.success,
       BackendStatus.failed => InfoBarSeverity.error,
     };

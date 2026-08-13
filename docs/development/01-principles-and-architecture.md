@@ -2,8 +2,8 @@
 
 ## 1. 工程目标
 
-青卷将抓取、下载、翻译和阅读能力组合为 Windows / Android Flutter 客户端，以及运行在 Linux 服务器上的
-单用户后端。工程设计优先级为：
+青卷将抓取、下载、翻译和阅读能力组合为 Windows / Android Flutter 客户端、随服务提供的 React 管理界面，
+以及可作为 Windows 回环伴随进程或 Linux 单用户服务运行的 FastAPI 后端。工程设计优先级为：
 
 1. 数据与凭据安全；
 2. 功能正确、故障可恢复；
@@ -21,12 +21,17 @@ Flutter View / Widget
 Feature Controller
         ↓ 领域模型
 ApiClient / BackendConnectionManager
-        ↓ HTTPS / private-network HTTP
+        ↓ loopback HTTP / HTTPS / private-network HTTP
 FastAPI Router / Auth
         ↓
 Service / Scraper / Repository
         ↓
 SQLite / Files / Third-party sites
+
+React Admin / Ant Design
+        ↓ 同源 Cookie 会话 + CSRF
+FastAPI Router / Auth
+
 ```
 
 依赖只能向下：
@@ -35,13 +40,23 @@ SQLite / Files / Third-party sites
 - Controller 不依赖具体页面实例，不持有 `BuildContext`。
 - `core/models` 不依赖 Feature 和 UI。
 - API 层负责序列化、状态码与错误归一化，不包含页面跳转。
-- 客户端只有远程连接；未配置、认证失败或版本不兼容时不得启动任何本地后端。
+- Windows 客户端只有在用户明确选择本机模式时才可由基础设施层启动随包后端；Android 始终只有远程连接。
+  远程未配置、认证失败或版本不兼容时不得自动启动或回退到本机后端。
 - 连接 Token 只由 API 基础设施层读取，不进入领域模型、页面日志或第三方请求。
+- 管理界面默认不加载连接 Token；仅在管理员登录后主动点击“显示”时，通过同源 CSRF 保护接口按需读取，
+  结果只保存在当前页面内存并自动隐藏，不写入浏览器存储、普通业务响应、错误或日志。登录密码只提交给
+  同源登录接口，业务请求使用 HttpOnly 会话 Cookie。
+- Linux 远程服务继续使用连接 Token 的 SHA-256 摘要完成 Bearer 校验；原始值只保存在受限的服务器连接文件中，
+  供 `qingjuan-info` 和管理界面的按需显示使用。模型供应商 API 密钥不属于该连接凭据展示能力。
+- 翻译模型配置只以当前后端 SQLite 中由管理界面维护的记录为准。Windows / Android 客户端只创建翻译任务并
+  读取模型自检状态，不保存、编辑或直连模型供应商，也不得在服务端模型不可用时回退到客户端模型。
+- Windows / Android 客户端为每次应用安装生成稳定随机设备 ID，并随同源业务请求上报有限的设备名称与平台信息。
+  后端只用它维护设备在线状态和封禁规则；设备 ID 不是新的用户身份、不能替代 Bearer Token，也不得用于跨服务追踪。
 - FastAPI Router 校验输入、调用业务函数并映射响应，不编写大段抓取或 SQL。
 - 数据层不导入 FastAPI、Flutter 或 HTTP 请求对象。
 
-后端是书籍、任务、阅读进度、模型设置和文件的唯一权威来源。客户端文件选择器产生的 URI 或临时路径
-只属于对应客户端设备：导入时上传文件，导出时下载服务端产物，任何 API 都不得要求 Linux 后端写入
+当前选中的后端是书籍、任务、阅读进度、模型设置和文件的唯一权威来源。本机后端与 Linux 后端的数据互不自动同步。
+客户端文件选择器产生的 URI 或临时路径只属于对应客户端设备：导入时上传文件，导出时下载服务端产物，任何 API 都不得要求后端写入
 客户端路径。设备 TTS 始终在客户端运行；OCR、抓取与翻译能力属于后端，并通过能力握手暴露。
 
 ## 3. 目录职责
@@ -51,7 +66,7 @@ lib/
 ├─ app/                 # 组合根、主题、AppScope、全局偏好
 ├─ core/
 │  ├─ api/              # HTTP 客户端与统一异常
-│  ├─ backend/          # 远程后端连接状态与安全凭据
+│  ├─ backend/          # 后端连接状态、Windows 本机进程与安全凭据
 │  ├─ models/           # 跨功能领域模型
 │  └─ state/            # 通用加载状态
 ├─ features/<feature>/  # 页面、控制器与本功能 Widget
@@ -65,6 +80,9 @@ python-backend/
 ├─ app/scraper.py       # 外部站点、下载、OCR、翻译适配
 └─ tests/               # 后端测试
 
+admin-web/              # React + TypeScript + Ant Design 管理界面源码与前端测试
+python-backend/app/admin_static/
+                        # 可复现构建并随后端提供的管理界面静态资源
 deploy/linux/           # Linux 原生安装、systemd 服务、更新与连接信息脚本
 
 android/                # Android Manifest、Gradle 与原生资源
@@ -77,7 +95,13 @@ assets/                 # 品牌图片、文档截图与应用图标
 - 只服务一个功能的组件放进该 Feature，不提前放入 `shared`。
 - `shared` 不导入具体 Feature。
 - 应用启动只负责依赖组装，不实现业务。
-- Android / Windows Runner 只承载 Flutter、权限与平台资源，不放业务逻辑。
+- Android / Windows Runner 只承载 Flutter、权限与平台资源，不放业务逻辑；Windows 本机进程生命周期位于 Dart 基础设施层。
+- `admin-web/` 只负责展示与用户操作；认证、授权、数据校验和敏感配置始终由 FastAPI 执行。
+- 服务器运行日志由后端写入受限轮转文件；管理界面只读取已脱敏的结构化尾部日志，不直接授予浏览器
+  journal、文件系统或进程执行权限。
+- 系统诊断是管理端只读能力：请求计数与耗时窗口只保存在当前进程内存，服务状态、任务统计和磁盘容量
+  由后端按需聚合。诊断响应与下载报告不得包含凭据、正文、绝对路径、环境变量值或任意文件内容，也不得
+  通过诊断入口执行 shell、重启服务或修改数据。
 
 ## 4. 单一职责与拆分
 

@@ -1,4 +1,4 @@
-# 后端与 Windows / Android 客户端集成规范
+# 后端、管理界面与 Windows / Android 客户端集成规范
 
 ## 1. FastAPI 分层
 
@@ -31,12 +31,77 @@ HTTPS，FastAPI 不直接承担公网 TLS 终止。
 ### 认证与凭据
 
 - `/healthz` 不认证，只返回稳定的存活状态，不包含版本、路径或配置。
-- `/api/v1/*` 默认全部认证；Token 从 `Authorization: Bearer` 读取并使用常量时间比较。
+- Linux 远程服务的 `/api/v1/*` 默认全部认证；Token 从 `Authorization: Bearer` 读取并使用常量时间比较。
+  Windows 本机服务只能监听回环地址，可不配置 Bearer Token。
 - 服务端只保存高熵 Token 的 SHA-256 摘要；启动日志、异常与 OpenAPI 不得显示原始 Token。
 - 客户端将 Token 保存到操作系统提供的平台安全存储，普通偏好只保存根地址。
 - 设置读取不返回翻译密钥或账号密码明文，只返回是否已配置；更新使用“保留、替换、删除”语义。
 - 认证图片与导出下载遵循相同规则。客户端只向配置后端的同源 URL 附加 Token，避免泄露给第三方封面或重定向目标。
 - 当前后端是单用户服务：所有有效 Token 客户端共享书架、任务、设置和阅读进度，不提供用户隔离。
+
+### 客户端设备登记与封禁
+
+- Flutter 客户端首次启动时在普通偏好中生成 128 位随机设备 ID，后续安装生命周期内保持稳定；卸载或清除应用数据后可生成新 ID。
+  设备 ID 不属于密钥，不得根据硬件序列号、账号、MAC 地址或广告标识推导。
+- 携带 Bearer Token 的同源业务请求同时发送 `X-QingJuan-Device-ID`、百分号编码的
+  `X-QingJuan-Device-Name` 和 `X-QingJuan-Device-Platform`。服务端严格限制字符集和长度，不信任客户端提供的显示名称。
+- 服务端在 SQLite `devices` 表中保存设备 ID、显示名称、平台、首次与最后访问时间、直接网络对端地址和封禁状态；
+  不保存设备 Bearer Token、完整 User-Agent、硬件标识或不受信的 `X-Forwarded-For`。
+- 客户端前台运行时每 60 秒发送一次轻量心跳；最近 120 秒内有通过认证的请求或心跳视为“在线”。管理浏览器会话不计入设备数。
+  旧客户端缺少设备头时继续兼容访问，但在升级并完成首次认证请求之前不能作为独立设备显示或封禁。
+- 设备列表、在线数量、封禁与解封接口只接受管理界面的 HttpOnly 管理会话；写操作仍必须通过 CSRF 校验，普通 Bearer
+  客户端不能枚举或修改设备记录。
+- 已封禁设备携带相同设备 ID 的后续 Bearer 请求返回 `403`，不再访问业务 API；解封后可在下一次心跳恢复。
+  设备 ID 是应用级稳定标识而不是硬件级不可伪造凭据。若共享连接 Token 泄露或对方能篡改客户端，应轮换连接 Token，
+  不能把单设备封禁当作凭据撤销机制。
+
+### Linux 管理界面认证
+
+- 管理界面源码位于 `admin-web/`，构建结果位于 `python-backend/app/admin_static/`，由同一 FastAPI 进程在
+  `/admin/` 提供；不得依赖 CDN、单独的 Node.js 进程或跨域 API。
+- 管理密码与客户端连接 Token 分离。安装脚本生成高熵随机初始密码，只在首次生成它的 root 终端输出一次；
+  服务环境只保存带随机盐的慢哈希，不保存或回传明文密码。
+- 登录成功后使用短期、已签名、HttpOnly、SameSite=Strict 会话 Cookie。非只读业务请求还必须携带会话派生的
+  CSRF Header；前端不得把密码、连接 Token 或会话 Cookie 写入 localStorage、sessionStorage、日志或 URL。
+- 登录失败使用通用错误并限制连续尝试速率，不泄露配置状态。退出登录清除 Cookie；终端改密同时轮换会话签名密钥，
+  使所有已有管理会话失效。
+- Windows 客户端自己启动的回环后端显式设置 `QINGJUAN_TRUST_LOCAL_ADMIN=1`。只有该开关存在，并且网络对端与 HTTP Host
+  都是回环地址时，管理界面才可建立进程内本机会话而无需 Linux 管理密码；会话仍返回 CSRF 值，DNS 重绑定、非回环请求、普通源码启动和 Linux 部署
+  不得获得该信任。Windows 启动器同时清空继承的远程认证与管理凭据环境，避免全局环境污染本机模式。
+- 管理界面与 Flutter 客户端访问同一业务 API 和单用户数据，不建立第二套数据库或业务规则。
+- 私有网络可使用 HTTP；任何公网访问仍必须由受信反向代理提供 HTTPS。页面和 API 必须同源，禁止将管理 Cookie
+  或 CSRF 值发送到第三方地址。
+
+### 管理端系统诊断
+
+- `/admin/api/diagnostics` 只接受有效的 HttpOnly 管理会话并返回 `Cache-Control: no-store`；普通客户端 Bearer
+  Token 不得读取诊断结果。接口为只读 GET，不提供执行命令、重启进程、清理文件或修改配置的能力。
+- 应用工厂为每个 FastAPI 实例维护独立的进程内请求指标，包括总请求数、`4xx` / `5xx` 数量、平均耗时和最近
+  500 次请求的 P95。静态资源和健康探针不计入指标；进程重启后指标重新开始，不把监控样本写入 SQLite。
+- 诊断聚合服务运行时长、Python 与操作系统类型、数据库/运行日志占用、数据卷总量与剩余量、书库/任务/设备
+  数量，以及数据库连通性、数据目录可写性、任务执行器、运行日志和磁盘余量检查。它只读取应用已经拥有的资源，
+  不探测主机上的其他服务、用户、端口或日志。
+- 最近异常从青卷自己的结构化轮转日志中选择有限条 `warning`、`error` 或 `critical` 记录，并在返回前再次脱敏。
+  所有诊断 DTO 使用稳定字段，不返回 PID、主机名、环境变量、绝对路径、数据库内容、正文、Token、模型密钥、
+  管理密码、Cookie、CSRF 或会话签名密钥。
+- 前端下载的诊断报告只序列化上述安全 DTO，并附带报告格式版本和导出时间；不得重新请求密钥接口或把浏览器
+  存储、完整运行日志、当前 URL 查询参数加入报告。
+
+### 服务端翻译模型与连接自检
+
+- 当前后端 SQLite 中的 `translationModel` 是唯一权威配置，只有管理界面负责修改 API 根地址、密钥、模型名、
+  视觉能力和系统提示词。Windows / Android 只向后端创建翻译任务，不接收模型密钥，也不直连供应商。
+- `/api/v1/translation-model/check` 使用 Bearer Token 或带 CSRF 的管理会话认证。接口返回 `enabled`、`configured`、
+  `available`、稳定状态、模型名、视觉能力、检查时间、延迟和脱敏说明；不得返回 API 根地址、密钥、请求头、供应商
+  响应原文或完整异常。
+- 启用且配置完整时，自检向规范化后的 `/v1/chat/completions` 发送固定、无用户正文的最小探针，最多请求 8 个输出
+  Token，用于验证地址、密钥和模型确实可调用。相同配置的结果在单进程内缓存 60 秒，多个客户端连接不得同时重复付费；
+  管理员手动检测和保存新配置后可以强制刷新缓存。
+- 未启用或配置不完整属于可解释状态，接口仍返回 `200`；认证失败、接口不兼容、限流、网络或供应商故障映射为稳定的
+  `failed` 状态。服务端日志只记录状态和模型名，不记录密钥、探针内容、API 地址或供应商响应正文。
+- `/api/v1/meta` 声明 `translationModelCheck` 能力。Flutter 在元数据握手成功后立即调用自检；模型不可用不阻断书库、
+  阅读和下载，但连接状态必须提示翻译不可用。所有翻译执行继续在 Linux 任务执行器读取当前服务端配置，禁止客户端
+  配置覆盖或本地回退。
 
 ## 3. 数据库与文件
 
@@ -115,19 +180,26 @@ HTTPS，FastAPI 不直接承担公网 TLS 终止。
 并按结果序号增量获取；正文不得复制到任务日志或错误字段，正在运行的任务也不得等整章结束后才
 展示已完成页面的文字。
 
-## 6. 客户端远程连接生命周期
+## 6. 客户端后端生命周期
 
 Flutter 客户端启动时：
 
-1. 从普通偏好读取服务器根地址，从安全存储读取 Token；
-2. 未配置任一项时标记为 `unconfigured`，选择设置区并显示连接引导；
-3. 已配置时调用认证元数据接口，校验服务标识、API 版本与能力；
-4. 成功后标记为 `ready` 并加载首屏数据；
-5. 失败时标记为 `failed`，保留客户端 UI、设置输入和重试入口；
-6. 切换服务器成功后停止旧轮询、清空旧服务器页面状态，再加载新服务器数据。
+1. 读取平台允许的连接模式、远程根地址和安全存储中的远程 Token；Android 始终归一化为远程模式；
+2. Windows 本机模式固定使用 `http://127.0.0.1:19453`，先校验现有监听者是否为兼容青卷后端，再按需启动随包
+   `backend/qingjuan-desktop.exe`；开发态才允许从仓库 `python-backend` 使用系统 Python 启动；
+3. 远程模式未配置地址或 Token 时标记为 `unconfigured`，选择设置区并显示连接引导；
+4. 远程模式保存前校验地址与 Token，失败时保留输入且不得回退本机；
+5. 调用元数据接口校验服务标识、API 版本与能力；服务声明模型自检能力时随后执行模型自检；
+6. 后端连接成功但模型不可用时保留 `ready` 并附带翻译告警，随后加载首屏数据；
+7. 连接、认证、本机启动或兼容性检查失败时标记为 `failed`，保留客户端 UI、设置输入和重试入口；
+8. 切换模式或服务器成功后停止旧轮询与心跳，离开本机模式时终止客户端自己启动的进程，清空旧页面状态后再加载。
 
-客户端不得调用 `Process.start`、查找 Python、探测回环端口或随 APK 分发后端。应用退出只关闭 HTTP 客户端、
-TTS、Timer 与订阅，不影响 Linux 服务端进程。
+携带远程 Bearer Token 的连接成功后启动设备心跳；本机无 Token 模式不登记远程设备。应用退出、连接失败或切换服务器时
+必须停止旧心跳。设备登记失败或被封禁时应使用后端可读错误，不得回退本机进程或通过更换随机设备 ID 自动绕过封禁。
+
+只有 Windows 本机生命周期基础设施可以调用 `Process.start`、解析随包后端或在源码树中查找开发后端；Widget、Controller
+和 Android 代码不得调用。应用退出时回收自己启动的本机进程并关闭 HTTP 客户端、TTS、Timer 与订阅，绝不终止外部
+Linux 服务或占用同一端口但不属于当前客户端的进程。
 
 ## 7. Android 平台层
 
@@ -148,8 +220,9 @@ TTS、Timer 与订阅，不影响 Linux 服务端进程。
 5. `flutter build apk --release`，正式分发需要时再构建 App Bundle；
 6. 在 API 26 真机或模拟器以及一台当前 Android 真机验证首次连接、后台恢复和系统返回。
 
-Windows 构建执行 `./tool/build_windows.ps1`，产物只包含 Flutter Runner、插件和资源；不得包含
-`backend/`、PyInstaller 可执行文件、Python 运行时或服务端数据。
+Windows 构建执行 `./tool/build_windows.ps1`，产物包含 Flutter Runner、插件、资源和
+`backend/qingjuan-desktop.exe`。PyInstaller 输入必须来自当前 `python-backend` 与已构建管理静态资源；发布包不得包含
+SQLite、运行日志、缓存、服务 Token、模型密钥、Cookie、签名材料或测试数据。
 
 APK/AAB 不得包含 Python、SQLite 生产数据、服务 Token、翻译密钥、Cookie 或下载内容。调试签名不得用于正式分发，
 正式签名材料不得提交仓库。
@@ -163,13 +236,24 @@ Compose 或随仓库分发的反向代理配置：
 - systemd 仅运行一个 Uvicorn 进程；禁止多 worker、多实例或多个服务共享同一 SQLite 数据目录。
 - 持久化数据固定在 `/var/lib/qingjuan`，服务配置与只供管理员查看的原始连接 Token 位于
   `/etc/qingjuan`，均不得提交到仓库。
-- `QINGJUAN_AUTH_TOKEN_SHA256` 是非回环监听的必需配置；服务只读取摘要，原始 Token 不进入进程环境、
-  命令行、普通服务日志或 API 响应。
+- `QINGJUAN_AUTH_TOKEN_SHA256` 是非回环监听的必需配置，所有 Bearer 校验仍只使用摘要。原始 Token 不进入
+  进程环境、命令行或普通服务日志；`QINGJUAN_CONNECTION_TOKEN_FILE` 仅指向受限连接文件，原始值只有
+  `sudo qingjuan-info` 和管理员主动触发、带 CSRF 的 `/admin/api/connection-token/reveal` 响应可以读取。
+- 管理界面先用只读状态接口取得掩码与摘要指纹，不得在页面初始化时返回原始 Token；显示响应使用
+  `Cache-Control: no-store`，页面只在内存中保留并于 60 秒后隐藏。旧部署缺少连接文件权限或文件内容与摘要
+  不一致时只报告“不可显示”，不得返回文件路径或摘要以外的诊断细节。
 - `QINGJUAN_BROWSER_EXECUTABLE` 指向系统 Chromium；漫画本地识别使用 RapidOCR。
-- systemd 日志通过 `journalctl -u qingjuan-backend` 查看；服务启动时输出公开连接地址、API 前缀、
-  数据目录和认证状态，但绝不输出原始 Token。
-- `sudo qingjuan-info` 从权限为 `0600` 的管理员连接文件读取原始 Token，并可在后续需要时再次打印，
-  这是供 Windows / Android 客户端配置使用的持久化入口。
+- systemd 日志仍可通过 `journalctl -u qingjuan-backend` 查看；后端同时把 Uvicorn 请求、任务、抓取器和应用异常
+  写入 `/var/lib/qingjuan/logs/server.jsonl` 结构化轮转日志。管理界面只读取此文件的最近记录，不执行
+  `journalctl`，也不授予服务用户读取其他系统日志的权限。
+- 运行日志写入前和 API 返回前都执行敏感字段脱敏；连接 Token、Authorization、管理密码、Cookie、CSRF、
+  会话签名密钥和模型供应商密钥不得出现在消息中。轮转上限为单文件 2 MiB、保留 2 个备份。
+- `sudo qingjuan-info` 从管理员连接文件读取原始 Token，并可在后续需要时再次打印；安装脚本将配置目录设为
+  `0750 root:qingjuan`、连接文件设为 `0640 root:qingjuan`，服务配置文件仍保持 `0600 root:root`。
+  这是供 Windows / Android 客户端配置和管理界面按需显示使用的持久化入口。
+- 安装和 `sudo qingjuan-info` 同时输出 `${QINGJUAN_PUBLIC_URL}/admin/` 管理地址；初始随机管理密码仅由安装脚本
+  成功完成时输出一次。遗失密码时运行 `sudo qingjuan-password` 交互改密，或运行
+  `sudo qingjuan-password --generate` 生成新的随机密码；两种方式均重启服务并注销现有管理会话。
 - 直连 HTTP 仅允许在可信局域网、Tailscale/WireGuard 等私有网络中使用。公网访问仍必须在服务前配置
   运维方选择的 HTTPS 反向代理，FastAPI 不直接终止公网 TLS。
 
@@ -187,8 +271,8 @@ sudo qingjuan-info
 `0.0.0.0`。不会联网查询或自动暴露公网 IP；检测不到私有地址时，必须先配置私有网络，或使用
 `--url https://域名` 指定已配置 HTTPS 反向代理的地址。`--url` 不包含 `/api/v1`；只允许 SSH 隧道访问时
 使用 `--url http://127.0.0.1:19453 --bind 127.0.0.1`。
-安装脚本生成 32 字节随机 Token、写入服务端摘要、创建虚拟环境、安装 systemd 单实例服务并将连接信息
-打印到控制台。后续更新使用：
+安装脚本生成 32 字节随机 Token 和独立随机管理密码、写入服务端摘要、创建虚拟环境、安装 systemd 单实例服务，
+并将客户端连接信息、管理地址和首次管理密码打印到控制台。后续更新使用：
 
 ```bash
 sudo bash /opt/qingjuan/app/deploy/linux/update.sh
@@ -213,10 +297,12 @@ sudo qingjuan-uninstall
 - [ ] 无认证后端只监听 `127.0.0.1`；远程后端配置 Token 且由私有网络或 HTTPS 保护。
 - [ ] `/healthz`、公开 DTO 和错误响应不泄露服务器路径或敏感配置。
 - [ ] Token 只发送到青卷同源地址，设置接口不回传密钥明文。
+- [ ] 管理密码只保存慢哈希；管理 Cookie 为 HttpOnly/SameSite，写请求校验 CSRF，改密后旧会话失效。
 - [ ] API 密钥、Cookie、正文和本机路径未进入日志。
 - [ ] 文件删除、导出和导入路径经过边界校验。
 - [ ] URL 与重定向经过 SSRF 检查。
-- [ ] Windows / Android 客户端不包含或启动 Python 后端。
+- [ ] Android 客户端不包含或启动 Python；Windows 只在用户明确选择本机模式时启动随包后端。
+- [ ] Windows 本机后端只监听固定回环地址，远程失败不回退，退出或切换时只回收客户端拥有的进程。
 - [ ] Windows ZIP 与 APK/AAB 不包含数据库、测试数据、服务 Token、签名材料或开发密钥。
 - [ ] 依赖许可证与 GPL-3.0 分发要求已复核。
 - [ ] Linux 以 systemd 单进程单 worker 运行，数据目录、备份恢复和 Chromium/RapidOCR 能力已验证。

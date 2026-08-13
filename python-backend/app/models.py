@@ -14,6 +14,7 @@ LinkJobMode = Literal["preview", "import"]
 DownloadMode = Literal["all", "on_demand"]
 SourceOrigin = Literal["builtin", "manual", "file", "remote"]
 SourceStatus = Literal["unknown", "online", "slow", "offline", "unsupported"]
+DevicePlatform = Literal["android", "windows", "linux", "macos", "ios", "other"]
 MangaTextDirection = Literal["vertical", "horizontal"]
 MangaRegionShape = Literal["ellipse", "roundrect", "rect"]
 MangaRenderMode = Literal["ocr_pipeline", "image_edit_fallback"]
@@ -25,6 +26,25 @@ class ServiceMetaResponse(BaseModel):
     apiVersion: str
     instanceId: str
     capabilities: dict[str, bool] = Field(default_factory=dict)
+
+
+class DeviceRecord(BaseModel):
+    id: str
+    name: str
+    platform: DevicePlatform = "other"
+    ipAddress: str
+    firstSeenAt: str
+    lastSeenAt: str
+    banned: bool = False
+    bannedAt: str | None = None
+
+
+class DeviceView(DeviceRecord):
+    online: bool = False
+
+
+class DeviceBanPayload(BaseModel):
+    banned: bool
 
 
 class MangaOcrRegion(BaseModel):

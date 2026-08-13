@@ -57,14 +57,34 @@
 - 同源测试必须证明 Token 不会发送给第三方封面 URL 或跨源重定向。
 - Bash 语法和原生进程冒烟测试验证 `/healthz`、认证元数据、可写数据目录、单 worker 与优雅关闭。
 - systemd 单元必须通过 `systemd-analyze verify`，安装脚本不得把原始 Token 写入普通日志或进程参数。
-- Windows / Android 手工验收至少各连接一次真实 Linux 后端，完成导入、阅读、任务、设置和导出下载。
+- 管理认证测试覆盖正确/错误密码、限速、签名会话、HttpOnly/SameSite Cookie、CSRF、退出和改密后会话失效；
+  日志与响应不得出现管理密码、会话签名密钥或客户端 Token。
+- React 管理界面测试覆盖登录错误、会话失效、数据加载、写请求 CSRF、空状态和破坏性操作确认；生产构建结果
+  必须与 `python-backend/app/admin_static/` 中提交的静态资源一致。
+- 设备管理测试覆盖首次登记与重复心跳、在线窗口、非法设备头、旧客户端兼容、管理会话权限、CSRF、封禁后 `403`、解封恢复，
+  以及 Flutter 请求只向配置后端同源发送稳定设备标识。前端覆盖设备筛选、数量统计与封禁确认。
+- 连接 Token 展示测试覆盖默认状态不返回原文、未登录拒绝、显示操作必须携带 CSRF、连接文件与摘要一致性、
+  `no-store`、旧部署不可显示和前端 60 秒自动隐藏；任何失败响应与运行日志都不得包含原始 Token。
+- 服务器运行日志测试覆盖 Uvicorn/应用/任务来源、级别与关键字筛选、轮转文件尾部读取、错误堆栈、自动刷新和
+  二次脱敏；管理 API 不得读取任意路径、调用 shell 或暴露 journal 中其他服务的内容。
+- 系统诊断测试覆盖管理员会话权限、普通 Bearer 拒绝、请求计数与 P95、数据库/任务执行器/磁盘检查、日志异常摘要、
+  `no-store` 和进程级指标隔离。接口及前端下载报告不得包含环境变量值、凭据、正文或绝对路径；前端覆盖刷新、
+  状态文案、异常空状态和脱敏报告下载。
+- 翻译模型自检测试覆盖未启用、配置缺失、成功响应、认证失败、非 JSON、限流、网络异常、60 秒缓存和强制刷新；
+  探针不得包含书籍正文，响应、日志和客户端错误不得包含 API 密钥、API 地址或供应商响应原文。Flutter 连接测试覆盖
+  元数据后调用自检、自检失败仍可阅读、状态提示和无客户端模型回退；管理界面覆盖手动自检及保存后的强制自检。
+- Windows 手工验收必须分别验证随包本机后端和真实 Linux 后端；Android 至少连接一次真实 Linux 后端。两种数据源都要
+  完成导入、阅读、任务、设置和导出下载，并确认切换后页面不会残留上一后端的数据。
+- 连接档案测试必须覆盖旧 URL/Token 迁移、Linux 独立键优先级、本机与 Linux 往返切换、另一档案不被覆盖，以及设置页
+  未保存 Linux 草稿在本次页面切换后仍然存在。图标变更后运行 `python tool/generate_app_icons.py`，检查 Windows ICO 包含
+  多尺寸帧、Android 五档密度尺寸正确，并至少实机构建一次 Windows 与 Android。
 
 ### 客户端手工验收
 
 自动化不能替代：
 
 - Release APK 安装和首次启动；
-- 未配置状态、正确/错误 Token、断网、重连与服务器切换；
+- 未配置状态、正确/错误 Token、断网、重连与服务器切换；Windows 还要覆盖本机启动、端口冲突、模式切换和进程退出；
 - 系统文件选择器、上传、导出下载和 Android TTS；
 - 前后台切换、系统返回键/手势、旋转与进程恢复；
 - 亮色/深色、手机/平板布局和 150%/200% 文字缩放。
@@ -89,15 +109,26 @@ python -m pytest
 python -m compileall -q app
 ```
 
+管理界面目录：
+
+```powershell
+Set-Location admin-web
+npm ci
+npm run typecheck
+npm test
+npm run build
+```
+
 完整发布变更还要在 API 26 和当前 Android 真机/模拟器完成安装冒烟测试。
 
 ## 4. 三轮验证
 
 每项实现至少经过三个层次，而不是机械重复同一命令：
 
-1. 静态轮：格式化、Analyzer、Ruff、依赖与敏感信息扫描；
-2. 行为轮：Dart/Python 单元测试和 Widget/接口测试；
-3. 产物轮：Windows Release 与 Android Release APK 构建、安装、远程握手和退出。
+1. 静态轮：格式化、Analyzer、Ruff、TypeScript、依赖与敏感信息扫描；
+2. 行为轮：Dart/Python/React 单元测试和 Widget/接口测试；
+3. 产物轮：React 管理界面静态构建、Windows Release 与 Android Release APK 构建和安装，Windows 随包后端本机握手、
+   Windows/Android 远程握手，以及切换和退出清理。
 
 涉及后端或部署时，产物轮还包括 Linux 原生进程启动、systemd 单元检查、认证请求和 Android 到 Linux
 的真实文件往返；不得用本机共享目录替代网络传输验证。

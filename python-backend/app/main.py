@@ -11,6 +11,7 @@ import copy
 import html
 import ipaddress
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -39,6 +40,7 @@ from PIL import Image, UnidentifiedImageError
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 try:
+    from .admin_auth import validate_admin_auth_configuration
     from .api.routers import (
         API_ROUTERS,
         PUBLIC_ROUTERS,
@@ -117,6 +119,7 @@ try:
         TranslationSettingsView,
     )
     from .process_lifecycle import start_parent_process_watcher
+    from .runtime_logs import configure_runtime_logging, shutdown_runtime_logging
     from .scraper import (
         _fetch_with_edge_cdp,
         _normalize_search_text,
@@ -138,6 +141,7 @@ try:
     )
     from .security import API_PREFIX, API_VERSION, authentication_enabled
 except ImportError:
+    from app.admin_auth import validate_admin_auth_configuration
     from app.api.routers import (
         API_ROUTERS,
         PUBLIC_ROUTERS,
@@ -216,6 +220,7 @@ except ImportError:
         TranslationSettingsView,
     )
     from app.process_lifecycle import start_parent_process_watcher
+    from app.runtime_logs import configure_runtime_logging, shutdown_runtime_logging
     from app.scraper import (
         _fetch_with_edge_cdp,
         _normalize_search_text,
@@ -242,6 +247,8 @@ EXPORT_ROOT = DATA_DIR / "exports"
 EXPORT_TTL = timedelta(hours=24)
 TASK_QUEUE: asyncio.Queue[str] = asyncio.Queue()
 LINK_JOB_STORE = LinkJobStore()
+_RUNTIME_LOGGER = logging.getLogger("qingjuan.runtime")
+_TASK_LOGGER = logging.getLogger("qingjuan.task")
 SOURCE_CHAPTER_CACHE_AHEAD = 20
 SOURCE_IMPORT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -265,6 +272,7 @@ LEGADO_SEARCH_RESULT_SETTLE_TIMEOUT = 4.0
 
 
 async def _run_startup(app_instance: FastAPI) -> None:
+    validate_admin_auth_configuration()
     init_db()
     _migrate_book_storage_keys()
     await asyncio.to_thread(_cleanup_expired_exports)
@@ -276,6 +284,7 @@ async def _run_startup(app_instance: FastAPI) -> None:
     app_instance.state.reader_cache_keys = set()
     app_instance.state.reader_cache_locks = {}
     app_instance.state.link_job_tasks = set()
+    app_instance.state.task_queue = TASK_QUEUE
     for task in list_pending_tasks():
         task.status = "queued"
         task.message = "等待队列处理"
@@ -316,11 +325,22 @@ async def _run_shutdown(app_instance: FastAPI) -> None:
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
-    await _run_startup(app_instance)
+    log_path = configure_runtime_logging()
+    startup_complete = False
     try:
+        _RUNTIME_LOGGER.info("青卷后端开始启动，运行日志=%s", log_path.name)
+        await _run_startup(app_instance)
+        startup_complete = True
+        _RUNTIME_LOGGER.info("青卷后端启动完成")
         yield
+    except Exception:
+        _RUNTIME_LOGGER.exception("青卷后端运行异常")
+        raise
     finally:
-        await _run_shutdown(app_instance)
+        if startup_complete:
+            await _run_shutdown(app_instance)
+        _RUNTIME_LOGGER.info("青卷后端已停止")
+        shutdown_runtime_logging()
 
 
 @health_router.get("/healthz")
@@ -337,6 +357,12 @@ async def get_service_meta() -> ServiceMetaResponse:
         apiVersion=API_VERSION,
         instanceId=_load_or_create_instance_id(),
         capabilities={
+            "adminWeb": True,
+            "connectionTokenReveal": True,
+            "deviceRegistry": True,
+            "runtimeLogs": True,
+            "serviceDiagnostics": True,
+            "translationModelCheck": True,
             "rapidOcr": True,
             "windowsOcr": os.name == "nt",
             "browserFallback": _browser_fallback_available(),
@@ -1306,9 +1332,11 @@ def _startup_console_lines(host: str, port: int) -> tuple[str, ...]:
         f"客户端地址：{console_safe(public_url)}",
         f"监听地址：{console_safe(host)}:{port}",
         f"业务 API：{console_safe(public_url)}/api/v1",
+        f"管理界面：{console_safe(public_url)}/admin/",
         f"健康检查：{console_safe(public_url)}/healthz",
         f"数据目录：{console_safe(DATA_DIR)}",
         f"Bearer 认证：{'已启用' if authentication_enabled() else '未启用（仅允许回环监听）'}",
+        f"管理登录：{'已配置' if validate_admin_auth_configuration() else '未配置'}",
         "原始连接 Token 不写入服务日志；管理员使用 sudo qingjuan-info 查看。",
         "============================================================",
     )
@@ -1330,6 +1358,8 @@ def main() -> None:
         raise SystemExit(
             "监听非回环地址必须配置 QINGJUAN_AUTH_TOKEN_SHA256"
         )
+    if not _is_loopback_host(args.host) and not validate_admin_auth_configuration():
+        raise SystemExit("监听非回环地址必须配置管理界面密码与会话密钥")
 
     for line in _startup_console_lines(args.host, args.port):
         print(line, flush=True)
@@ -2788,8 +2818,12 @@ async def _cache_source_chapters_ahead(book: BookRecord, book_dir: Path, chapter
                 return
             try:
                 await _cache_one_source_chapter(book, book_dir, chapter_index)
-            except Exception as exc:
-                print(f"[qingjuan-reader-cache] {book.id} chapter {chapter_index} failed: {exc}")
+            except Exception:
+                _RUNTIME_LOGGER.exception(
+                    "阅读缓存失败：book=%s chapter=%s",
+                    book.id,
+                    chapter_index,
+                )
     finally:
         for chapter_index in chapter_indexes:
             keys.discard(_reader_cache_key(book.id, chapter_index))
@@ -3768,6 +3802,11 @@ def _append_task_runtime_log(
         return
     timestamp = _now()
     append_task_log(task.id, level, normalized, timestamp)
+    log_level = {
+        "warning": logging.WARNING,
+        "error": logging.ERROR,
+    }.get(level, logging.INFO)
+    _TASK_LOGGER.log(log_level, "任务 %s：%s", task.id, normalized)
     if update_message:
         task.message = normalized
         task.updatedAt = timestamp
@@ -3783,8 +3822,8 @@ async def _task_worker() -> None:
             except HTTPException:
                 # 书籍或任务被删除时直接忽略，避免队列 worker 退出。
                 pass
-            except Exception as exc:
-                print(f"[qingjuan-task-worker] {task_id} failed: {exc}")
+            except Exception:
+                _TASK_LOGGER.exception("任务 worker 异常：task=%s", task_id)
         finally:
             TASK_QUEUE.task_done()
 
@@ -3925,6 +3964,7 @@ app = create_application(
     api_prefix=API_PREFIX,
     authenticate=True,
     lifespan=lifespan,
+    admin_static_path=Path(__file__).with_name("admin_static"),
 )
 
 

@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, Request, Response
+from fastapi.staticfiles import StaticFiles
 
-from .security import API_PREFIX, authentication_enabled, require_api_token
+from .security import API_PREFIX, authentication_enabled, require_api_authentication
+from .service_diagnostics import RequestMetrics, should_track_request
 
 APP_TITLE = "青卷后端"
 _VERSION_PATTERN = re.compile(r"^version:\s*(\d+\.\d+\.\d+)(?:\+\d+)?\s*$")
@@ -40,6 +43,7 @@ def create_application(
     api_prefix: str = "",
     authenticate: bool = False,
     lifespan: Lifespan | None = None,
+    admin_static_path: Path | None = None,
 ) -> FastAPI:
     """创建 FastAPI 应用；入口文件只负责组装，不再内联基础设施配置。"""
 
@@ -51,15 +55,56 @@ def create_application(
         redoc_url=None if authentication_enabled() else "/redoc",
         openapi_url=None if authentication_enabled() else "/openapi.json",
     )
+    request_metrics = RequestMetrics()
+    application.state.request_metrics = request_metrics
+
+    @application.middleware("http")
+    async def collect_request_metrics(request: Request, call_next: Callable) -> Response:
+        if not should_track_request(request.url.path):
+            return await call_next(request)
+        started = time.perf_counter()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            request_metrics.record(status_code, (time.perf_counter() - started) * 1000)
+
     for router in public_routers:
         application.include_router(router)
-    dependencies = [Depends(require_api_token)] if authenticate else None
+    dependencies = [Depends(require_api_authentication)] if authenticate else None
     router_prefix = api_prefix or (API_PREFIX if authenticate else "")
     for router in routers:
         application.include_router(
             router,
             prefix=router_prefix,
             dependencies=dependencies,
+        )
+
+    if admin_static_path is not None:
+        @application.middleware("http")
+        async def add_admin_security_headers(request: Request, call_next: Callable) -> Response:
+            response = await call_next(request)
+            if request.url.path == "/admin" or request.url.path.startswith("/admin/"):
+                response.headers["Content-Security-Policy"] = (
+                    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                    "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; "
+                    "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+                )
+                response.headers["Referrer-Policy"] = "no-referrer"
+                response.headers["X-Content-Type-Options"] = "nosniff"
+                response.headers["X-Frame-Options"] = "DENY"
+                if request.url.path.startswith("/admin/assets/"):
+                    response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+                else:
+                    response.headers["Cache-Control"] = "no-store"
+            return response
+
+        application.mount(
+            "/admin",
+            StaticFiles(directory=admin_static_path, html=True, check_dir=True),
+            name="admin",
         )
 
     return application

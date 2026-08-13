@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -8,6 +9,8 @@ import '../core/api/api_client.dart';
 import '../core/backend/backend_connection_manager.dart';
 import '../core/backend/backend_url_validator.dart';
 import '../core/backend/connection_secret_store.dart';
+import '../core/backend/device_identity.dart';
+import '../core/backend/local_backend_process.dart';
 import '../features/library/library_controller.dart';
 import '../features/settings/settings_controller.dart';
 import '../features/shell/app_shell.dart';
@@ -32,18 +35,23 @@ class QingJuanApp extends StatefulWidget {
     final preferences = await SharedPreferences.getInstance();
     const secretStore = SecureConnectionSecretStore();
     final token = await secretStore.readToken() ?? '';
+    final deviceIdentity = await DeviceIdentity.load(preferences);
     final appState = AppState(
       preferences,
       secretStore: secretStore,
-      initialBackendToken: token,
+      initialRemoteBackendToken: token,
+      localBackendSupported: Platform.isWindows,
     );
     final api = ApiClient(
       () => appState.backendUrl,
       token: () => appState.backendToken,
+      deviceHeaders: () => deviceIdentity.headers,
     );
     final backend = BackendConnectionManager(
       api,
       isConfigured: () => appState.hasBackendConnection,
+      isLocal: () => appState.connectionMode == BackendConnectionMode.local,
+      localBackend: Platform.isWindows ? WindowsLocalBackendLifecycle() : null,
       validateConfiguration: () => validateBackendUrl(appState.backendUrl),
     );
     return QingJuanApp._(
@@ -97,6 +105,7 @@ class _QingJuanAppState extends State<QingJuanApp> {
     widget.sources.dispose();
     widget.tasks.dispose();
     widget.settings.dispose();
+    unawaited(widget.backend.dispose());
     widget.api.close();
     widget.appState.dispose();
     super.dispose();

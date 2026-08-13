@@ -2,6 +2,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter/services.dart';
 
 import '../../shared/app_surface.dart';
+import '../../shared/brand_logo.dart';
 import '../../shared/page_frame.dart';
 
 class AboutPage extends StatefulWidget {
@@ -28,7 +29,7 @@ class _AboutPageState extends State<AboutPage> {
   Widget build(BuildContext context) {
     return PageFrame(
       title: '关于青卷',
-      subtitle: '连接 Linux 后端的开源 Windows 与 Android 阅读、下载和翻译工具。',
+      subtitle: '支持 Windows 本机/远程与 Android 远程连接的开源阅读、下载和翻译工具。',
       compactHeader: Row(
         children: <Widget>[
           Tooltip(
@@ -55,7 +56,7 @@ class _AboutPageState extends State<AboutPage> {
                       ),
                 ),
                 Text(
-                  '开源、远程、专注阅读',
+                  '开源、灵活、专注阅读',
                   style: FluentTheme.of(context).typography.caption,
                 ),
               ],
@@ -69,7 +70,9 @@ class _AboutPageState extends State<AboutPage> {
           const FeatureHero(
             icon: FluentIcons.reading_mode,
             title: '青卷 QingJuan',
-            message: '把下载、翻译和数据留在 Linux 服务器，把轻快、沉浸的阅读体验带到 Windows 与 Android。',
+            message:
+                'Windows 可独立使用随包后端，也可和 Android 一起连接 Linux 服务，把轻快、沉浸的阅读体验带到不同设备。',
+            trailing: QingJuanLogo(size: 64),
             child: Wrap(
               spacing: 8,
               runSpacing: 8,
@@ -125,7 +128,7 @@ class _AboutPageState extends State<AboutPage> {
                   icon: FluentIcons.cell_phone,
                   label: '支持平台',
                   value: 'Windows 10 / 11 · Android 8.0+',
-                  description: '客户端不运行 Python，数据与任务统一由 Linux 后端管理。',
+                  description: 'Windows 支持本机与 Linux 远程后端；Android 只连接 Linux 后端。',
                 ),
                 Divider(),
                 _InformationRow(

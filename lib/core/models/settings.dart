@@ -1,5 +1,64 @@
 import 'book.dart';
 
+enum TranslationModelCheckStatus { ready, disabled, unconfigured, failed }
+
+class TranslationModelCheck {
+  const TranslationModelCheck({
+    required this.enabled,
+    required this.configured,
+    required this.available,
+    required this.status,
+    required this.model,
+    required this.supportsVision,
+    required this.checkedAt,
+    required this.latencyMs,
+    required this.message,
+    required this.cached,
+  });
+
+  factory TranslationModelCheck.fromJson(JsonMap json) => TranslationModelCheck(
+        enabled: json['enabled'] as bool? ?? false,
+        configured: json['configured'] as bool? ?? false,
+        available: json['available'] as bool? ?? false,
+        status: switch (json['status']) {
+          'ready' => TranslationModelCheckStatus.ready,
+          'disabled' => TranslationModelCheckStatus.disabled,
+          'unconfigured' => TranslationModelCheckStatus.unconfigured,
+          _ => TranslationModelCheckStatus.failed,
+        },
+        model: json['model'] as String?,
+        supportsVision: json['supportsVision'] as bool? ?? false,
+        checkedAt: DateTime.tryParse(json['checkedAt'] as String? ?? ''),
+        latencyMs: (json['latencyMs'] as num?)?.toInt(),
+        message: json['message'] as String? ?? 'Linux 服务端模型自检失败',
+        cached: json['cached'] as bool? ?? false,
+      );
+
+  factory TranslationModelCheck.clientFailure() => TranslationModelCheck(
+        enabled: false,
+        configured: false,
+        available: false,
+        status: TranslationModelCheckStatus.failed,
+        model: null,
+        supportsVision: false,
+        checkedAt: DateTime.now().toUtc(),
+        latencyMs: null,
+        message: '后端已连接，但模型自检请求失败',
+        cached: false,
+      );
+
+  final bool enabled;
+  final bool configured;
+  final bool available;
+  final TranslationModelCheckStatus status;
+  final String? model;
+  final bool supportsVision;
+  final DateTime? checkedAt;
+  final int? latencyMs;
+  final String message;
+  final bool cached;
+}
+
 class TranslationModelSettings {
   const TranslationModelSettings({
     required this.enabled,

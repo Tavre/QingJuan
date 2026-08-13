@@ -15,13 +15,16 @@ class ApiClient {
   ApiClient(
     this._baseUrl, {
     String Function()? token,
+    Map<String, String> Function()? deviceHeaders,
     http.Client? client,
   })  : _token = token ?? (() => ''),
+        _deviceHeaders = deviceHeaders ?? (() => const <String, String>{}),
         _client = client ?? http.Client();
 
   static const _apiPrefix = '/api/v1';
   final String Function() _baseUrl;
   final String Function() _token;
+  final Map<String, String> Function() _deviceHeaders;
   final http.Client _client;
 
   Uri _uri(String endpoint, [Map<String, dynamic>? query]) =>
@@ -40,10 +43,14 @@ class ApiClient {
 
   Map<String, String> _headers({bool json = false, String? token}) {
     final value = (token ?? _token()).trim();
-    return <String, String>{
+    final headers = <String, String>{
       if (json) 'Content-Type': 'application/json',
-      if (value.isNotEmpty) 'Authorization': 'Bearer $value',
     };
+    if (value.isNotEmpty) {
+      headers['Authorization'] = 'Bearer $value';
+      headers.addAll(_deviceHeaders());
+    }
+    return headers;
   }
 
   Future<http.Response> _request(
@@ -131,6 +138,10 @@ class ApiClient {
     return meta;
   }
 
+  Future<void> sendDeviceHeartbeat() async {
+    _decode(await _request('POST', '/devices/heartbeat'));
+  }
+
   Future<JsonMap> testConnection({
     required String baseUrl,
     required String token,
@@ -146,6 +157,19 @@ class ApiClient {
       throw const ApiException('目标服务不是兼容的青卷后端');
     }
     return meta;
+  }
+
+  Future<TranslationModelCheck> checkTranslationModel({
+    bool force = false,
+  }) async {
+    final payload = _decode(
+      await _request(
+        'POST',
+        '/translation-model/check',
+        query: <String, dynamic>{'force': force},
+      ),
+    );
+    return TranslationModelCheck.fromJson(_map(payload));
   }
 
   Future<List<Book>> fetchBooks() async {

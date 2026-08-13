@@ -23,15 +23,108 @@ void main() {
     final secrets = _MemorySecretStore();
     final state = AppState(preferences, secretStore: secrets);
 
-    await state.setBackendConnection(
+    await state.saveRemoteBackendConnection(
       url: 'https://qingjuan.example.test///',
       token: 'remote-secret-token',
     );
+    await state.selectBackendMode(BackendConnectionMode.remote);
 
     expect(state.backendUrl, 'https://qingjuan.example.test');
     expect(state.hasBackendConnection, isTrue);
     expect(secrets.token, 'remote-secret-token');
     expect(preferences.getString('qingjuan.backendToken'), isNull);
+    expect(
+      preferences.getString('qingjuan.backend.remote.url'),
+      'https://qingjuan.example.test',
+    );
+    expect(preferences.getString('qingjuan.backendUrl'), isNull);
+  });
+
+  test('fresh Windows state defaults to the local backend', () async {
+    final state = AppState(
+      await SharedPreferences.getInstance(),
+      localBackendSupported: true,
+    );
+
+    expect(state.connectionMode, BackendConnectionMode.local);
+    expect(state.backendUrl, AppState.defaultLocalBackendUrl);
+    expect(state.backendToken, isEmpty);
+    expect(state.hasBackendConnection, isTrue);
+    expect(state.section, AppSection.library);
+  });
+
+  test('v1.4 Windows remote settings remain remote after upgrade', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'qingjuan.backendUrl': 'https://qingjuan.example.test/',
+    });
+
+    final state = AppState(
+      await SharedPreferences.getInstance(),
+      initialRemoteBackendToken: 'saved-token',
+      localBackendSupported: true,
+    );
+
+    expect(state.connectionMode, BackendConnectionMode.remote);
+    expect(state.backendUrl, 'https://qingjuan.example.test');
+    expect(state.backendToken, 'saved-token');
+  });
+
+  test('Android ignores a persisted local mode', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'qingjuan.backendMode': 'local',
+      'qingjuan.backendUrl': AppState.defaultLocalBackendUrl,
+    });
+
+    final state = AppState(await SharedPreferences.getInstance());
+
+    expect(state.connectionMode, BackendConnectionMode.remote);
+    expect(state.backendUrl, isEmpty);
+    expect(state.hasBackendConnection, isFalse);
+    expect(state.section, AppSection.settings);
+  });
+
+  test('switching to local preserves the secure remote connection', () async {
+    final preferences = await SharedPreferences.getInstance();
+    final secrets = _MemorySecretStore();
+    final state = AppState(
+      preferences,
+      secretStore: secrets,
+      localBackendSupported: true,
+    );
+
+    await state.saveRemoteBackendConnection(
+      url: 'https://qingjuan.example.test',
+      token: 'remote-secret-token',
+    );
+    await state.selectBackendMode(BackendConnectionMode.remote);
+    await state.selectBackendMode(BackendConnectionMode.local);
+
+    expect(state.connectionMode, BackendConnectionMode.local);
+    expect(state.backendUrl, AppState.defaultLocalBackendUrl);
+    expect(state.backendToken, isEmpty);
+    expect(state.remoteBackendUrl, 'https://qingjuan.example.test');
+    expect(state.remoteBackendToken, 'remote-secret-token');
+    expect(state.remoteBackendConnection.isConfigured, isTrue);
+    expect(AppState.localBackendConnection.token, isEmpty);
+    expect(secrets.token, 'remote-secret-token');
+  });
+
+  test('dedicated Linux profile wins over a stale v1.4 URL', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'qingjuan.backendMode': 'remote',
+      'qingjuan.backendUrl': 'https://legacy.example.test',
+      'qingjuan.backend.remote.url': 'https://current.example.test/',
+    });
+
+    final state = AppState(
+      await SharedPreferences.getInstance(),
+      initialRemoteBackendToken: 'saved-token',
+      localBackendSupported: true,
+    );
+
+    expect(state.remoteBackendUrl, 'https://current.example.test');
+    expect(state.backendUrl, 'https://current.example.test');
+    expect(state.backendToken, 'saved-token');
   });
 
   test('AppState changes the selected section', () async {

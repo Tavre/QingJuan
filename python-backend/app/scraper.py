@@ -66,6 +66,10 @@ try:
         PreviewResponse,
         TranslationSettings,
     )
+    from .translation_model_health import (
+        normalize_openai_compatible_base_url,
+        resolve_openai_compatible_model_config,
+    )
 except ImportError:
     from app.db import DATA_DIR
     from app.manga_download import (
@@ -85,6 +89,10 @@ except ImportError:
         MangaTranslatedRegion,
         PreviewResponse,
         TranslationSettings,
+    )
+    from app.translation_model_health import (
+        normalize_openai_compatible_base_url,
+        resolve_openai_compatible_model_config,
     )
 
 try:
@@ -2393,26 +2401,7 @@ def _resolve_translation_target_language(language: str) -> str:
 
 
 def _normalize_openai_compatible_base_url(value: str) -> str:
-    normalized_value = value.strip()
-    if not normalized_value:
-        return ""
-    parsed = urlparse(normalized_value)
-    normalized_path = parsed.path.rstrip("/")
-    endpoint_suffix = "/chat/completions"
-    if normalized_path.lower().endswith(endpoint_suffix):
-        normalized_path = normalized_path[: -len(endpoint_suffix)].rstrip("/")
-    if not normalized_path:
-        normalized_path = "/v1"
-    return (
-        parsed._replace(
-            path=normalized_path,
-            params="",
-            query="",
-            fragment="",
-        )
-        .geturl()
-        .rstrip("/")
-    )
+    return normalize_openai_compatible_base_url(value)
 
 
 def _resolve_openai_compatible_model_config(
@@ -2420,24 +2409,7 @@ def _resolve_openai_compatible_model_config(
     *,
     feature_name: str,
 ) -> tuple[str, str, str]:
-    model_config = settings.translationModel
-    if not model_config.enabled:
-        raise ValueError(f"{feature_name}模型未启用，请先在设置中启用翻译模型")
-    base_url = _normalize_openai_compatible_base_url(str(model_config.baseUrl or ""))
-    api_key = str(model_config.apiKey or "").strip()
-    configured_model = str(model_config.model or "").strip()
-
-    if not base_url:
-        raise ValueError(f"{feature_name} API 地址未配置")
-    base_host = (urlparse(base_url).hostname or "").lower()
-    if base_host in {"example.com", "www.example.com", "your-newapi-endpoint"}:
-        raise ValueError(f"{feature_name} API 地址仍是占位值，请先在设置中填写真实 API 地址")
-    if not api_key:
-        raise ValueError(f"{feature_name} API 密钥未配置")
-    if not configured_model:
-        raise ValueError(f"{feature_name}模型未配置")
-
-    return base_url, api_key, configured_model
+    return resolve_openai_compatible_model_config(settings, feature_name=feature_name)
 
 
 def _resolve_manga_image_provider_config(settings: TranslationSettings) -> tuple[str, str, str]:

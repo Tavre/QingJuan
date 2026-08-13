@@ -1,7 +1,7 @@
 name: qingjuan
-description: 青卷：连接 Linux 后端的 Flutter Windows 与 Android 阅读客户端。
+description: 青卷：支持 Windows 本机/远程与 Android 远程连接的 Flutter 阅读客户端。
 publish_to: none
-version: 1.4.0+17
+version: 1.5.0+18
 
 environment:
   sdk: ^3.5.0
@@ -16,6 +16,7 @@ dependencies:
   file_selector: ^1.0.3
   fluent_ui: 4.9.2
   http: ^1.2.2
+  path: ^1.9.0
   path_provider: ^2.1.4
   shared_preferences: ^2.3.2
 
@@ -27,3 +28,5 @@ dev_dependencies:
 flutter:
   # fluent_ui 4.9.x 内部仍引用部分 Material 图标字体。
   uses-material-design: true
+  assets:
+    - assets/logo.png

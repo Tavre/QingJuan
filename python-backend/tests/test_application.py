@@ -114,6 +114,7 @@ def test_startup_console_outputs_connection_info_without_token(monkeypatch) -> N
 
     assert "客户端地址：http://10.0.0.20:19453" in output
     assert "业务 API：http://10.0.0.20:19453/api/v1" in output
+    assert "管理界面：http://10.0.0.20:19453/admin/" in output
     assert "Bearer 认证：已启用" in output
     assert raw_token not in output
 

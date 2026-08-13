@@ -11,6 +11,7 @@ readonly SERVICE_NAME="qingjuan-backend"
 readonly SERVICE_USER="qingjuan"
 readonly SERVICE_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 readonly INFO_COMMAND="/usr/local/sbin/qingjuan-info"
+readonly PASSWORD_COMMAND="/usr/local/sbin/qingjuan-password"
 readonly UNINSTALL_COMMAND="/usr/local/sbin/qingjuan-uninstall"
 
 public_url=""
@@ -93,6 +94,13 @@ if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
 fi
 if [[ ! -f "$REPO_DIR/python-backend/app/main.py" ]]; then
   printf '未找到 %s，请先将仓库克隆到 /opt/qingjuan/app。\n' "$REPO_DIR" >&2
+  exit 1
+fi
+admin_static_dir="$REPO_DIR/python-backend/app/admin_static"
+if [[ ! -f "$admin_static_dir/index.html" ]] || \
+   ! grep -Fq 'id="root"' "$admin_static_dir/index.html" || \
+   ! compgen -G "$admin_static_dir/assets/*.js" >/dev/null; then
+  printf '未找到已构建的管理界面，请获取完整的青卷发布版本后重试。\n' >&2
   exit 1
 fi
 
@@ -287,7 +295,7 @@ if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 install -d -o root -g root -m 0755 "$APP_ROOT"
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$DATA_DIR"
-install -d -o root -g root -m 0700 "$CONFIG_DIR"
+install -d -o root -g "$SERVICE_USER" -m 0750 "$CONFIG_DIR"
 install -d -o root -g systemd-journal -m 2755 /var/log/journal
 systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
 systemctl restart systemd-journald
@@ -303,6 +311,7 @@ chown -R root:"$SERVICE_USER" "$VENV_DIR"
 chmod -R u=rwX,g=rX,o= "$VENV_DIR"
 
 client_file="$CONFIG_DIR/client.env"
+backend_file="$CONFIG_DIR/backend.env"
 connection_token=""
 if [[ "$rotate_token" != "true" && -f "$client_file" ]]; then
   connection_token="$(sed -n 's/^QINGJUAN_CONNECTION_TOKEN=//p' "$client_file" | tail -n 1)"
@@ -315,30 +324,70 @@ import hashlib
 import sys
 print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())
 ')"
+
+admin_password_hash=""
+admin_session_secret=""
+initial_admin_password=""
+if [[ -f "$backend_file" ]]; then
+  admin_password_hash="$(sed -n 's/^QINGJUAN_ADMIN_PASSWORD_HASH=//p' "$backend_file" | tail -n 1)"
+  admin_session_secret="$(sed -n 's/^QINGJUAN_ADMIN_SESSION_SECRET=//p' "$backend_file" | tail -n 1)"
+fi
+if [[ -z "$admin_password_hash" ]]; then
+  initial_admin_password="$(
+    PYTHONPATH="$REPO_DIR/python-backend" "$VENV_DIR/bin/python" -c \
+      'from app.admin_auth import generate_admin_password; print(generate_admin_password())'
+  )"
+  admin_password_hash="$(
+    printf '%s' "$initial_admin_password" | \
+      PYTHONPATH="$REPO_DIR/python-backend" "$VENV_DIR/bin/python" -c \
+        'import sys; from app.admin_auth import hash_admin_password; print(hash_admin_password(sys.stdin.read()))'
+  )"
+  admin_session_secret="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+elif [[ -z "$admin_session_secret" ]]; then
+  admin_session_secret="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+fi
 public_url="${public_url%/}"
 
 printf '%s\n' \
   "QINGJUAN_AUTH_TOKEN_SHA256=$token_digest" \
+  "QINGJUAN_CONNECTION_TOKEN_FILE=$client_file" \
   "QINGJUAN_DATA_DIR=$DATA_DIR" \
   "QINGJUAN_BROWSER_EXECUTABLE=$browser_path" \
   "QINGJUAN_PUBLIC_URL=$public_url" \
   "QINGJUAN_BIND_HOST=$bind_host" \
   "QINGJUAN_PORT=$port" \
-  > "$CONFIG_DIR/backend.env"
+  "QINGJUAN_ADMIN_PASSWORD_HASH=$admin_password_hash" \
+  "QINGJUAN_ADMIN_SESSION_SECRET=$admin_session_secret" \
+  > "$backend_file"
 
 printf '%s\n' \
   "QINGJUAN_BACKEND_URL=$public_url" \
   "QINGJUAN_CONNECTION_TOKEN=$connection_token" \
   > "$client_file"
 
-chmod 0600 "$CONFIG_DIR/backend.env" "$client_file"
-chown root:root "$CONFIG_DIR/backend.env" "$client_file"
+chmod 0600 "$backend_file"
+chown root:root "$backend_file"
+chmod 0640 "$client_file"
+chown root:"$SERVICE_USER" "$client_file"
 install -o root -g root -m 0644 "$REPO_DIR/deploy/linux/qingjuan-backend.service" "$SERVICE_UNIT"
 install -o root -g root -m 0755 "$REPO_DIR/deploy/linux/qingjuan-info.sh" "$INFO_COMMAND"
+install -o root -g root -m 0755 "$REPO_DIR/deploy/linux/qingjuan-password.sh" "$PASSWORD_COMMAND"
 install -o root -g root -m 0755 "$REPO_DIR/deploy/linux/uninstall.sh" "$UNINSTALL_COMMAND"
 
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
+
+print_initial_admin_password() {
+  if [[ -z "$initial_admin_password" ]]; then
+    return
+  fi
+  printf '%s\n' \
+    '============================================================' \
+    '青卷管理界面首次登录密码（仅显示这一次）' \
+    "管理密码：${initial_admin_password}" \
+    '请妥善保存；遗失时运行 sudo qingjuan-password --generate。' \
+    '============================================================'
+}
 
 healthy="false"
 for _ in $(seq 1 60); do
@@ -349,9 +398,11 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 if [[ "$healthy" != "true" ]]; then
+  print_initial_admin_password
   printf '后端未在 60 秒内通过健康检查。最近日志：\n' >&2
   journalctl -u "$SERVICE_NAME" -n 80 --no-pager >&2 || true
   exit 1
 fi
 
 "$INFO_COMMAND"
+print_initial_admin_password

@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../../app/app_scope.dart';
 import '../../app/app_state.dart';
+import '../../shared/brand_logo.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
@@ -387,7 +388,14 @@ class _TabletShell extends StatelessWidget {
         automaticallyImplyLeading: false,
         title: Padding(
           padding: EdgeInsetsDirectional.only(start: 12),
-          child: Text('青卷'),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              QingJuanLogo(size: 24),
+              SizedBox(width: 8),
+              Text('青卷'),
+            ],
+          ),
         ),
       ),
       pane: NavigationPane(

@@ -7,6 +7,9 @@ import re
 
 from fastapi import HTTPException, Request, status
 
+from .admin_auth import read_admin_session, require_admin_session
+from .device_registry import register_request_device
+
 API_PREFIX = "/api/v1"
 API_VERSION = "1"
 TOKEN_DIGEST_ENV = "QINGJUAN_AUTH_TOKEN_SHA256"
@@ -26,12 +29,20 @@ def authentication_enabled() -> bool:
     return configured_token_digest() is not None
 
 
-async def require_api_token(request: Request) -> None:
+async def require_api_authentication(request: Request) -> None:
     expected = configured_token_digest()
     if expected is None:
         return
 
     authorization = request.headers.get("Authorization", "")
+    if not authorization:
+        session = read_admin_session(request)
+        if session is None:
+            raise _unauthorized()
+        if request.method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+            require_admin_session(request, require_csrf=True)
+        return
+
     scheme, separator, token = authorization.partition(" ")
     if not separator or scheme.lower() != "bearer" or not token.strip():
         raise _unauthorized()
@@ -39,6 +50,7 @@ async def require_api_token(request: Request) -> None:
     actual = hashlib.sha256(token.strip().encode("utf-8")).hexdigest()
     if not hmac.compare_digest(actual, expected):
         raise _unauthorized()
+    await register_request_device(request)
 
 
 def _unauthorized() -> HTTPException:

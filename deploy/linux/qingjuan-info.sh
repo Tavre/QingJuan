@@ -23,6 +23,7 @@ read_value() {
 }
 
 backend_url="$(read_value "$CLIENT_FILE" QINGJUAN_BACKEND_URL)"
+admin_url="${backend_url%/}/admin/"
 connection_token="$(read_value "$CLIENT_FILE" QINGJUAN_CONNECTION_TOKEN)"
 port="$(read_value "$BACKEND_FILE" QINGJUAN_PORT)"
 service_state="$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)"
@@ -33,11 +34,13 @@ fi
 
 printf '%s\n' \
   '============================================================' \
-  '青卷 Windows 客户端连接信息' \
+  '青卷服务连接与管理信息' \
   "FastAPI 地址：${backend_url}" \
   "连接 Token：${connection_token}" \
+  "管理界面：${admin_url}" \
   "systemd 状态：${service_state}" \
   "健康检查：${health_state}" \
   '客户端地址不要附加 /api/v1。' \
+  '修改管理密码：sudo qingjuan-password' \
   '服务日志：sudo journalctl -u qingjuan-backend -f' \
   '============================================================'

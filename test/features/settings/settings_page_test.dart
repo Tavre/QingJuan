@@ -72,10 +72,12 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('已发现 1 个系统声音。选择会立即保存，并用于之后打开的听书页面。'), findsOneWidget);
-    expect(find.text('OpenAI 兼容接口'), findsOneWidget);
-    expect(find.text('启用翻译模型'), findsOneWidget);
-    expect(find.text('使用模型辅助识图'), findsOneWidget);
-    expect(find.textContaining('纯文本模型也可以翻译'), findsOneWidget);
+    expect(find.text('由后端管理界面统一配置'), findsOneWidget);
+    expect(find.text('等待服务端模型自检'), findsOneWidget);
+    expect(find.text('重新检测模型'), findsOneWidget);
+    expect(find.text('启用翻译模型'), findsNothing);
+    expect(find.text('使用模型辅助识图'), findsNothing);
+    expect(find.text('API 密钥'), findsNothing);
     expect(find.text('启用当前提供商'), findsNothing);
     expect(find.text('newapi'), findsNothing);
     expect(find.text('anthropic'), findsNothing);
@@ -103,6 +105,88 @@ void main() {
     expect(
       voiceService.previewedStyles,
       <TtsSpeechStyle>[TtsSpeechStyle.immersive],
+    );
+    api.close();
+  });
+
+  testWidgets('Windows settings can choose local or Linux remote backend',
+      (tester) async {
+    final preferences = await SharedPreferences.getInstance();
+    final appState = AppState(preferences, localBackendSupported: true);
+    final api = ApiClient(() => appState.backendUrl);
+
+    await tester.pumpWidget(
+      FluentApp(
+        home: AppScope(
+          appState: appState,
+          api: api,
+          backend: BackendConnectionManager(
+            api,
+            isConfigured: () => appState.hasBackendConnection,
+            isLocal: () =>
+                appState.connectionMode == BackendConnectionMode.local,
+          ),
+          library: LibraryController(api),
+          sources: SourcesController(api),
+          tasks: TasksController(api),
+          settings: SettingsController(api),
+          child: SettingsPage(
+            voiceService: _FakeTtsVoiceService(const <TtsVoice>[]),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('本机模式使用固定回环地址'), findsOneWidget);
+    expect(
+        find.textContaining(AppState.defaultLocalBackendUrl), findsOneWidget);
+
+    final modeSelector = find.byType(ComboBox<BackendConnectionMode>);
+    await tester.ensureVisible(modeSelector);
+    await tester.pumpAndSettle();
+    await tester.tap(modeSelector);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Linux 远程后端').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('FastAPI 地址'), findsOneWidget);
+    expect(find.text('连接 Token'), findsOneWidget);
+    expect(find.text('Linux 连接参数独立保存'), findsOneWidget);
+    expect(find.textContaining('远程失败不会回退本机'), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('linux-backend-url')),
+      'https://draft.example.test',
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('linux-backend-token')),
+      'draft-token',
+    );
+
+    await tester.tap(modeSelector);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('本机后端').last);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('linux-backend-url')), findsNothing);
+
+    await tester.tap(modeSelector);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Linux 远程后端').last);
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextBox>(find.byKey(const ValueKey('linux-backend-url')))
+          .controller!
+          .text,
+      'https://draft.example.test',
+    );
+    expect(
+      tester
+          .widget<TextBox>(find.byKey(const ValueKey('linux-backend-token')))
+          .controller!
+          .text,
+      'draft-token',
     );
     api.close();
   });

@@ -1,6 +1,6 @@
 <!-- markdownlint-disable MD033 MD041 -->
 <p align="center">
-  <img alt="青卷 LOGO" src="./assets/qj_icon2.png" width="160" height="160" />
+  <img alt="青卷 LOGO" src="./assets/logo.png" width="160" height="160" />
 </p>
 
 <h1 align="center">青卷 QingJuan</h1>
@@ -9,8 +9,8 @@
   Windows 与 Android 小说、漫画下载、翻译和阅读客户端
 </p>
 
-青卷使用 Flutter 构建 Windows 与 Android 客户端。书库、下载、翻译和任务统一由现有 Linux FastAPI
-后端管理，电脑和手机都不安装、打包或启动本地 Python 后端。
+青卷使用 Flutter 构建 Windows 与 Android 客户端，并为 FastAPI 后端提供 React 管理界面。Windows 可使用安装包内的
+本机后端，也可与 Android 一起连接 Linux 远程后端；书库、下载、翻译和任务由当前选中的后端管理。
 
 > 项目仍在持续开发。网站规则变化时，部分下载功能可能暂时失效。请只保存你有权访问的内容。
 
@@ -36,11 +36,20 @@
 | Android | Android 8.0（API 26）或更高版本 | `QingJuan-v<版本>-android.apk` |
 | Linux | x86_64、systemd、Python 3.11+ 服务端 | 原生部署脚本 |
 
-Windows 和 Android 只是远程客户端，必须连接 Linux 服务端；Windows ZIP 不包含旧版 PyInstaller 本地后端。
+Windows ZIP 包含本机后端，可在“本机后端 / Linux 远程后端”之间选择；Android 必须连接 Linux 服务端。
 
 ## 使用方法
 
-### 1. 部署 Linux 后端
+### 1. 安装客户端
+
+从 [Releases](https://github.com/Tavre/QingJuan/releases/latest) 下载对应平台的安装包：
+
+- Windows：完整解压 Windows x64 ZIP，运行 `qingjuan.exe`。需要单机使用时在设置中选择“本机后端”。
+- Android：下载 APK，在手机或平板确认来源后安装。
+
+### 2. 可选：部署 Linux 后端
+
+Android 或 Windows 远程模式需要 Linux 服务端；只使用 Windows 本机模式时可以跳过本节。
 
 先在 Linux 服务器执行：
 
@@ -52,25 +61,29 @@ sudo bash deploy/linux/install.sh
 sudo qingjuan-info
 ```
 
-安装脚本会自动识别服务器的 Tailscale、WireGuard 或局域网 IP。安装完成后，`sudo qingjuan-info` 会显示
-FastAPI 地址和连接 Token。公网服务器请使用 `--url https://你的域名` 指定已配置反向代理的 HTTPS 地址。
+安装脚本会自动识别服务器的 Tailscale、WireGuard 或局域网 IP。安装完成后会显示管理界面地址、首次登录的
+随机管理密码、FastAPI 地址和连接 Token。管理密码只显示一次；公网服务器请使用
+`--url https://你的域名` 指定已配置反向代理的 HTTPS 地址。
 
-### 2. 安装客户端
+浏览器打开终端显示的管理界面地址，即可查看服务概览、连接设备、系统诊断、后端 API 密钥、任务和服务器运行日志，
+以及书库、书源和模型设置。系统诊断可下载不含凭据和服务器路径的脱敏报告；API 密钥默认遮挡，只在管理员主动点击后
+短暂显示。翻译模型统一在管理界面配置并支持自检；Windows / Android 连接后会自动检查服务端模型，不在客户端保存
+模型密钥或直连模型供应商。忘记管理密码时运行：
 
-从 [Releases](https://github.com/Tavre/QingJuan/releases/latest) 下载对应平台的安装包：
+```bash
+sudo qingjuan-password --generate
+```
 
-- Windows：完整解压 Windows x64 ZIP，运行 `qingjuan.exe`。
-- Android：下载 APK，在手机或平板确认来源后安装。
+### 3. 选择后端
 
-### 3. 连接服务器
+打开 **设置 → 后端连接**：
 
-首次打开 Windows 或 Android 客户端后：
+- Windows 本机模式：选择“本机后端”并保存，应用会按需启动安装包内的后端，无需 Token；模型等服务设置可在
+  `http://127.0.0.1:19453/admin/` 管理，本机会话不要求 Linux 管理密码。
+- Windows 远程模式或 Android：填写服务器显示的“FastAPI 地址”和“连接 Token”，再保存连接。
 
-1. 打开 **设置 → 后端连接**。
-2. 填写服务器显示的“FastAPI 地址”和“连接 Token”。
-3. 点击 **保存设置**。
-
-FastAPI 地址不要添加 `/api/v1`。公网访问必须使用 HTTPS，不要直接暴露公网 HTTP 端口。
+远程 FastAPI 地址不要添加 `/api/v1`。公网访问必须使用 HTTPS，不要直接暴露公网 HTTP 端口；远程连接失败时不会
+自动回退本机。切换模式会切换到另一套后端数据，但会保留安全存储中的远程连接信息。
 
 常用服务器命令：
 
@@ -84,6 +97,9 @@ sudo journalctl -u qingjuan-backend -f
 # 更新后端
 sudo bash /opt/qingjuan/app/deploy/linux/update.sh
 
+# 修改管理界面密码
+sudo qingjuan-password
+
 # 卸载并保留书库数据
 sudo qingjuan-uninstall
 ```
@@ -93,10 +109,12 @@ sudo qingjuan-uninstall
 
 ## 数据与安全
 
+- Windows 本机数据保存在完整解压目录的 `backend/data/`
 - Linux 数据保存在 `/var/lib/qingjuan`
-- Windows 与 Android 只保存界面偏好和平台安全存储保护的连接 Token
-- 更新或迁移前请先备份 Linux 数据目录
+- Android 以及 Windows 远程模式只在设备上保存界面偏好和平台安全存储保护的连接 Token
+- Windows 本机数据与 Linux 数据不会自动同步；更新或迁移前请备份当前使用的数据目录
 - 不要公开连接 Token、翻译 API 密钥、Cookie、数据库和下载内容
+- 不要公开管理密码；终端改密后，原有管理界面会话会自动退出
 - 连接建议使用局域网、Tailscale / WireGuard；公网访问必须使用 HTTPS
 
 ## 开发、构建与 CI
@@ -104,7 +122,10 @@ sudo qingjuan-uninstall
 开发环境、项目结构、测试和发布规范见[开发文档](./docs/development/README.md)。本地常用构建命令：
 
 ```powershell
-# Windows x64 远程客户端
+# 从 assets/logo.png 重新生成 Windows / Android 应用图标
+python ./tool/generate_app_icons.py
+
+# Windows x64 客户端与随包本机后端
 ./tool/build_windows.ps1
 
 # Android Release APK

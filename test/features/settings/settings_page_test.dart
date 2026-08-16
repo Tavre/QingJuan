@@ -4,6 +4,7 @@ import 'package:qingjuan/app/app_scope.dart';
 import 'package:qingjuan/app/app_state.dart';
 import 'package:qingjuan/core/api/api_client.dart';
 import 'package:qingjuan/core/backend/backend_connection_manager.dart';
+import 'package:qingjuan/core/backend/local_backend_process.dart';
 import 'package:qingjuan/core/models/settings.dart';
 import 'package:qingjuan/core/models/tts_speech_style.dart';
 import 'package:qingjuan/core/models/tts_voice.dart';
@@ -13,6 +14,7 @@ import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/settings/settings_page.dart';
 import 'package:qingjuan/features/sources/sources_controller.dart';
 import 'package:qingjuan/features/tasks/tasks_controller.dart';
+import 'package:qingjuan/shared/responsive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -57,20 +59,35 @@ void main() {
 
     await tester.pumpWidget(
       FluentApp(
-        home: AppScope(
-          appState: appState,
-          api: api,
-          backend: BackendConnectionManager(api, isConfigured: () => false),
-          library: LibraryController(api),
-          sources: SourcesController(api),
-          tasks: TasksController(api),
-          settings: SettingsController(api),
-          child: SettingsPage(voiceService: voiceService),
+        home: UiPlatformScope(
+          platform: TargetPlatform.windows,
+          child: AppScope(
+            appState: appState,
+            api: api,
+            backend: BackendConnectionManager(api, isConfigured: () => false),
+            library: LibraryController(api),
+            sources: SourcesController(api),
+            tasks: TasksController(api),
+            settings: SettingsController(api),
+            child: SettingsPage(voiceService: voiceService),
+          ),
         ),
       ),
     );
     await tester.pumpAndSettle();
 
+    expect(find.textContaining('Windows的浅色与深色设置'), findsOneWidget);
+    expect(find.byIcon(FluentIcons.system), findsOneWidget);
+    expect(find.byIcon(FluentIcons.brightness), findsOneWidget);
+    expect(find.byIcon(FluentIcons.clear_night), findsOneWidget);
+    expect(find.byIcon(FluentIcons.cell_phone), findsNothing);
+    final systemIcon = tester.widget<Icon>(
+      find.descendant(
+        of: find.byKey(const ValueKey('theme-mode-system')),
+        matching: find.byType(Icon),
+      ),
+    );
+    expect(systemIcon.semanticLabel, '跟随系统外观');
     expect(find.text('已发现 1 个系统声音。选择会立即保存，并用于之后打开的听书页面。'), findsOneWidget);
     expect(find.text('由后端管理界面统一配置'), findsOneWidget);
     expect(find.text('等待服务端模型自检'), findsOneWidget);
@@ -106,6 +123,13 @@ void main() {
       voiceService.previewedStyles,
       <TtsSpeechStyle>[TtsSpeechStyle.immersive],
     );
+
+    await tester.tap(find.byType(ComboBox<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('跟随系统默认声音').last);
+    await tester.pumpAndSettle();
+
+    expect(appState.ttsVoice, isNull);
     api.close();
   });
 
@@ -114,24 +138,32 @@ void main() {
     final preferences = await SharedPreferences.getInstance();
     final appState = AppState(preferences, localBackendSupported: true);
     final api = ApiClient(() => appState.backendUrl);
+    Uri? openedModelSettings;
+    final backend = BackendConnectionManager(
+      api,
+      isConfigured: () => appState.hasBackendConnection,
+      isLocal: () => appState.connectionMode == BackendConnectionMode.local,
+      localBackend: WindowsLocalBackendLifecycle(
+        isWindows: () => true,
+        openUri: (uri) async => openedModelSettings = uri,
+      ),
+    )..status = BackendStatus.ready;
 
     await tester.pumpWidget(
       FluentApp(
-        home: AppScope(
-          appState: appState,
-          api: api,
-          backend: BackendConnectionManager(
-            api,
-            isConfigured: () => appState.hasBackendConnection,
-            isLocal: () =>
-                appState.connectionMode == BackendConnectionMode.local,
-          ),
-          library: LibraryController(api),
-          sources: SourcesController(api),
-          tasks: TasksController(api),
-          settings: SettingsController(api),
-          child: SettingsPage(
-            voiceService: _FakeTtsVoiceService(const <TtsVoice>[]),
+        home: UiPlatformScope(
+          platform: TargetPlatform.windows,
+          child: AppScope(
+            appState: appState,
+            api: api,
+            backend: backend,
+            library: LibraryController(api),
+            sources: SourcesController(api),
+            tasks: TasksController(api),
+            settings: SettingsController(api),
+            child: SettingsPage(
+              voiceService: _FakeTtsVoiceService(const <TtsVoice>[]),
+            ),
           ),
         ),
       ),
@@ -139,8 +171,17 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('本机模式使用固定回环地址'), findsOneWidget);
+    expect(find.textContaining(AppState.defaultLocalBackendUrl), findsWidgets);
+    final openModelSettings =
+        find.byKey(const ValueKey('open-local-model-settings'));
+    await tester.ensureVisible(openModelSettings);
+    await tester.pumpAndSettle();
+    await tester.tap(openModelSettings);
+    await tester.pumpAndSettle();
     expect(
-        find.textContaining(AppState.defaultLocalBackendUrl), findsOneWidget);
+      openedModelSettings,
+      Uri.parse('http://127.0.0.1:19453/admin/#settings'),
+    );
 
     final modeSelector = find.byType(ComboBox<BackendConnectionMode>);
     await tester.ensureVisible(modeSelector);
@@ -188,6 +229,7 @@ void main() {
           .text,
       'draft-token',
     );
+    await backend.dispose();
     api.close();
   });
 }

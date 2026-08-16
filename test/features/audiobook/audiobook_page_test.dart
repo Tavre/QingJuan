@@ -1,9 +1,11 @@
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:qingjuan/app/app_theme.dart';
 import 'package:qingjuan/core/models/book.dart';
 import 'package:qingjuan/core/models/tts_speech_style.dart';
 import 'package:qingjuan/features/audiobook/audiobook_controller.dart';
 import 'package:qingjuan/features/audiobook/audiobook_page.dart';
+import 'package:qingjuan/shared/responsive.dart';
 
 void main() {
   testWidgets('audiobook page loads text and exposes playback controls',
@@ -82,6 +84,45 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('朗读风格'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Windows renders the v1.3.4 desktop audiobook layout',
+      (tester) async {
+    final detail = _singleChapterDetail();
+    await tester.pumpWidget(
+      FluentApp(
+        theme: buildQingJuanTheme(
+          Brightness.light,
+          platform: TargetPlatform.windows,
+        ),
+        home: UiPlatformScope(
+          platform: TargetPlatform.windows,
+          child: AudiobookPage(
+            detail: detail,
+            engine: _PageTestTtsEngine(),
+            loadChapter: (index, mode) async => ChapterContent(
+              chapter: detail.chapters.single,
+              content: '这是一段用于测试听书功能的正文。',
+              paragraphs: const <String>['这是一段用于测试听书功能的正文。'],
+              mode: mode,
+              translatedAvailable: false,
+              imageSources: const <String>[],
+              pageTranslations: const <String>[],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(
+      find.byKey(const ValueKey('desktop-audiobook-page')),
+      findsOneWidget,
+    );
+    expect(find.text('上一章'), findsOneWidget);
+    expect(find.text('下一章'), findsOneWidget);
+    expect(find.textContaining('用于测试听书功能'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

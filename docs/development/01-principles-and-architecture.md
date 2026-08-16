@@ -24,7 +24,7 @@ ApiClient / BackendConnectionManager
         ↓ loopback HTTP / HTTPS / private-network HTTP
 FastAPI Router / Auth
         ↓
-Service / Scraper / Repository
+Service / Site Plugin / Repository
         ↓
 SQLite / Files / Third-party sites
 
@@ -77,7 +77,8 @@ python-backend/
 ├─ app/application.py   # FastAPI 组装
 ├─ app/models.py        # 请求、响应与领域数据模型
 ├─ app/db.py            # SQLite 与持久化
-├─ app/scraper.py       # 外部站点、下载、OCR、翻译适配
+├─ app/site_plugins/    # 每个内置站点一个模块，声明匹配、能力与运行处理器
+├─ app/scraper.py       # 共享抓取、下载、OCR 与翻译基础设施
 └─ tests/               # 后端测试
 
 admin-web/              # React + TypeScript + Ant Design 管理界面源码与前端测试
@@ -95,6 +96,11 @@ assets/                 # 品牌图片、文档截图与应用图标
 - 只服务一个功能的组件放进该 Feature，不提前放入 `shared`。
 - `shared` 不导入具体 Feature。
 - 应用启动只负责依赖组装，不实现业务。
+- 内置站点解析器必须通过 `app/site_plugins/` 注册；一个模块只描述一个站点或一个明确的通用回退协议，
+  不允许重新在 `scraper.py` 中追加散落的域名分支。站点模块可复用共享 HTTP、清洗、下载和持久化能力。
+- 需要站点账号的解析器仍随单个后端进程运行：第三方项目只能作为接入契约和实现来源，发布产物不得依赖开发机上的
+  兄弟目录或额外常驻服务。扫码流程、站点 Cookie 和账号会话由对应插件运行时在内存中保管，普通插件清单、错误与日志
+  只暴露是否登录等非敏感状态。
 - Android / Windows Runner 只承载 Flutter、权限与平台资源，不放业务逻辑；Windows 本机进程生命周期位于 Dart 基础设施层。
 - `admin-web/` 只负责展示与用户操作；认证、授权、数据校验和敏感配置始终由 FastAPI 执行。
 - 服务器运行日志由后端写入受限轮转文件；管理界面只读取已脱敏的结构化尾部日志，不直接授予浏览器

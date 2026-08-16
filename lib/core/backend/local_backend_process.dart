@@ -4,46 +4,64 @@ import 'dart:io';
 import 'package:path/path.dart' as path;
 
 import '../api/api_client.dart';
+import '../api/api_exception.dart';
 import '../models/book.dart';
 
 abstract interface class LocalBackendLifecycle {
   Future<JsonMap> ensureRunning(ApiClient api);
 
+  Future<void> openAdmin(Uri uri);
+
   Future<void> stop();
+}
+
+class LocalBackendException implements Exception {
+  const LocalBackendException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }
 
 class WindowsLocalBackendLifecycle implements LocalBackendLifecycle {
   WindowsLocalBackendLifecycle({
     LocalBackendCommand? commandOverride,
     Future<void> Function(Duration)? delay,
+    bool Function()? isWindows,
+    Future<void> Function(Uri uri)? openUri,
   })  : _commandOverride = commandOverride,
-        _delay = delay ?? Future<void>.delayed;
+        _delay = delay ?? Future<void>.delayed,
+        _isWindows = isWindows ?? (() => Platform.isWindows),
+        _openUri = openUri;
 
   static const _readyAttempts = 30;
   static const _readyDelay = Duration(milliseconds: 300);
 
   final LocalBackendCommand? _commandOverride;
   final Future<void> Function(Duration) _delay;
+  final bool Function() _isWindows;
+  final Future<void> Function(Uri uri)? _openUri;
   Process? _ownedProcess;
 
   @override
   Future<JsonMap> ensureRunning(ApiClient api) async {
-    if (!Platform.isWindows) {
-      throw StateError('当前平台不支持 Windows 本机后端');
+    if (!_isWindows()) {
+      throw const LocalBackendException('当前平台不支持 Windows 本机后端');
     }
 
     if (await api.health()) {
       try {
         return await api.fetchServiceMeta();
       } catch (error) {
-        throw StateError('本机端口不是兼容的青卷后端：$error');
+        throw _existingPortError(error);
       }
     }
 
     await stop();
     final command = _commandOverride ?? resolveLocalBackendCommand();
     if (command == null) {
-      throw StateError('未找到 Python 后端或随包后端程序');
+      throw const LocalBackendException('未找到 Python 后端或随包后端程序');
     }
 
     try {
@@ -65,7 +83,7 @@ class WindowsLocalBackendLifecycle implements LocalBackendLifecycle {
       unawaited(_ownedProcess!.stdout.drain<void>());
       unawaited(_ownedProcess!.stderr.drain<void>());
     } catch (error) {
-      throw StateError('本机后端启动失败：$error');
+      throw LocalBackendException('本机后端进程启动失败：$error');
     }
 
     Object? compatibilityError;
@@ -81,9 +99,38 @@ class WindowsLocalBackendLifecycle implements LocalBackendLifecycle {
     }
 
     if (compatibilityError != null) {
-      throw StateError('本机端口不是兼容的青卷后端：$compatibilityError');
+      throw _existingPortError(compatibilityError);
     }
-    throw StateError('本机后端启动超时，请检查随包后端或 Python 依赖');
+    throw const LocalBackendException('本机后端启动超时，请检查随包后端或 Python 依赖');
+  }
+
+  @override
+  Future<void> openAdmin(Uri uri) async {
+    if (!_isWindows()) {
+      throw const LocalBackendException('当前平台不支持打开 Windows 本机管理界面');
+    }
+    if (uri.scheme != 'http' ||
+        uri.host != '127.0.0.1' ||
+        uri.port != 19453 ||
+        uri.path != '/admin/' ||
+        (uri.fragment.isNotEmpty && uri.fragment != 'settings')) {
+      throw const LocalBackendException('拒绝打开非本机青卷管理地址');
+    }
+    try {
+      final openUri = _openUri;
+      if (openUri != null) {
+        await openUri(uri);
+        return;
+      }
+      await Process.start(
+        'explorer.exe',
+        <String>[uri.toString()],
+        mode: ProcessStartMode.detached,
+        runInShell: false,
+      );
+    } catch (error) {
+      throw LocalBackendException('无法打开本机模型设置：$error');
+    }
   }
 
   @override
@@ -126,6 +173,17 @@ class WindowsLocalBackendLifecycle implements LocalBackendLifecycle {
       process.kill(ProcessSignal.sigkill);
     }
   }
+}
+
+LocalBackendException _existingPortError(Object error) {
+  if (error is ApiException && error.statusCode == 401) {
+    return const LocalBackendException(
+      '端口 19453 已被启用连接 Token 的青卷后端占用。请先结束该服务，或切换到 Linux 远程模式并填写匹配的 Token。',
+    );
+  }
+  return LocalBackendException(
+    '端口 19453 已被其他或不兼容的服务占用：$error',
+  );
 }
 
 class LocalBackendCommand {
@@ -171,19 +229,25 @@ LocalBackendCommand? resolveLocalBackendCommand({
     }
   }
 
-  var current = path.absolute(workingPath);
-  for (var depth = 0; depth < 8; depth++) {
-    final backend = path.join(current, 'python-backend');
-    if (isFile(path.join(backend, 'app', 'main.py'))) {
-      return LocalBackendCommand(
-        'python',
-        <String>['-m', 'app.main', ...arguments],
-        workingDirectory: backend,
-      );
+  final visitedDirectories = <String>{};
+  for (final searchRoot in <String>[workingPath, executableDirectory]) {
+    var current = path.absolute(searchRoot);
+    for (var depth = 0; depth < 8; depth++) {
+      final normalized = path.normalize(current);
+      if (visitedDirectories.add(normalized)) {
+        final backend = path.join(normalized, 'python-backend');
+        if (isFile(path.join(backend, 'app', 'main.py'))) {
+          return LocalBackendCommand(
+            'python',
+            <String>['-m', 'app.main', ...arguments],
+            workingDirectory: backend,
+          );
+        }
+      }
+      final parent = path.dirname(normalized);
+      if (parent == normalized) break;
+      current = parent;
     }
-    final parent = path.dirname(current);
-    if (parent == current) break;
-    current = parent;
   }
   return null;
 }

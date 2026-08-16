@@ -175,6 +175,62 @@ export type BookSource = {
   createdAt: string;
 };
 
+export type SitePlugin = {
+  id: string;
+  name: string;
+  description: string;
+  category: "novel" | "manga" | "general";
+  domains: string[];
+  bookKinds: Array<Book["bookKind"]>;
+  tags: string[];
+  capabilities: string[];
+  version: string;
+  enabled: boolean;
+  defaultEnabled: boolean;
+  accountLoggedIn: boolean;
+};
+
+export type SitePluginAccount = {
+  loggedIn: boolean;
+  expiresAt?: string | null;
+};
+
+export type SitePluginLoginQrCode = {
+  flowId: string;
+  qrImageBase64: string;
+  expiresAt: string;
+};
+
+export type SitePluginLoginPoll = {
+  status: "waiting" | "scanned" | "success" | "cancelled" | "expired" | "error";
+  message: string;
+  loggedIn: boolean;
+};
+
+export type SitePluginBookshelfImportItem = {
+  sourceId: string;
+  title: string;
+  status: "imported" | "skipped" | "unsupported" | "failed";
+  message: string;
+  bookId?: string | null;
+};
+
+export type SitePluginBookshelfImportJob = {
+  id: string;
+  pluginId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  progress: number;
+  message: string;
+  discoveredCount: number;
+  processedCount: number;
+  importedCount: number;
+  skippedCount: number;
+  unsupportedCount: number;
+  failedCount: number;
+  items: SitePluginBookshelfImportItem[];
+  error?: string | null;
+};
+
 export type Settings = {
   systemPrompt: string;
   autoTranslateNextChapters: number;
@@ -229,5 +285,6 @@ export type DashboardData = {
   books: Book[];
   tasks: Task[];
   sources: BookSource[];
+  plugins: SitePlugin[];
   settings: Settings;
 };

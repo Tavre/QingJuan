@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AppstoreOutlined,
+  ApiOutlined,
   BookOutlined,
   DatabaseOutlined,
   DashboardOutlined,
@@ -22,13 +23,33 @@ import { DiagnosticsPage } from "./DiagnosticsPage";
 import { LibraryPage } from "./LibraryPage";
 import { LogsPage } from "./LogsPage";
 import { OverviewPage } from "./OverviewPage";
+import { PluginsPage } from "./PluginsPage";
 import { SettingsPage } from "./SettingsPage";
 import { SourcesPage } from "./SourcesPage";
 import { TasksPage } from "./TasksPage";
 
 const { Header, Content, Sider } = Layout;
 
-type NavigationKey = "overview" | "devices" | "library" | "tasks" | "diagnostics" | "logs" | "sources" | "settings";
+export type NavigationKey = "overview" | "devices" | "library" | "tasks" | "diagnostics" | "logs" | "sources" | "plugins" | "settings";
+
+const navigationKeys: readonly NavigationKey[] = [
+  "overview",
+  "devices",
+  "library",
+  "tasks",
+  "diagnostics",
+  "logs",
+  "sources",
+  "plugins",
+  "settings",
+];
+
+export function navigationFromHash(hash: string): NavigationKey {
+  const candidate = hash.replace(/^#\/?/, "");
+  return navigationKeys.includes(candidate as NavigationKey)
+    ? candidate as NavigationKey
+    : "overview";
+}
 
 const navigation = [
   { key: "overview", icon: <AppstoreOutlined />, label: "服务概览" },
@@ -38,6 +59,7 @@ const navigation = [
   { key: "diagnostics", icon: <DashboardOutlined />, label: "系统诊断" },
   { key: "logs", icon: <FileTextOutlined />, label: "运行日志" },
   { key: "sources", icon: <DatabaseOutlined />, label: "书源状态" },
+  { key: "plugins", icon: <ApiOutlined />, label: "插件管理" },
   { key: "settings", icon: <SettingOutlined />, label: "模型设置" },
 ];
 
@@ -49,6 +71,7 @@ const pageTitles: Record<NavigationKey, { title: string; subtitle: string }> = {
   diagnostics: { title: "系统诊断", subtitle: "检查服务健康、资源容量与近期异常" },
   logs: { title: "运行日志", subtitle: "查看后端服务、任务程序与抓取器的详细输出" },
   sources: { title: "书源状态", subtitle: "确认已启用书源及最近连接状态" },
+  plugins: { title: "插件管理", subtitle: "管理当前 Linux 后端的内置站点解析器" },
   settings: { title: "模型设置", subtitle: "维护翻译模型、OCR 与并发参数" },
 };
 
@@ -59,28 +82,47 @@ type AdminShellProps = {
 
 export function AdminShell({ session, onLogout }: AdminShellProps) {
   const { message } = App.useApp();
-  const [selected, setSelected] = useState<NavigationKey>("overview");
+  const [selected, setSelected] = useState<NavigationKey>(() => navigationFromHash(window.location.hash));
   const [collapsed, setCollapsed] = useState(false);
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
 
+  const navigate = useCallback((key: NavigationKey) => {
+    setSelected(key);
+    const hash = `#${key}`;
+    if (window.location.hash !== hash) {
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${window.location.search}${hash}`,
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleHashChange = () => setSelected(navigationFromHash(window.location.hash));
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, []);
+
   const loadAll = useCallback(async (silent = false) => {
     if (silent) setRefreshing(true);
     else setLoading(true);
     setError("");
     try {
-      const [meta, connectionToken, devices, books, tasks, sources, settings] = await Promise.all([
+      const [meta, connectionToken, devices, books, tasks, sources, plugins, settings] = await Promise.all([
         api.getMeta(),
         api.getConnectionTokenStatus(),
         api.getDevices(),
         api.getBooks(),
         api.getTasks(),
         api.getSources(),
+        api.getSitePlugins(),
         api.getSettings(),
       ]);
-      setData({ meta, connectionToken, devices, books, tasks, sources, settings });
+      setData({ meta, connectionToken, devices, books, tasks, sources, plugins, settings });
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "管理数据加载失败");
     } finally {
@@ -152,6 +194,23 @@ export function AdminShell({ session, onLogout }: AdminShellProps) {
     message.success(banned ? "设备已封禁" : "设备封禁已解除");
   };
 
+  const setPluginEnabled = async (pluginId: string, enabled: boolean) => {
+    const updated = await api.setSitePluginEnabled(pluginId, enabled);
+    setData((current) => current ? {
+      ...current,
+      plugins: current.plugins.map((plugin) => plugin.id === updated.id ? updated : plugin),
+    } : current);
+    message.success(`${updated.name}已${enabled ? "启用" : "停用"}`);
+  };
+
+  const refreshPluginBooks = async () => {
+    const [plugins, books] = await Promise.all([
+      api.getSitePlugins(),
+      api.getBooks(),
+    ]);
+    setData((current) => current ? { ...current, plugins, books } : current);
+  };
+
   const updateTask = (task: Task) => {
     setData((current) => current ? {
       ...current,
@@ -160,7 +219,7 @@ export function AdminShell({ session, onLogout }: AdminShellProps) {
   };
 
   const currentPage = data ? {
-    overview: <OverviewPage data={data} bookTitles={bookTitles} onNavigate={setSelected} />,
+    overview: <OverviewPage data={data} bookTitles={bookTitles} onNavigate={navigate} />,
     devices: <DevicesPage devices={data.devices} onSetBanned={setDeviceBanned} />,
     library: <LibraryPage books={data.books} onDelete={deleteBook} />,
     tasks: (
@@ -175,9 +234,16 @@ export function AdminShell({ session, onLogout }: AdminShellProps) {
         }}
       />
     ),
-    diagnostics: <DiagnosticsPage onOpenLogs={() => setSelected("logs")} />,
+    diagnostics: <DiagnosticsPage onOpenLogs={() => navigate("logs")} />,
     logs: <LogsPage />,
     sources: <SourcesPage sources={data.sources} />,
+    plugins: (
+      <PluginsPage
+        plugins={data.plugins}
+        onSetEnabled={setPluginEnabled}
+        onDataChanged={refreshPluginBooks}
+      />
+    ),
     settings: <SettingsPage settings={data.settings} onSave={saveSettings} />,
   }[selected] : null;
 
@@ -209,7 +275,7 @@ export function AdminShell({ session, onLogout }: AdminShellProps) {
           selectedKeys={[selected]}
           items={navigation}
           onClick={({ key }) => {
-            setSelected(key as NavigationKey);
+            navigate(key as NavigationKey);
             if (window.matchMedia("(max-width: 991px)").matches) setCollapsed(true);
           }}
         />

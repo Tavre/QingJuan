@@ -5,10 +5,12 @@ import '../../app/app_theme.dart';
 import '../../core/models/book.dart';
 import '../../core/state/load_state.dart';
 import '../../shared/feedback_widgets.dart';
+import '../../shared/motion.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
 import '../detail/book_detail_page.dart';
 import 'import_book_dialog.dart';
+import 'library_controller.dart';
 import 'widgets/book_card.dart';
 
 class LibraryPage extends StatelessWidget {
@@ -20,7 +22,8 @@ class LibraryPage extends StatelessWidget {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
-        final compact = windowClassOf(context) == WindowClass.compact;
+        final compact = usesMobileUi(context);
+        if (!compact) return _buildDesktopPage(context, controller);
         return PageFrame(
           title: '我的书架',
           subtitle: '继续上次的故事，或从书架挑选一本。',
@@ -111,13 +114,131 @@ class LibraryPage extends StatelessWidget {
     );
   }
 
+  Widget _buildDesktopPage(
+    BuildContext context,
+    LibraryController controller,
+  ) {
+    final books = controller.filteredBooks;
+    final textScale = MediaQuery.textScalerOf(context).scale(1);
+    final scaleAllowance = 64 * (textScale - 1).clamp(0.0, 1.5).toDouble();
+    return PageFrame(
+      key: const ValueKey('desktop-library-page'),
+      title: '书架',
+      subtitle: '集中管理下载、翻译与阅读进度。',
+      scrollable: false,
+      command: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: <Widget>[
+          if (controller.linkJob != null)
+            Button(
+              onPressed: () => _openImportDialog(context),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  if (controller.hasActiveLinkJob) ...<Widget>[
+                    const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: ProgressRing(strokeWidth: 2.5),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  Text(controller.hasActiveLinkJob ? '链接解析中' : '查看链接任务'),
+                ],
+              ),
+            ),
+          FilledButton(
+            onPressed: () => _openImportDialog(context),
+            child: const Text('添加书籍'),
+          ),
+        ],
+      ),
+      child: Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: TextBox(
+                    placeholder: '搜索书名或简介',
+                    prefix: const Padding(
+                      padding: EdgeInsets.only(left: 10),
+                      child: Icon(FluentIcons.search),
+                    ),
+                    onChanged: controller.setQuery,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Tooltip(
+                  message: '刷新书架',
+                  child: IconButton(
+                    icon: const Icon(
+                      FluentIcons.refresh,
+                      semanticLabel: '刷新书架',
+                    ),
+                    onPressed: controller.load,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 22),
+            Expanded(
+              child: switch (controller.state) {
+                LoadState.idle ||
+                LoadState.loading =>
+                  const LoadingView(label: '正在整理书架'),
+                LoadState.error => ErrorView(
+                    message: controller.error ?? '未知错误',
+                    onRetry: controller.load,
+                  ),
+                LoadState.empty => EmptyView(
+                    icon: FluentIcons.library,
+                    title: '书架还是空的',
+                    message: '添加网页作品或本地文本，青卷会在这里保存阅读进度。',
+                    action: FilledButton(
+                      onPressed: () => _openImportDialog(context),
+                      child: const Text('添加第一本书'),
+                    ),
+                  ),
+                LoadState.ready when books.isEmpty => const EmptyView(
+                    icon: FluentIcons.search,
+                    title: '没有匹配结果',
+                    message: '试试更短的书名或作者关键词。',
+                  ),
+                _ => GridView.builder(
+                    itemCount: books.length,
+                    gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                      maxCrossAxisExtent: 352,
+                      mainAxisExtent: 164 + scaleAllowance,
+                      crossAxisSpacing: 16,
+                      mainAxisSpacing: 16,
+                    ),
+                    itemBuilder: (context, index) {
+                      final book = books[index];
+                      return BookCard(
+                        book: book,
+                        onOpen: () => _openBook(context, book),
+                      );
+                    },
+                  ),
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   static String _librarySubtitle(int count) =>
       count == 0 ? '把想读的故事放在这里' : '$count 本作品 · 阅读进度已同步';
 
   static Future<void> _openBook(BuildContext context, Book book) =>
       Navigator.of(context).push<void>(
-        PageRouteBuilder<void>(
-          pageBuilder: (_, __, ___) => BookDetailPage(bookId: book.id),
+        qjPageRoute<void>(
+          context: context,
+          builder: (_) => BookDetailPage(bookId: book.id),
         ),
       );
 

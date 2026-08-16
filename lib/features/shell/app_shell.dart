@@ -1,25 +1,42 @@
-import 'dart:ui' as ui;
-
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter/services.dart';
 
 import '../../app/app_scope.dart';
 import '../../app/app_state.dart';
-import '../../shared/brand_logo.dart';
+import '../../shared/desktop_title_bar.dart';
 import '../../shared/feedback_widgets.dart';
+import '../../shared/motion.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
 import '../about/about_page.dart';
 import '../library/library_page.dart';
 import '../search/search_page.dart';
 import '../settings/settings_page.dart';
+import '../sources/plugins_page.dart';
 import '../sources/sources_page.dart';
 import '../tasks/tasks_page.dart';
 
 class AppShell extends StatelessWidget {
   const AppShell({super.key});
 
-  static const _primarySections = <AppSection>[
+  static const _mobileSections = <AppSection>[
+    AppSection.library,
+    AppSection.search,
+    AppSection.sources,
+    AppSection.tasks,
+    AppSection.settings,
+  ];
+
+  static const _desktopLocalSections = <AppSection>[
+    AppSection.library,
+    AppSection.search,
+    AppSection.sources,
+    AppSection.plugins,
+    AppSection.tasks,
+    AppSection.settings,
+  ];
+
+  static const _desktopRemoteSections = <AppSection>[
     AppSection.library,
     AppSection.search,
     AppSection.sources,
@@ -31,10 +48,14 @@ class AppShell extends StatelessWidget {
     AppSection.library,
     AppSection.search,
     AppSection.sources,
+    AppSection.plugins,
     AppSection.tasks,
   };
 
   Widget _page(AppState app, AppSection section) {
+    if (section == AppSection.plugins && !app.clientPluginManagementAvailable) {
+      return const SettingsPage();
+    }
     if (!app.hasBackendConnection && _backendSections.contains(section)) {
       return _BackendRequiredPage(
         section: section,
@@ -47,6 +68,9 @@ class AppShell extends StatelessWidget {
       AppSection.library => const LibraryPage(),
       AppSection.search => const SearchPage(),
       AppSection.sources => const SourcesPage(),
+      AppSection.plugins => PluginsPage(
+          onBack: () => _selectSection(app, AppSection.settings),
+        ),
       AppSection.tasks => const TasksPage(),
       AppSection.settings => const SettingsPage(),
       AppSection.about => AboutPage(
@@ -58,7 +82,8 @@ class AppShell extends StatelessWidget {
   String _label(AppSection section) => switch (section) {
         AppSection.library => '书架',
         AppSection.search => '搜索',
-        AppSection.sources => '书源',
+        AppSection.sources => '书源管理',
+        AppSection.plugins => '插件配置',
         AppSection.tasks => '任务',
         AppSection.settings => '设置',
         AppSection.about => '关于',
@@ -68,6 +93,7 @@ class AppShell extends StatelessWidget {
         AppSection.library => FluentIcons.library,
         AppSection.search => FluentIcons.search,
         AppSection.sources => FluentIcons.database,
+        AppSection.plugins => FluentIcons.plug_connected,
         AppSection.tasks => FluentIcons.history,
         AppSection.settings => FluentIcons.settings,
         AppSection.about => FluentIcons.info,
@@ -86,23 +112,33 @@ class AppShell extends StatelessWidget {
       builder: (context, _) {
         final theme = FluentTheme.of(context);
         final dark = theme.brightness == Brightness.dark;
-        final content = windowClassOf(context) == WindowClass.compact
+        final mobile = usesMobileUi(context);
+        final desktopSections = app.clientPluginManagementAvailable
+            ? _desktopLocalSections
+            : _desktopRemoteSections;
+        final content = mobile
             ? _MobileShell(
                 section: app.section,
                 page: _page(app, app.section),
-                primarySections: _primarySections,
+                primarySections: _mobileSections,
                 labelFor: _label,
                 iconFor: _icon,
                 onSelected: (section) => _selectSection(app, section),
               )
-            : _TabletShell(
+            : _DesktopShell(
                 section: app.section,
                 pageFor: (section) => _page(app, section),
-                primarySections: _primarySections,
+                primarySections: desktopSections,
                 labelFor: _label,
                 iconFor: _icon,
                 onSelected: (section) => _selectSection(app, section),
               );
+        if (!mobile) {
+          return ColoredBox(
+            color: theme.scaffoldBackgroundColor,
+            child: content,
+          );
+        }
         return AnnotatedRegion<SystemUiOverlayStyle>(
           value: SystemUiOverlayStyle(
             statusBarColor: const Color(0x00000000),
@@ -176,7 +212,7 @@ class _MobileShell extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
     return PopScope(
-      canPop: section != AppSection.about,
+      canPop: section != AppSection.about && section != AppSection.plugins,
       onPopInvokedWithResult: (didPop, result) {
         if (!didPop) onSelected(AppSection.settings);
       },
@@ -185,27 +221,16 @@ class _MobileShell extends StatelessWidget {
         child: Column(
           children: <Widget>[
             Expanded(
-              child: TweenAnimationBuilder<double>(
-                key: ValueKey<AppSection>(section),
-                tween: Tween<double>(begin: 0, end: 1),
-                duration: MediaQuery.disableAnimationsOf(context)
-                    ? Duration.zero
-                    : theme.fastAnimationDuration,
-                curve: Curves.easeOutCubic,
-                builder: (context, value, child) {
-                  return Opacity(
-                    opacity: value,
-                    child: Transform.translate(
-                      offset: Offset(8 * (1 - value), 0),
-                      child: child,
-                    ),
-                  );
-                },
+              child: QjPageSwitcher(
+                pageKey: section,
                 child: page,
               ),
             ),
             _MobileNavigationBar(
-              section: section,
+              section:
+                  section == AppSection.about || section == AppSection.plugins
+                      ? AppSection.settings
+                      : section,
               sections: primarySections,
               labelFor: labelFor,
               iconFor: iconFor,
@@ -242,114 +267,105 @@ class _MobileNavigationBar extends StatelessWidget {
       height: 78,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(10, 5, 10, 9),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(21),
-          child: BackdropFilter(
-            filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: dark ? const Color(0xE821201D) : const Color(0xEFFFFBF4),
-                borderRadius: BorderRadius.circular(21),
-                border: Border.all(
-                  color:
-                      dark ? const Color(0x2AFFFFFF) : const Color(0xB3FFFFFF),
-                ),
-                boxShadow: <BoxShadow>[
-                  BoxShadow(
-                    color: const Color(0xFF4B3529).withAlpha(dark ? 42 : 18),
-                    blurRadius: 22,
-                    offset: const Offset(0, 7),
-                  ),
-                ],
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: dark ? const Color(0xE821201D) : const Color(0xEFFFFBF4),
+            borderRadius: BorderRadius.circular(21),
+            border: Border.all(
+              color: dark ? const Color(0x2AFFFFFF) : const Color(0xB3FFFFFF),
+            ),
+            boxShadow: <BoxShadow>[
+              BoxShadow(
+                color: const Color(0xFF4B3529).withAlpha(dark ? 42 : 18),
+                blurRadius: 22,
+                offset: const Offset(0, 7),
               ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6),
-                child: Row(
-                  children: <Widget>[
-                    for (final item in sections)
-                      Expanded(
-                        child: Semantics(
-                          selected: item == section,
-                          button: true,
-                          label: labelFor(item),
-                          child: Button(
-                            key: ValueKey<String>(
-                              'mobile-navigation-${item.name}',
-                            ),
-                            style: ButtonStyle(
-                              padding: const WidgetStatePropertyAll(
-                                EdgeInsets.zero,
-                              ),
-                              shape: WidgetStatePropertyAll(
-                                RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(16),
-                                ),
-                              ),
-                              backgroundColor: const WidgetStatePropertyAll(
-                                Color(0x00000000),
-                              ),
-                            ),
-                            onPressed: () => onSelected(item),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: <Widget>[
-                                AnimatedScale(
-                                  duration:
-                                      MediaQuery.disableAnimationsOf(context)
-                                          ? Duration.zero
-                                          : theme.fastAnimationDuration,
-                                  curve: Curves.easeOutBack,
-                                  scale: item == section ? 1.06 : 1,
-                                  child: AnimatedContainer(
-                                    duration:
-                                        MediaQuery.disableAnimationsOf(context)
-                                            ? Duration.zero
-                                            : theme.fastAnimationDuration,
-                                    curve: Curves.easeOutCubic,
-                                    width: 42,
-                                    height: 27,
-                                    alignment: Alignment.center,
-                                    decoration: BoxDecoration(
-                                      color: item == section
-                                          ? theme.accentColor.withAlpha(
-                                              dark ? 52 : 26,
-                                            )
-                                          : const Color(0x00000000),
-                                      borderRadius: BorderRadius.circular(99),
-                                    ),
-                                    child: Icon(
-                                      iconFor(item),
-                                      size: 20,
-                                      color: item == section
-                                          ? theme.accentColor
-                                          : theme
-                                              .resources.textFillColorSecondary,
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  labelFor(item),
-                                  maxLines: 1,
-                                  style: theme.typography.caption?.copyWith(
-                                    fontSize: 11,
-                                    fontWeight: item == section
-                                        ? FontWeight.w700
-                                        : FontWeight.w400,
-                                    color: item == section
-                                        ? theme.accentColor
-                                        : theme
-                                            .resources.textFillColorSecondary,
-                                  ),
-                                ),
-                              ],
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Row(
+              children: <Widget>[
+                for (final item in sections)
+                  Expanded(
+                    child: Semantics(
+                      selected: item == section,
+                      button: true,
+                      label: labelFor(item),
+                      child: Button(
+                        key: ValueKey<String>(
+                          'mobile-navigation-${item.name}',
+                        ),
+                        style: ButtonStyle(
+                          padding: const WidgetStatePropertyAll(
+                            EdgeInsets.zero,
+                          ),
+                          shape: WidgetStatePropertyAll(
+                            RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
                             ),
                           ),
+                          backgroundColor: const WidgetStatePropertyAll(
+                            Color(0x00000000),
+                          ),
+                        ),
+                        onPressed: () => onSelected(item),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: <Widget>[
+                            AnimatedScale(
+                              duration: QjMotion.duration(
+                                context,
+                                QjMotionSpeed.fast,
+                              ),
+                              curve: QjMotion.enterCurve,
+                              scale: item == section ? 1.06 : 1,
+                              child: AnimatedContainer(
+                                duration: QjMotion.duration(
+                                  context,
+                                  QjMotionSpeed.fast,
+                                ),
+                                curve: QjMotion.enterCurve,
+                                width: 42,
+                                height: 27,
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  color: item == section
+                                      ? theme.accentColor.withAlpha(
+                                          dark ? 52 : 26,
+                                        )
+                                      : const Color(0x00000000),
+                                  borderRadius: BorderRadius.circular(99),
+                                ),
+                                child: Icon(
+                                  iconFor(item),
+                                  size: 20,
+                                  color: item == section
+                                      ? theme.accentColor
+                                      : theme.resources.textFillColorSecondary,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              labelFor(item),
+                              maxLines: 1,
+                              style: theme.typography.caption?.copyWith(
+                                fontSize: 11,
+                                fontWeight: item == section
+                                    ? FontWeight.w700
+                                    : FontWeight.w400,
+                                color: item == section
+                                    ? theme.accentColor
+                                    : theme.resources.textFillColorSecondary,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                  ],
-                ),
-              ),
+                    ),
+                  ),
+              ],
             ),
           ),
         ),
@@ -358,8 +374,8 @@ class _MobileNavigationBar extends StatelessWidget {
   }
 }
 
-class _TabletShell extends StatelessWidget {
-  const _TabletShell({
+class _DesktopShell extends StatefulWidget {
+  const _DesktopShell({
     required this.section,
     required this.pageFor,
     required this.primarySections,
@@ -376,55 +392,212 @@ class _TabletShell extends StatelessWidget {
   final ValueChanged<AppSection> onSelected;
 
   @override
-  Widget build(BuildContext context) {
-    final selectedIndex = section == AppSection.about
-        ? primarySections.length
-        : primarySections.indexOf(section);
-    return NavigationView(
-      key: const ValueKey('tablet-navigation'),
-      transitionBuilder: (child, animation) =>
-          SuppressPageTransition(child: child),
-      appBar: const NavigationAppBar(
-        automaticallyImplyLeading: false,
-        title: Padding(
-          padding: EdgeInsetsDirectional.only(start: 12),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              QingJuanLogo(size: 24),
-              SizedBox(width: 8),
-              Text('青卷'),
-            ],
-          ),
+  State<_DesktopShell> createState() => _DesktopShellState();
+}
+
+class _DesktopShellState extends State<_DesktopShell> {
+  static const _defaultPaneWidth = 256.0;
+  static const _minimumPaneWidth = 220.0;
+  static const _maximumPaneWidth = 420.0;
+
+  double _paneWidth = _defaultPaneWidth;
+  bool _paneCollapsed = false;
+  bool _resizeHandleHovered = false;
+
+  @override
+  void initState() {
+    super.initState();
+    HardwareKeyboard.instance.addHandler(_handleKeyEvent);
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
+    super.dispose();
+  }
+
+  bool _handleKeyEvent(KeyEvent event) {
+    if (event is! KeyDownEvent || !HardwareKeyboard.instance.isControlPressed) {
+      return false;
+    }
+    final sections = <AppSection>[
+      ...widget.primarySections,
+      AppSection.about,
+    ];
+    for (var index = 0; index < sections.length; index++) {
+      if (event.logicalKey == _shortcutKey(index) ||
+          event.physicalKey == _shortcutPhysicalKey(index)) {
+        widget.onSelected(sections[index]);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void _togglePane() {
+    setState(() => _paneCollapsed = !_paneCollapsed);
+  }
+
+  void _resizePane(DragUpdateDetails details, double maximumWidth) {
+    setState(() {
+      _paneWidth = (_paneWidth + details.delta.dx)
+          .clamp(_minimumPaneWidth, maximumWidth)
+          .toDouble();
+    });
+  }
+
+  Widget _paneToggleButton() {
+    return SizedBox(
+      width: 48,
+      height: 40,
+      child: Tooltip(
+        message: _paneCollapsed ? '展开导航栏' : '收起导航栏',
+        child: IconButton(
+          key: const ValueKey('navigation-pane-toggle'),
+          icon: const Icon(FluentIcons.global_nav_button, size: 16),
+          onPressed: _togglePane,
         ),
-      ),
-      pane: NavigationPane(
-        selected: selectedIndex,
-        displayMode: PaneDisplayMode.open,
-        onChanged: (index) {
-          final next = index == primarySections.length
-              ? AppSection.about
-              : primarySections[index];
-          onSelected(next);
-        },
-        header: const Text('工作区'),
-        items: <NavigationPaneItem>[
-          for (final item in primarySections)
-            PaneItem(
-              icon: Icon(iconFor(item)),
-              title: Text(labelFor(item)),
-              body: pageFor(item),
-            ),
-        ],
-        footerItems: <NavigationPaneItem>[
-          PaneItem(
-            key: const ValueKey('about-navigation-item'),
-            icon: Icon(iconFor(AppSection.about)),
-            title: Text(labelFor(AppSection.about)),
-            body: pageFor(AppSection.about),
-          ),
-        ],
       ),
     );
   }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = FluentTheme.of(context);
+    final windowClass = windowClassOf(context);
+    final isExpanded = windowClass == WindowClass.expanded;
+    final maximumPaneWidth = (MediaQuery.sizeOf(context).width * 0.36)
+        .clamp(_minimumPaneWidth, _maximumPaneWidth)
+        .toDouble();
+    final paneWidth =
+        _paneWidth.clamp(_minimumPaneWidth, maximumPaneWidth).toDouble();
+    final selectedIndex = widget.section == AppSection.about
+        ? widget.primarySections.length
+        : widget.primarySections.indexOf(widget.section);
+    final displayMode = isExpanded && !_paneCollapsed
+        ? PaneDisplayMode.open
+        : PaneDisplayMode.compact;
+
+    return Stack(
+      key: const ValueKey('desktop-shell'),
+      children: <Widget>[
+        NavigationPaneTheme.merge(
+          data: NavigationPaneThemeData(
+            animationDuration: QjMotion.duration(
+              context,
+              QjMotionSpeed.fast,
+            ),
+            animationCurve: QjMotion.enterCurve,
+          ),
+          child: NavigationView(
+            key: const ValueKey('tablet-navigation'),
+            transitionBuilder: (child, _) => QjPageSwitcher(
+              pageKey: child.key ?? widget.section,
+              beginOffset: const Offset(0.018, 0),
+              child: child,
+            ),
+            appBar: NavigationAppBar(
+              automaticallyImplyLeading: false,
+              height: desktopTitleBarHeight,
+              backgroundColor: theme.micaBackgroundColor,
+              title: const DesktopTitleBar(),
+            ),
+            pane: NavigationPane(
+              selected: selectedIndex,
+              displayMode: displayMode,
+              onChanged: (index) {
+                final next = index == widget.primarySections.length
+                    ? AppSection.about
+                    : widget.primarySections[index];
+                widget.onSelected(next);
+              },
+              size: NavigationPaneSize(
+                openWidth: paneWidth,
+                openMinWidth: _minimumPaneWidth,
+                openMaxWidth: maximumPaneWidth,
+              ),
+              menuButton: isExpanded ? _paneToggleButton() : null,
+              header: Text(
+                '工作区',
+                style: theme.typography.caption?.copyWith(
+                  color: theme.resources.textFillColorSecondary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              items: <NavigationPaneItem>[
+                for (final item in widget.primarySections)
+                  PaneItem(
+                    icon: Icon(widget.iconFor(item)),
+                    title: Text(widget.labelFor(item)),
+                    body: widget.pageFor(item),
+                  ),
+              ],
+              footerItems: <NavigationPaneItem>[
+                PaneItem(
+                  key: const ValueKey('about-navigation-item'),
+                  icon: Icon(widget.iconFor(AppSection.about)),
+                  title: Text(widget.labelFor(AppSection.about)),
+                  body: widget.pageFor(AppSection.about),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (isExpanded && !_paneCollapsed)
+          PositionedDirectional(
+            start: paneWidth - 4,
+            top: desktopTitleBarHeight,
+            bottom: 0,
+            width: 8,
+            child: Semantics(
+              label: '调整导航栏宽度',
+              child: MouseRegion(
+                key: const ValueKey('navigation-pane-resizer'),
+                cursor: SystemMouseCursors.resizeColumn,
+                onEnter: (_) => setState(() => _resizeHandleHovered = true),
+                onExit: (_) => setState(() => _resizeHandleHovered = false),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onHorizontalDragUpdate: (details) =>
+                      _resizePane(details, maximumPaneWidth),
+                  child: Center(
+                    child: AnimatedContainer(
+                      duration: QjMotion.duration(
+                        context,
+                        QjMotionSpeed.faster,
+                      ),
+                      curve: QjMotion.enterCurve,
+                      width: _resizeHandleHovered ? 2 : 1,
+                      color: _resizeHandleHovered
+                          ? theme.accentColor
+                          : theme.resources.cardStrokeColorDefault,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  LogicalKeyboardKey _shortcutKey(int index) => switch (index) {
+        0 => LogicalKeyboardKey.digit1,
+        1 => LogicalKeyboardKey.digit2,
+        2 => LogicalKeyboardKey.digit3,
+        3 => LogicalKeyboardKey.digit4,
+        4 => LogicalKeyboardKey.digit5,
+        5 => LogicalKeyboardKey.digit6,
+        _ => LogicalKeyboardKey.digit7,
+      };
+
+  PhysicalKeyboardKey _shortcutPhysicalKey(int index) => switch (index) {
+        0 => PhysicalKeyboardKey.digit1,
+        1 => PhysicalKeyboardKey.digit2,
+        2 => PhysicalKeyboardKey.digit3,
+        3 => PhysicalKeyboardKey.digit4,
+        4 => PhysicalKeyboardKey.digit5,
+        5 => PhysicalKeyboardKey.digit6,
+        _ => PhysicalKeyboardKey.digit7,
+      };
 }

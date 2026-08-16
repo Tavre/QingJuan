@@ -8,7 +8,7 @@ import '../core/backend/connection_secret_store.dart';
 import '../core/models/tts_speech_style.dart';
 import '../core/models/tts_voice.dart';
 
-enum AppSection { library, search, sources, tasks, settings, about }
+enum AppSection { library, search, sources, plugins, tasks, settings, about }
 
 enum AppThemeMode { system, light, dark }
 
@@ -121,6 +121,8 @@ class AppState extends ChangeNotifier {
   AppThemeMode get themeMode => _themeMode;
   bool get localBackendSupported => _localBackendSupported;
   BackendConnectionMode get connectionMode => _connectionMode;
+  bool get clientPluginManagementAvailable =>
+      _localBackendSupported && _connectionMode == BackendConnectionMode.local;
   BackendConnectionProfile get activeBackendConnection =>
       _connectionMode == BackendConnectionMode.local
           ? localBackendConnection
@@ -154,9 +156,12 @@ class AppState extends ChangeNotifier {
       };
 
   void selectSection(AppSection value) {
-    if (_section == value) return;
-    _section = value;
-    _sectionListenable.value = value;
+    final next = value == AppSection.plugins && !clientPluginManagementAvailable
+        ? AppSection.settings
+        : value;
+    if (_section == next) return;
+    _section = next;
+    _sectionListenable.value = next;
     notifyListeners();
   }
 
@@ -205,6 +210,10 @@ class AppState extends ChangeNotifier {
     }
     if (_connectionMode == mode) return;
     _connectionMode = mode;
+    if (!clientPluginManagementAvailable && _section == AppSection.plugins) {
+      _section = AppSection.settings;
+      _sectionListenable.value = _section;
+    }
     await _preferences.setString(_backendModeKey, mode.name);
     notifyListeners();
   }

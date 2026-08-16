@@ -15,6 +15,7 @@ import 'package:qingjuan/features/reader/reader_page.dart';
 import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/sources/sources_controller.dart';
 import 'package:qingjuan/features/tasks/tasks_controller.dart';
+import 'package:qingjuan/shared/responsive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -40,6 +41,34 @@ void main() {
     await tester.pump();
     expect(find.text('这是章节正文。'), findsOneWidget);
     expect(find.text('暂时无法加载'), findsNothing);
+  });
+
+  testWidgets('Windows renders the v1.3.4 desktop reader chrome',
+      (tester) async {
+    final harness = await _Harness.create(
+      MockClient((_) async => http.Response(
+            jsonEncode(_chapterPayload),
+            200,
+            headers: const <String, String>{
+              'content-type': 'application/json; charset=utf-8',
+            },
+          )),
+      targetPlatform: TargetPlatform.windows,
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('desktop-reader-page')), findsOneWidget);
+    expect(find.text('上一章'), findsOneWidget);
+    expect(find.text('下一章'), findsOneWidget);
+    expect(find.text('这是章节正文。'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('reader-bottom-controls')),
+      findsNothing,
+    );
   });
 
   testWidgets('builds only visible paragraphs for a long chapter',
@@ -411,6 +440,7 @@ class _Harness {
   static Future<_Harness> create(
     http.Client client, {
     BookDetail detail = _detail,
+    TargetPlatform targetPlatform = TargetPlatform.android,
   }) async {
     final appState = AppState(await SharedPreferences.getInstance());
     final api = ApiClient(() => appState.backendUrl, client: client);
@@ -420,18 +450,24 @@ class _Harness {
     final tasks = TasksController(api);
     final settings = SettingsController(api);
     final widget = FluentApp(
-      theme: buildQingJuanTheme(Brightness.light),
-      home: AppScope(
-        appState: appState,
-        api: api,
-        backend: backend,
-        library: library,
-        sources: sources,
-        tasks: tasks,
-        settings: settings,
-        child: ReaderPage(
-          detail: detail,
-          initialChapterIndex: 1,
+      theme: buildQingJuanTheme(
+        Brightness.light,
+        platform: targetPlatform,
+      ),
+      home: UiPlatformScope(
+        platform: targetPlatform,
+        child: AppScope(
+          appState: appState,
+          api: api,
+          backend: backend,
+          library: library,
+          sources: sources,
+          tasks: tasks,
+          settings: settings,
+          child: ReaderPage(
+            detail: detail,
+            initialChapterIndex: 1,
+          ),
         ),
       ),
     );

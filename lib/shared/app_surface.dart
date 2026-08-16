@@ -1,5 +1,6 @@
 import 'package:fluent_ui/fluent_ui.dart';
 
+import 'motion.dart';
 import 'responsive.dart';
 
 enum AppSurfaceTone { standard, muted, accent, elevated, danger }
@@ -29,6 +30,7 @@ class AppSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final mobile = usesMobileUi(context);
     if (onPressed == null) {
       return _SurfaceBody(
         padding: padding,
@@ -44,13 +46,8 @@ class AppSurface extends StatelessWidget {
 
     return HoverButton(
       onPressed: onPressed,
-      builder: (context, states) => AnimatedScale(
-        duration: MediaQuery.disableAnimationsOf(context)
-            ? Duration.zero
-            : FluentTheme.of(context).fasterAnimationDuration,
-        curve: Curves.easeOutCubic,
-        scale: states.isPressed ? 0.985 : 1,
-        child: _SurfaceBody(
+      builder: (context, states) {
+        final body = _SurfaceBody(
           padding: padding,
           margin: margin,
           selected: selected,
@@ -59,8 +56,15 @@ class AppSurface extends StatelessWidget {
           hovered: states.isHovered,
           pressed: states.isPressed,
           child: child,
-        ),
-      ),
+        );
+        if (!mobile) return body;
+        return AnimatedScale(
+          duration: QjMotion.duration(context, QjMotionSpeed.faster),
+          curve: QjMotion.enterCurve,
+          scale: states.isPressed ? 0.985 : 1,
+          child: body,
+        );
+      },
     );
   }
 }
@@ -89,8 +93,30 @@ class _SurfaceBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
-    final compact = windowClassOf(context) == WindowClass.compact;
+    final compact = usesMobileUi(context);
     final dark = theme.brightness == Brightness.dark;
+    if (!compact) {
+      final borderColor = selected
+          ? theme.accentColor
+          : hovered
+              ? theme.resources.controlStrokeColorSecondary
+              : theme.resources.cardStrokeColorDefault;
+      return AnimatedContainer(
+        duration: QjMotion.duration(context, QjMotionSpeed.faster),
+        curve: QjMotion.enterCurve,
+        width: double.infinity,
+        margin: margin,
+        padding: padding,
+        decoration: BoxDecoration(
+          color: hovered
+              ? theme.resources.subtleFillColorSecondary
+              : theme.cardColor,
+          border: Border.all(color: borderColor),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: child,
+      );
+    }
     final fill = switch (tone) {
       AppSurfaceTone.standard => theme.cardColor,
       AppSurfaceTone.muted =>
@@ -113,10 +139,8 @@ class _SurfaceBody extends StatelessWidget {
                     compact ? 92 : 120,
                   );
     return AnimatedContainer(
-      duration: MediaQuery.maybeOf(context)?.disableAnimations ?? false
-          ? Duration.zero
-          : theme.fasterAnimationDuration,
-      curve: Curves.easeOutCubic,
+      duration: QjMotion.duration(context, QjMotionSpeed.faster),
+      curve: QjMotion.enterCurve,
       width: double.infinity,
       margin: margin,
       padding: padding,
@@ -165,13 +189,14 @@ class AccentIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
-    final compact = windowClassOf(context) == WindowClass.compact;
+    final compact = usesMobileUi(context);
     final foreground = enabled
         ? color ?? theme.accentColor.defaultBrushFor(theme.brightness)
         : theme.resources.textFillColorSecondary;
+    final extent = size ?? (compact ? 44 : 40);
     return Container(
-      width: size ?? (compact ? 44 : 40),
-      height: size ?? (compact ? 44 : 40),
+      width: extent,
+      height: extent,
       alignment: Alignment.center,
       decoration: BoxDecoration(
         color: enabled
@@ -181,7 +206,11 @@ class AccentIcon extends StatelessWidget {
             : theme.resources.subtleFillColorSecondary,
         borderRadius: BorderRadius.circular(compact ? 13 : 8),
       ),
-      child: Icon(icon, size: compact ? 20 : 18, color: foreground),
+      child: Icon(
+        icon,
+        size: compact ? 20 : (size == null ? 18 : size! * 0.42),
+        color: foreground,
+      ),
     );
   }
 }
@@ -203,7 +232,7 @@ class StatusPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
-    final compact = windowClassOf(context) == WindowClass.compact;
+    final compact = usesMobileUi(context);
     final foreground = color ??
         (accented
             ? theme.accentColor.defaultBrushFor(theme.brightness)
@@ -263,6 +292,46 @@ class FeatureHero extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
+    if (!usesMobileUi(context)) {
+      return AppSurface(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                AccentIcon(icon),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(title, style: theme.typography.subtitle),
+                      const SizedBox(height: 4),
+                      Text(
+                        message,
+                        style: theme.typography.caption?.copyWith(
+                          color: theme.resources.textFillColorSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (trailing != null) ...<Widget>[
+                  const SizedBox(width: 12),
+                  trailing!,
+                ],
+              ],
+            ),
+            if (child != null) ...<Widget>[
+              const SizedBox(height: 16),
+              child!,
+            ],
+          ],
+        ),
+      );
+    }
     final dark = theme.brightness == Brightness.dark;
     final accent = warm
         ? (dark ? const Color(0xFFE7A274) : const Color(0xFFBE6947))

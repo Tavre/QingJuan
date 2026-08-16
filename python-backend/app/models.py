@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr
 
 BookKind = Literal["长小说", "轻小说", "漫画"]
 Language = Literal["中文", "英文", "日文"]
@@ -14,6 +14,7 @@ LinkJobMode = Literal["preview", "import"]
 DownloadMode = Literal["all", "on_demand"]
 SourceOrigin = Literal["builtin", "manual", "file", "remote"]
 SourceStatus = Literal["unknown", "online", "slow", "offline", "unsupported"]
+SitePluginCategory = Literal["novel", "manga", "general"]
 DevicePlatform = Literal["android", "windows", "linux", "macos", "ios", "other"]
 MangaTextDirection = Literal["vertical", "horizontal"]
 MangaRegionShape = Literal["ellipse", "roundrect", "rect"]
@@ -123,9 +124,7 @@ class BookRecord(BaseModel):
     chapterCount: int
     translated: bool
     localPath: str
-    updatedAt: str = Field(
-        default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    )
+    updatedAt: str = Field(default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"))
     synopsis: str = ""
     cover: str | None = None
     lastReadChapterIndex: int = 0
@@ -419,12 +418,8 @@ class BookSourceRecord(BaseModel):
     statusMessage: str = ""
     lastCheckedAt: str | None = None
     rulePayload: dict[str, Any] | None = None
-    createdAt: str = Field(
-        default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    )
-    updatedAt: str = Field(
-        default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    )
+    createdAt: str = Field(default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"))
+    updatedAt: str = Field(default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"))
 
 
 class PublicBookSourceRecord(BaseModel):
@@ -445,6 +440,76 @@ class PublicBookSourceRecord(BaseModel):
     statusMessage: str = ""
     lastCheckedAt: str | None = None
     createdAt: str
+
+
+class BookSourceEnabledPayload(BaseModel):
+    enabled: bool
+
+
+class SitePluginView(BaseModel):
+    id: str
+    name: str
+    description: str
+    category: SitePluginCategory
+    domains: list[str] = Field(default_factory=list)
+    bookKinds: list[BookKind] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    version: str
+    enabled: bool
+    defaultEnabled: bool
+    accountLoggedIn: bool = False
+
+
+class SitePluginUpdatePayload(BaseModel):
+    enabled: bool
+
+
+class SitePluginAccountView(BaseModel):
+    loggedIn: bool
+    expiresAt: str | None = None
+
+
+class SitePluginCookieLoginPayload(BaseModel):
+    cookies: SecretStr
+
+
+class SitePluginLoginQrCode(BaseModel):
+    flowId: str
+    qrImageBase64: str
+    expiresAt: str
+
+
+class SitePluginLoginPoll(BaseModel):
+    status: Literal["waiting", "scanned", "success", "cancelled", "expired", "error"]
+    message: str
+    loggedIn: bool = False
+
+
+class SitePluginBookshelfImportItem(BaseModel):
+    sourceId: str
+    title: str
+    status: Literal["imported", "skipped", "unsupported", "failed"]
+    message: str = ""
+    bookId: str | None = None
+
+
+class SitePluginBookshelfImportJob(BaseModel):
+    id: str
+    pluginId: str
+    status: Literal["queued", "running", "completed", "failed"]
+    progress: float = 0
+    message: str = ""
+    discoveredCount: int = 0
+    processedCount: int = 0
+    importedCount: int = 0
+    skippedCount: int = 0
+    unsupportedCount: int = 0
+    failedCount: int = 0
+    items: list[SitePluginBookshelfImportItem] = Field(default_factory=list)
+    error: str | None = None
+    createdAt: str = Field(default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"))
+    updatedAt: str = Field(default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"))
 
 
 class TaskPageTextRecord(BaseModel):

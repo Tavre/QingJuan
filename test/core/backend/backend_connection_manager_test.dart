@@ -231,6 +231,7 @@ class _FakeLocalBackendLifecycle implements LocalBackendLifecycle {
   final Map<String, dynamic>? meta;
   final Object? error;
   int ensureCalls = 0;
+  int openAdminCalls = 0;
   int stopCalls = 0;
 
   @override
@@ -243,6 +244,11 @@ class _FakeLocalBackendLifecycle implements LocalBackendLifecycle {
           'apiVersion': '1',
           'capabilities': <String, dynamic>{},
         };
+  }
+
+  @override
+  Future<void> openAdmin(Uri uri) async {
+    openAdminCalls += 1;
   }
 
   @override

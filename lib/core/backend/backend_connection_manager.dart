@@ -76,7 +76,7 @@ class BackendConnectionManager {
     } catch (error) {
       await localBackend.stop();
       status = BackendStatus.failed;
-      message = '本机后端启动失败：$error';
+      message = '本机后端不可用：$error';
     }
   }
 
@@ -118,6 +118,20 @@ class BackendConnectionManager {
       translationModelCheckInProgress = false;
     }
     return translationModelCheck!;
+  }
+
+  Future<void> openLocalAdmin(Uri uri) async {
+    if (!_isLocal()) {
+      throw const LocalBackendException('请先切换并保存为本机后端模式');
+    }
+    if (status != BackendStatus.ready) {
+      throw const LocalBackendException('请等待本机后端连接成功后再打开模型设置');
+    }
+    final localBackend = _localBackend;
+    if (localBackend == null) {
+      throw const LocalBackendException('当前平台不支持 Windows 本机管理界面');
+    }
+    await localBackend.openAdmin(uri);
   }
 
   Future<void> dispose() async {

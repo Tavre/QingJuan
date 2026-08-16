@@ -2,11 +2,17 @@ import {
   clearSessionSecurity,
   checkTranslationModel,
   deleteBook,
+  getSitePluginBookshelfImport,
   getRuntimeLogs,
   getServiceDiagnostics,
   login,
+  loginSitePluginWithCookies,
+  pollSitePluginLogin,
   revealConnectionToken,
   setDeviceBanned,
+  setSitePluginEnabled,
+  startSitePluginBookshelfImport,
+  startSitePluginLogin,
 } from "./api";
 
 function jsonResponse(payload: unknown, status = 200): Response {
@@ -78,6 +84,125 @@ describe("admin API client", () => {
     expect(options.method).toBe("PUT");
     expect(options.body).toBe(JSON.stringify({ banned: true }));
     expect((options.headers as Headers).get("X-QingJuan-CSRF")).toBe("device-csrf");
+    clearSessionSecurity();
+  });
+
+  it("updates Linux site plugins through the protected business API", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        authenticated: true,
+        expiresAt: "2030-01-01T00:00:00Z",
+        csrfToken: "plugin-csrf",
+        csrfHeader: "X-QingJuan-CSRF",
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        id: "fanqie",
+        name: "番茄小说",
+        enabled: false,
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await login("admin-password");
+    await setSitePluginEnabled("fanqie", false);
+
+    const request = fetchMock.mock.calls[1];
+    const options = request[1] as RequestInit;
+    expect(request[0]).toBe("/api/v1/plugins/fanqie");
+    expect(options.method).toBe("PUT");
+    expect(options.body).toBe(JSON.stringify({ enabled: false }));
+    expect((options.headers as Headers).get("X-QingJuan-CSRF")).toBe("plugin-csrf");
+    clearSessionSecurity();
+  });
+
+  it("submits site credentials only in a protected Cookie-login request", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        authenticated: true,
+        expiresAt: "2030-01-01T00:00:00Z",
+        csrfToken: "plugin-login-csrf",
+        csrfHeader: "X-QingJuan-CSRF",
+      }))
+      .mockResolvedValueOnce(jsonResponse({ loggedIn: true, expiresAt: null }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await login("admin-password");
+    await loginSitePluginWithCookies("fanqie", "sessionid=private-value");
+
+    const request = fetchMock.mock.calls[1];
+    const options = request[1] as RequestInit;
+    expect(request[0]).toBe("/api/v1/plugins/fanqie/account/login-cookies");
+    expect(options.method).toBe("POST");
+    expect(options.body).toBe(JSON.stringify({ cookies: "sessionid=private-value" }));
+    expect((options.headers as Headers).get("X-QingJuan-CSRF")).toBe("plugin-login-csrf");
+    expect(String(request[0])).not.toContain("private-value");
+    clearSessionSecurity();
+  });
+
+  it("uses opaque Qidian login and bookshelf job identifiers", async () => {
+    const queuedJob = {
+      id: "job-1",
+      pluginId: "qidian",
+      status: "queued",
+      progress: 0,
+      message: "等待导入",
+      discoveredCount: 0,
+      processedCount: 0,
+      importedCount: 0,
+      skippedCount: 0,
+      unsupportedCount: 0,
+      failedCount: 0,
+      items: [],
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        authenticated: true,
+        expiresAt: "2030-01-01T00:00:00Z",
+        csrfToken: "qidian-csrf",
+        csrfHeader: "X-QingJuan-CSRF",
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        flowId: "opaque-flow",
+        qrImageBase64: "aW1hZ2U=",
+        expiresAt: "2030-01-01T00:03:00Z",
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        status: "success",
+        message: "登录成功",
+        loggedIn: true,
+      }))
+      .mockResolvedValueOnce(jsonResponse(queuedJob))
+      .mockResolvedValueOnce(jsonResponse({
+        ...queuedJob,
+        status: "completed",
+        progress: 100,
+        message: "导入完成",
+        discoveredCount: 2,
+        processedCount: 2,
+        importedCount: 1,
+        skippedCount: 1,
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await login("admin-password");
+    const qr = await startSitePluginLogin("qidian");
+    const loginStatus = await pollSitePluginLogin("qidian", qr.flowId);
+    const queued = await startSitePluginBookshelfImport("qidian");
+    const completed = await getSitePluginBookshelfImport("qidian", queued.id);
+
+    expect(loginStatus.loggedIn).toBe(true);
+    expect(completed.importedCount).toBe(1);
+    expect(fetchMock.mock.calls.slice(1).map((call) => call[0])).toEqual([
+      "/api/v1/plugins/qidian/account/login-qrcode",
+      "/api/v1/plugins/qidian/account/login-qrcode/opaque-flow",
+      "/api/v1/plugins/qidian/bookshelf/import-jobs",
+      "/api/v1/plugins/qidian/bookshelf/import-jobs/job-1",
+    ]);
+    expect((fetchMock.mock.calls[1][1] as RequestInit).method).toBe("POST");
+    expect((fetchMock.mock.calls[2][1] as RequestInit).method).toBe("GET");
+    expect((fetchMock.mock.calls[3][1] as RequestInit).method).toBe("POST");
+    expect(((fetchMock.mock.calls[1][1] as RequestInit).headers as Headers)
+      .get("X-QingJuan-CSRF")).toBe("qidian-csrf");
+    expect(JSON.stringify([qr, loginStatus, queued, completed])).not.toContain("cookie");
     clearSessionSecurity();
   });
 

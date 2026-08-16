@@ -171,4 +171,172 @@ void main() {
     expect(results.single.displayText, 'こんにちは → 你好');
     api.close();
   });
+
+  test('site plugin and source switches use dedicated state endpoints',
+      () async {
+    final requests = <http.Request>[];
+    final api = ApiClient(
+      () => 'https://qingjuan.example.test',
+      client: MockClient((request) async {
+        requests.add(request);
+        if (request.method == 'GET' && request.url.path.endsWith('/plugins')) {
+          return http.Response.bytes(
+            utf8.encode(jsonEncode(<Map<String, Object?>>[
+              <String, Object?>{
+                'id': 'fanqie',
+                'name': '番茄小说',
+                'description': '站点解析器',
+                'category': 'novel',
+                'domains': <String>['fanqienovel.com'],
+                'bookKinds': <String>['长小说'],
+                'tags': <String>['中文'],
+                'capabilities': <String>['preview', 'chapter'],
+                'version': '1.0.0',
+                'enabled': true,
+                'defaultEnabled': true,
+              },
+            ])),
+            200,
+            headers: <String, String>{'content-type': 'application/json'},
+          );
+        }
+        final decoded = jsonDecode(request.body) as Map<String, dynamic>;
+        if (request.url.path.endsWith('/plugins/fanqie')) {
+          return http.Response.bytes(
+            utf8.encode(jsonEncode(<String, Object?>{
+              'id': 'fanqie',
+              'name': '番茄小说',
+              'description': '站点解析器',
+              'category': 'novel',
+              'domains': <String>['fanqienovel.com'],
+              'bookKinds': <String>['长小说'],
+              'tags': <String>['中文'],
+              'capabilities': <String>['preview', 'chapter'],
+              'version': '1.0.0',
+              'enabled': decoded['enabled'],
+              'defaultEnabled': true,
+            })),
+            200,
+            headers: <String, String>{'content-type': 'application/json'},
+          );
+        }
+        return http.Response.bytes(
+          utf8.encode(jsonEncode(<String, Object?>{
+            'id': 'source-1',
+            'name': '测试书源',
+            'baseUrl': 'https://source.example.test',
+            'enabled': decoded['enabled'],
+            'supported': true,
+            'status': 'online',
+          })),
+          200,
+          headers: <String, String>{'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    final plugins = await api.fetchSitePlugins();
+    final plugin = await api.saveSitePluginEnabled('fanqie', false);
+    final source = await api.saveSourceEnabled('source-1', false);
+
+    expect(plugins.single.name, '番茄小说');
+    expect(plugin.enabled, isFalse);
+    expect(source.enabled, isFalse);
+    expect(requests[1].url.path, '/api/v1/plugins/fanqie');
+    expect(requests[2].url.path, '/api/v1/sources/source-1/enabled');
+    api.close();
+  });
+
+  test('qidian account login and bookshelf import use opaque job endpoints',
+      () async {
+    final requests = <http.Request>[];
+    final api = ApiClient(
+      () => 'https://qingjuan.example.test',
+      client: MockClient((request) async {
+        requests.add(request);
+        final payload = switch (request.url.path) {
+          '/api/v1/plugins/qidian/account/login-qrcode' => <String, Object?>{
+              'flowId': 'opaque-flow',
+              'qrImageBase64': 'aW1hZ2U=',
+              'expiresAt': '2030-01-01T00:03:00Z',
+            },
+          '/api/v1/plugins/qidian/account/login-qrcode/opaque-flow' =>
+            <String, Object?>{
+              'status': 'success',
+              'message': '登录成功',
+              'loggedIn': true,
+            },
+          '/api/v1/plugins/qidian/bookshelf/import-jobs' => <String, Object?>{
+              'id': 'job-1',
+              'pluginId': 'qidian',
+              'status': 'queued',
+              'progress': 0,
+              'message': '等待导入',
+              'discoveredCount': 0,
+              'processedCount': 0,
+              'importedCount': 0,
+              'skippedCount': 0,
+              'unsupportedCount': 0,
+              'failedCount': 0,
+              'items': <Object?>[],
+            },
+          '/api/v1/plugins/qidian/bookshelf/import-jobs/job-1' =>
+            <String, Object?>{
+              'id': 'job-1',
+              'pluginId': 'qidian',
+              'status': 'completed',
+              'progress': 100,
+              'message': '导入完成',
+              'discoveredCount': 2,
+              'processedCount': 2,
+              'importedCount': 1,
+              'skippedCount': 1,
+              'unsupportedCount': 0,
+              'failedCount': 0,
+              'items': <Map<String, Object?>>[
+                <String, Object?>{
+                  'sourceId': '1001',
+                  'title': '测试作品',
+                  'status': 'imported',
+                  'message': '已添加',
+                  'bookId': 'book-1',
+                },
+              ],
+            },
+          _ => throw StateError('Unexpected path: ${request.url.path}'),
+        };
+        return http.Response.bytes(
+          utf8.encode(jsonEncode(payload)),
+          200,
+          headers: <String, String>{'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    final qr = await api.startSitePluginLogin('qidian');
+    final login = await api.pollSitePluginLogin('qidian', qr.flowId);
+    final queued = await api.startSitePluginBookshelfImport('qidian');
+    final completed =
+        await api.fetchSitePluginBookshelfImport('qidian', queued.id);
+
+    expect(qr.flowId, 'opaque-flow');
+    expect(login.loggedIn, isTrue);
+    expect(completed.importedCount, 1);
+    expect(completed.skippedCount, 1);
+    expect(completed.items.single.bookId, 'book-1');
+    expect(requests.map((request) => request.method),
+        <String>['POST', 'GET', 'POST', 'GET']);
+    expect(
+      requests.map((request) => request.url.path),
+      <String>[
+        '/api/v1/plugins/qidian/account/login-qrcode',
+        '/api/v1/plugins/qidian/account/login-qrcode/opaque-flow',
+        '/api/v1/plugins/qidian/bookshelf/import-jobs',
+        '/api/v1/plugins/qidian/bookshelf/import-jobs/job-1',
+      ],
+    );
+    expect(requests.map((request) => request.url.toString()).join(),
+        isNot(contains('cookie')));
+    api.close();
+  });
 }

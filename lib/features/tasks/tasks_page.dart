@@ -6,6 +6,7 @@ import '../../core/state/load_state.dart';
 import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/page_frame.dart';
+import '../../shared/responsive.dart';
 
 enum _TaskFilter { all, active, failed, completed }
 
@@ -25,7 +26,7 @@ class _TasksPageState extends State<TasksPage> {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) => PageFrame(
-        title: '任务中心',
+        title: usesMobileUi(context) ? '任务中心' : '任务',
         subtitle: '查看下载、翻译与失败重试进度。',
         scrollable: false,
         compactHeader: ReadingPageHeader(
@@ -60,50 +61,59 @@ class _TasksPageState extends State<TasksPage> {
                 message: controller.error ?? '未知错误',
                 onRetry: controller.load,
               ),
-            LoadState.empty => ListView(
-                children: const <Widget>[
-                  FeatureHero(
-                    icon: FluentIcons.processing,
-                    title: '任务队列已就绪',
-                    message: '下载、翻译和漫画逐页识别都会在这里持续同步状态。',
-                    child: Row(
-                      children: <Widget>[
-                        Expanded(child: AppMetric(value: '0', label: '进行中')),
-                        Expanded(child: AppMetric(value: '0', label: '等待中')),
-                        Expanded(child: AppMetric(value: '0', label: '失败')),
-                      ],
-                    ),
-                  ),
-                  SizedBox(height: 20),
-                  AppSurface(
-                    tone: AppSurfaceTone.muted,
-                    padding: EdgeInsets.symmetric(
-                      horizontal: 22,
-                      vertical: 24,
-                    ),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        AccentIcon(FluentIcons.history, size: 46),
-                        SizedBox(width: 15),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: <Widget>[
-                              Text(
-                                '暂无任务',
-                                style: TextStyle(fontWeight: FontWeight.w700),
-                              ),
-                              SizedBox(height: 6),
-                              Text('从作品详情页创建下载或翻译任务后，实时进度会显示在这里。'),
-                            ],
-                          ),
+            LoadState.empty => usesMobileUi(context)
+                ? ListView(
+                    children: const <Widget>[
+                      FeatureHero(
+                        icon: FluentIcons.processing,
+                        title: '任务队列已就绪',
+                        message: '下载、翻译和漫画逐页识别都会在这里持续同步状态。',
+                        child: Row(
+                          children: <Widget>[
+                            Expanded(
+                                child: AppMetric(value: '0', label: '进行中')),
+                            Expanded(
+                                child: AppMetric(value: '0', label: '等待中')),
+                            Expanded(child: AppMetric(value: '0', label: '失败')),
+                          ],
                         ),
-                      ],
-                    ),
+                      ),
+                      SizedBox(height: 20),
+                      AppSurface(
+                        tone: AppSurfaceTone.muted,
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 22,
+                          vertical: 24,
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            AccentIcon(FluentIcons.history, size: 46),
+                            SizedBox(width: 15),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: <Widget>[
+                                  Text(
+                                    '暂无任务',
+                                    style:
+                                        TextStyle(fontWeight: FontWeight.w700),
+                                  ),
+                                  SizedBox(height: 6),
+                                  Text('从作品详情页创建下载或翻译任务后，实时进度会显示在这里。'),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  )
+                : const EmptyView(
+                    icon: FluentIcons.history,
+                    title: '暂无任务',
+                    message: '从作品详情页创建下载或翻译任务后，进度会显示在这里。',
                   ),
-                ],
-              ),
             _ => _TaskList(
                 tasks: controller.tasks,
                 filter: _filter,

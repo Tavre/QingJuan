@@ -14,6 +14,7 @@ import 'package:qingjuan/features/library/library_page.dart';
 import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/sources/sources_controller.dart';
 import 'package:qingjuan/features/tasks/tasks_controller.dart';
+import 'package:qingjuan/shared/responsive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -186,15 +187,18 @@ class _Harness {
     final settings = SettingsController(api);
     final widget = FluentApp(
       theme: buildQingJuanTheme(Brightness.light),
-      home: AppScope(
-        appState: appState,
-        api: api,
-        backend: backend,
-        library: library,
-        sources: sources,
-        tasks: tasks,
-        settings: settings,
-        child: const LibraryPage(),
+      home: UiPlatformScope(
+        platform: TargetPlatform.windows,
+        child: AppScope(
+          appState: appState,
+          api: api,
+          backend: backend,
+          library: library,
+          sources: sources,
+          tasks: tasks,
+          settings: settings,
+          child: const LibraryPage(),
+        ),
       ),
     );
     return _Harness(

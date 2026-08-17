@@ -10,6 +10,8 @@ class PageFrame extends StatelessWidget {
     this.command,
     this.compactHeader,
     this.scrollable = true,
+    this.maxContentWidth,
+    this.desktopHorizontalPadding,
     super.key,
   });
 
@@ -19,19 +21,24 @@ class PageFrame extends StatelessWidget {
   final Widget? command;
   final Widget? compactHeader;
   final bool scrollable;
+  final double? maxContentWidth;
+  final double? desktopHorizontalPadding;
 
   @override
   Widget build(BuildContext context) {
-    final compact = windowClassOf(context) == WindowClass.compact;
+    final compact = usesMobileUi(context);
+    final horizontalPadding = compact ? 16.0 : desktopHorizontalPadding ?? 32.0;
     final body = Align(
       alignment: Alignment.topCenter,
       child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: contentMaxWidth(context)),
+        constraints: BoxConstraints(
+          maxWidth: maxContentWidth ?? contentMaxWidth(context),
+        ),
         child: Padding(
           padding: EdgeInsets.fromLTRB(
-            compact ? 16 : 32,
+            horizontalPadding,
             compact ? 18 : 28,
-            compact ? 16 : 32,
+            horizontalPadding,
             compact ? 30 : 32,
           ),
           child: Column(
@@ -239,7 +246,7 @@ class SectionTitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final compact = windowClassOf(context) == WindowClass.compact;
+    final compact = usesMobileUi(context);
     return Padding(
       padding: EdgeInsets.only(bottom: compact ? 14 : 12),
       child: Row(
@@ -249,7 +256,7 @@ class SectionTitle extends StatelessWidget {
               title,
               style: FluentTheme.of(context).typography.subtitle?.copyWith(
                     fontSize: compact ? 18 : null,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: compact ? FontWeight.w800 : null,
                   ),
             ),
           ),

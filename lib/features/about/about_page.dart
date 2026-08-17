@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../../shared/app_surface.dart';
 import '../../shared/brand_logo.dart';
 import '../../shared/page_frame.dart';
+import '../../shared/responsive.dart';
 
 class AboutPage extends StatefulWidget {
   const AboutPage({required this.onBack, super.key});
@@ -29,7 +30,9 @@ class _AboutPageState extends State<AboutPage> {
   Widget build(BuildContext context) {
     return PageFrame(
       title: '关于青卷',
-      subtitle: '支持 Windows 本机/远程与 Android 远程连接的开源阅读、下载和翻译工具。',
+      subtitle: usesMobileUi(context)
+          ? '支持 Windows 本机/远程与 Android 远程连接的开源阅读、下载和翻译工具。'
+          : '开源的 Windows 小说与漫画阅读、下载和翻译工具。',
       compactHeader: Row(
         children: <Widget>[
           Tooltip(
@@ -67,23 +70,25 @@ class _AboutPageState extends State<AboutPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          const FeatureHero(
-            icon: FluentIcons.reading_mode,
-            title: '青卷 QingJuan',
-            message:
-                'Windows 可独立使用随包后端，也可和 Android 一起连接 Linux 服务，把轻快、沉浸的阅读体验带到不同设备。',
-            trailing: QingJuanLogo(size: 64),
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: <Widget>[
-                StatusPill('Flutter', accented: true),
-                StatusPill('FastAPI'),
-                StatusPill('GPL v3'),
-              ],
+          if (usesMobileUi(context)) ...<Widget>[
+            const FeatureHero(
+              icon: FluentIcons.reading_mode,
+              title: '青卷 QingJuan',
+              message:
+                  'Windows 可独立使用随包后端，也可和 Android 一起连接 Linux 服务，把轻快、沉浸的阅读体验带到不同设备。',
+              trailing: QingJuanLogo(size: 64),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: <Widget>[
+                  StatusPill('Flutter', accented: true),
+                  StatusPill('FastAPI'),
+                  StatusPill('GPL v3'),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 28),
+            const SizedBox(height: 28),
+          ],
           if (_copiedLabel != null) ...<Widget>[
             InfoBar(
               title: Text('${_copiedLabel!}已复制'),

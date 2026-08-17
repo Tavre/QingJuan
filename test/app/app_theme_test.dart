@@ -4,7 +4,10 @@ import 'package:qingjuan/app/app_theme.dart';
 
 void main() {
   test('theme uses short responsive motion timings', () {
-    final theme = buildQingJuanTheme(Brightness.light);
+    final theme = buildQingJuanTheme(
+      Brightness.light,
+      platform: TargetPlatform.windows,
+    );
 
     expect(theme.fasterAnimationDuration, const Duration(milliseconds: 60));
     expect(theme.fastAnimationDuration, const Duration(milliseconds: 110));
@@ -15,5 +18,30 @@ void main() {
       theme.navigationPaneTheme.animationDuration,
       const Duration(milliseconds: 110),
     );
+  });
+
+  test('Windows keeps the v1.3.4 Fluent desktop palette and typography', () {
+    final theme = buildQingJuanTheme(
+      Brightness.light,
+      platform: TargetPlatform.windows,
+    );
+
+    expect(theme.accentColor.normal, const Color(0xFF0B8278));
+    expect(theme.scaffoldBackgroundColor, const Color(0xFFF3F3F3));
+    expect(theme.cardColor, const Color(0xFFFBFBFB));
+    expect(theme.typography.body?.fontFamily, 'Segoe UI Variable Text');
+    expect(theme.typography.title?.fontFamily, 'Segoe UI Variable Text');
+  });
+
+  test('Android retains the independent warm mobile palette', () {
+    final theme = buildQingJuanTheme(
+      Brightness.light,
+      platform: TargetPlatform.android,
+    );
+
+    expect(theme.accentColor.normal, const Color(0xFFD16D50));
+    expect(theme.scaffoldBackgroundColor, qingJuanPaper);
+    expect(theme.cardColor, qingJuanPaperSurface);
+    expect(theme.typography.body?.fontFamily, isNot('Segoe UI Variable Text'));
   });
 }

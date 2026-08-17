@@ -3,6 +3,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 import '../../../app/app_scope.dart';
 import '../../../core/models/book.dart';
 import '../../../shared/app_surface.dart';
+import '../../../shared/motion.dart';
 import '../../../shared/responsive.dart';
 
 class BookCard extends StatelessWidget {
@@ -13,7 +14,7 @@ class BookCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (windowClassOf(context) == WindowClass.compact) {
+    if (usesMobileUi(context)) {
       return _CompactBookCard(book: book, onOpen: onOpen);
     }
     return _WideBookCard(book: book, onOpen: onOpen);
@@ -40,7 +41,8 @@ class _CompactBookCard extends StatelessWidget {
       child: HoverButton(
         onPressed: onOpen,
         builder: (context, states) => AnimatedOpacity(
-          duration: theme.fasterAnimationDuration,
+          duration: QjMotion.duration(context, QjMotionSpeed.faster),
+          curve: QjMotion.enterCurve,
           opacity: states.isPressed ? 0.78 : 1,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -114,12 +116,15 @@ class _WideBookCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                Text(
-                  book.title,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.typography.bodyLarge
-                      ?.copyWith(fontWeight: FontWeight.w700),
+                Tooltip(
+                  message: book.title,
+                  child: Text(
+                    book.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.typography.bodyLarge
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
                 ),
                 const SizedBox(height: 8),
                 Wrap(
@@ -133,11 +138,23 @@ class _WideBookCard extends StatelessWidget {
                   ],
                 ),
                 const Spacer(),
-                Text(
-                  '上次读到第 ${book.lastReadChapterIndex} 章',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.typography.caption,
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 2,
+                  children: <Widget>[
+                    Text(
+                      '上次读到第 ${book.lastReadChapterIndex} 章',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.typography.caption?.copyWith(
+                        color: theme.resources.textFillColorSecondary,
+                      ),
+                    ),
+                    Text(
+                      '${book.lastReadChapterIndex}/${book.chapterCount}',
+                      style: theme.typography.caption,
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 8),
                 ProgressBar(

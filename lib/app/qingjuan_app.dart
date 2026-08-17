@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -16,6 +17,7 @@ import '../features/settings/settings_controller.dart';
 import '../features/shell/app_shell.dart';
 import '../features/sources/sources_controller.dart';
 import '../features/tasks/tasks_controller.dart';
+import '../shared/responsive.dart';
 import 'app_scope.dart';
 import 'app_state.dart';
 import 'app_theme.dart';
@@ -128,8 +130,14 @@ class _QingJuanAppState extends State<QingJuanApp> {
             debugShowCheckedModeBanner: false,
             title: '青卷',
             themeMode: widget.appState.themeModeListenable.value,
-            theme: buildQingJuanTheme(Brightness.light),
-            darkTheme: buildQingJuanTheme(Brightness.dark),
+            theme: buildQingJuanTheme(
+              Brightness.light,
+              platform: defaultTargetPlatform,
+            ),
+            darkTheme: buildQingJuanTheme(
+              Brightness.dark,
+              platform: defaultTargetPlatform,
+            ),
             locale: const Locale('zh', 'CN'),
             supportedLocales: const <Locale>[Locale('zh', 'CN'), Locale('en')],
             localizationsDelegates: const <LocalizationsDelegate<dynamic>>[
@@ -137,7 +145,10 @@ class _QingJuanAppState extends State<QingJuanApp> {
               GlobalMaterialLocalizations.delegate,
               GlobalCupertinoLocalizations.delegate,
             ],
-            home: const AppShell(),
+            home: UiPlatformScope(
+              platform: defaultTargetPlatform,
+              child: const AppShell(),
+            ),
           );
         },
       ),

@@ -1,7 +1,7 @@
 name: qingjuan
 description: 青卷：支持 Windows 本机/远程与 Android 远程连接的 Flutter 阅读客户端。
 publish_to: none
-version: 1.5.0+18
+version: 1.6.0+20
 
 environment:
   sdk: ^3.5.0
@@ -19,6 +19,7 @@ dependencies:
   path: ^1.9.0
   path_provider: ^2.1.4
   shared_preferences: ^2.3.2
+  window_manager: 0.4.3
 
 dev_dependencies:
   flutter_test:

@@ -46,6 +46,7 @@ try:
         PUBLIC_ROUTERS,
         health_router,
         library_router,
+        plugins_router,
         settings_router,
         sources_router,
         system_router,
@@ -61,10 +62,12 @@ try:
         get_book_source,
         get_task,
         init_db,
+        is_site_plugin_enabled,
         list_book_sources,
         list_books,
         list_builtin_book_source_base_urls,
         list_pending_tasks,
+        list_site_plugin_enabled_states,
         list_task_logs,
         list_tasks,
         load_reading_progress,
@@ -73,8 +76,10 @@ try:
         save_book_source,
         save_reading_progress,
         save_settings,
+        save_site_plugin_enabled,
         save_task,
     )
+    from .fanqie_parser import canonical_fanqie_book_url, fanqie_book_id_from_url
     from .link_jobs import LinkJobStore
     from .local_import import (
         LOCAL_FILE_SIZE_LIMITS,
@@ -89,6 +94,7 @@ try:
         BookExportPayload,
         BookExportResponse,
         BookRecord,
+        BookSourceEnabledPayload,
         BookSourceImportResult,
         BookSourceRecord,
         BookSourceSearchPayload,
@@ -111,6 +117,14 @@ try:
         ReadingProgressPayload,
         ReadingProgressRecord,
         ServiceMetaResponse,
+        SitePluginAccountView,
+        SitePluginBookshelfImportItem,
+        SitePluginBookshelfImportJob,
+        SitePluginCookieLoginPayload,
+        SitePluginLoginPoll,
+        SitePluginLoginQrCode,
+        SitePluginUpdatePayload,
+        SitePluginView,
         TaskLogRecord,
         TaskPageResultRecord,
         TaskPageTextRecord,
@@ -140,6 +154,16 @@ try:
         translated_image_payload_is_current,
     )
     from .security import API_PREFIX, API_VERSION, authentication_enabled
+    from .site_plugins import (
+        SitePlugin,
+        get_site_plugin,
+        list_site_plugins,
+        resolve_site_plugin,
+    )
+    from .site_plugins.fanqie_runtime import FANQIE_RUNTIME
+    from .site_plugins.import_jobs import SitePluginImportJobStore
+    from .site_plugins.qidian_client import canonical_book_url, qidian_book_id_from_url
+    from .site_plugins.qidian_runtime import QIDIAN_RUNTIME
 except ImportError:
     from app.admin_auth import validate_admin_auth_configuration
     from app.api.routers import (
@@ -147,6 +171,7 @@ except ImportError:
         PUBLIC_ROUTERS,
         health_router,
         library_router,
+        plugins_router,
         settings_router,
         sources_router,
         system_router,
@@ -162,10 +187,12 @@ except ImportError:
         get_book_source,
         get_task,
         init_db,
+        is_site_plugin_enabled,
         list_book_sources,
         list_books,
         list_builtin_book_source_base_urls,
         list_pending_tasks,
+        list_site_plugin_enabled_states,
         list_task_logs,
         list_tasks,
         load_reading_progress,
@@ -174,8 +201,10 @@ except ImportError:
         save_book_source,
         save_reading_progress,
         save_settings,
+        save_site_plugin_enabled,
         save_task,
     )
+    from app.fanqie_parser import canonical_fanqie_book_url, fanqie_book_id_from_url
     from app.link_jobs import LinkJobStore
     from app.local_import import (
         LOCAL_FILE_SIZE_LIMITS,
@@ -190,6 +219,7 @@ except ImportError:
         BookExportPayload,
         BookExportResponse,
         BookRecord,
+        BookSourceEnabledPayload,
         BookSourceImportResult,
         BookSourceRecord,
         BookSourceSearchPayload,
@@ -212,6 +242,14 @@ except ImportError:
         ReadingProgressPayload,
         ReadingProgressRecord,
         ServiceMetaResponse,
+        SitePluginAccountView,
+        SitePluginBookshelfImportItem,
+        SitePluginBookshelfImportJob,
+        SitePluginCookieLoginPayload,
+        SitePluginLoginPoll,
+        SitePluginLoginQrCode,
+        SitePluginUpdatePayload,
+        SitePluginView,
         TaskLogRecord,
         TaskPageResultRecord,
         TaskPageTextRecord,
@@ -241,12 +279,23 @@ except ImportError:
         translated_image_payload_is_current,
     )
     from app.security import API_PREFIX, API_VERSION, authentication_enabled
+    from app.site_plugins import (
+        SitePlugin,
+        get_site_plugin,
+        list_site_plugins,
+        resolve_site_plugin,
+    )
+    from app.site_plugins.fanqie_runtime import FANQIE_RUNTIME
+    from app.site_plugins.import_jobs import SitePluginImportJobStore
+    from app.site_plugins.qidian_client import canonical_book_url, qidian_book_id_from_url
+    from app.site_plugins.qidian_runtime import QIDIAN_RUNTIME
 
 LIBRARY_ROOT = DATA_DIR / "library"
 EXPORT_ROOT = DATA_DIR / "exports"
 EXPORT_TTL = timedelta(hours=24)
 TASK_QUEUE: asyncio.Queue[str] = asyncio.Queue()
 LINK_JOB_STORE = LinkJobStore()
+SITE_PLUGIN_IMPORT_JOB_STORE = SitePluginImportJobStore()
 _RUNTIME_LOGGER = logging.getLogger("qingjuan.runtime")
 _TASK_LOGGER = logging.getLogger("qingjuan.task")
 SOURCE_CHAPTER_CACHE_AHEAD = 20
@@ -284,6 +333,7 @@ async def _run_startup(app_instance: FastAPI) -> None:
     app_instance.state.reader_cache_keys = set()
     app_instance.state.reader_cache_locks = {}
     app_instance.state.link_job_tasks = set()
+    app_instance.state.site_plugin_import_tasks = set()
     app_instance.state.task_queue = TASK_QUEUE
     for task in list_pending_tasks():
         task.status = "queued"
@@ -308,6 +358,17 @@ async def _run_shutdown(app_instance: FastAPI) -> None:
             task.cancel()
         await asyncio.gather(*link_job_tasks, return_exceptions=True)
         link_job_tasks.clear()
+
+    site_plugin_import_tasks = getattr(app_instance.state, "site_plugin_import_tasks", set())
+    if isinstance(site_plugin_import_tasks, set):
+        for task in list(site_plugin_import_tasks):
+            task.cancel()
+        await asyncio.gather(*site_plugin_import_tasks, return_exceptions=True)
+        site_plugin_import_tasks.clear()
+
+    FANQIE_RUNTIME.logout()
+    QIDIAN_RUNTIME.logout()
+    SITE_PLUGIN_IMPORT_JOB_STORE.clear()
 
     reader_cache_tasks = getattr(app_instance.state, "reader_cache_tasks", set())
     if isinstance(reader_cache_tasks, set):
@@ -366,8 +427,335 @@ async def get_service_meta() -> ServiceMetaResponse:
             "rapidOcr": True,
             "windowsOcr": os.name == "nt",
             "browserFallback": _browser_fallback_available(),
+            "sitePlugins": True,
         },
     )
+
+
+def _site_plugin_runtime(plugin: SitePlugin) -> Any:
+    if plugin.id == "fanqie":
+        return FANQIE_RUNTIME
+    if plugin.id == "qidian":
+        return QIDIAN_RUNTIME
+    raise HTTPException(status_code=501, detail="该站点插件尚未提供账号运行时")
+
+
+def _site_plugin_view(plugin: SitePlugin, enabled: bool) -> SitePluginView:
+    account_logged_in = False
+    if plugin.supports_account_login:
+        account_logged_in = bool(_site_plugin_runtime(plugin).account_status()["loggedIn"])
+    return SitePluginView(
+        id=plugin.id,
+        name=plugin.name,
+        description=plugin.description,
+        category=plugin.category,
+        domains=list(plugin.domains),
+        bookKinds=list(plugin.book_kinds),
+        tags=list(plugin.tags),
+        capabilities=list(plugin.capabilities),
+        version=plugin.version,
+        enabled=enabled,
+        defaultEnabled=plugin.default_enabled,
+        accountLoggedIn=account_logged_in,
+    )
+
+
+@plugins_router.get("/plugins", response_model=list[SitePluginView])
+async def get_site_plugins() -> list[SitePluginView]:
+    enabled_states = list_site_plugin_enabled_states()
+    return [
+        _site_plugin_view(plugin, enabled_states.get(plugin.id, plugin.default_enabled))
+        for plugin in list_site_plugins()
+    ]
+
+
+@plugins_router.put("/plugins/{plugin_id}", response_model=SitePluginView)
+async def put_site_plugin(plugin_id: str, payload: SitePluginUpdatePayload) -> SitePluginView:
+    plugin = get_site_plugin(plugin_id)
+    if plugin is None:
+        raise HTTPException(status_code=404, detail="站点插件不存在")
+    save_site_plugin_enabled(plugin.id, payload.enabled)
+    return _site_plugin_view(plugin, payload.enabled)
+
+
+def _require_site_plugin_operation(
+    plugin_id: str,
+    capability: str,
+    *,
+    require_enabled: bool = False,
+) -> SitePlugin:
+    plugin = get_site_plugin(plugin_id)
+    if plugin is None:
+        raise HTTPException(status_code=404, detail="站点插件不存在")
+    if capability not in plugin.capabilities:
+        raise HTTPException(status_code=404, detail="该站点插件不支持此操作")
+    if require_enabled and not is_site_plugin_enabled(plugin.id):
+        raise HTTPException(status_code=400, detail=f"站点插件“{plugin.name}”已停用")
+    return plugin
+
+
+def _mark_plugin_private_response(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store"
+
+
+@plugins_router.get(
+    "/plugins/{plugin_id}/account",
+    response_model=SitePluginAccountView,
+)
+async def get_site_plugin_account(plugin_id: str, response: Response) -> SitePluginAccountView:
+    _mark_plugin_private_response(response)
+    plugin = _require_site_plugin_operation(plugin_id, "account_login")
+    runtime = _site_plugin_runtime(plugin)
+    return SitePluginAccountView.model_validate(runtime.account_status())
+
+
+@plugins_router.post(
+    "/plugins/{plugin_id}/account/login-qrcode",
+    response_model=SitePluginLoginQrCode,
+)
+async def post_site_plugin_login_qrcode(
+    plugin_id: str,
+    response: Response,
+) -> SitePluginLoginQrCode:
+    _mark_plugin_private_response(response)
+    plugin = _require_site_plugin_operation(plugin_id, "account_login", require_enabled=True)
+    runtime = _site_plugin_runtime(plugin)
+    try:
+        return SitePluginLoginQrCode.model_validate(await asyncio.to_thread(runtime.start_login))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"获取登录二维码失败：{exc}") from exc
+
+
+@plugins_router.get(
+    "/plugins/{plugin_id}/account/login-qrcode/{flow_id}",
+    response_model=SitePluginLoginPoll,
+)
+async def get_site_plugin_login_qrcode(
+    plugin_id: str,
+    flow_id: str,
+    response: Response,
+) -> SitePluginLoginPoll:
+    _mark_plugin_private_response(response)
+    plugin = _require_site_plugin_operation(plugin_id, "account_login", require_enabled=True)
+    runtime = _site_plugin_runtime(plugin)
+    try:
+        return SitePluginLoginPoll.model_validate(
+            await asyncio.to_thread(runtime.poll_login, flow_id)
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"读取登录状态失败：{exc}") from exc
+
+
+@plugins_router.post(
+    "/plugins/{plugin_id}/account/login-cookies",
+    response_model=SitePluginAccountView,
+)
+async def post_site_plugin_login_cookies(
+    plugin_id: str,
+    payload: SitePluginCookieLoginPayload,
+    response: Response,
+) -> SitePluginAccountView:
+    _mark_plugin_private_response(response)
+    plugin = _require_site_plugin_operation(plugin_id, "cookie_login", require_enabled=True)
+    runtime = _site_plugin_runtime(plugin)
+    login_cookies = getattr(runtime, "login_cookies", None)
+    if not callable(login_cookies):
+        raise HTTPException(status_code=501, detail="该站点插件尚未提供 Cookie 登录")
+    try:
+        status = await asyncio.to_thread(login_cookies, payload.cookies.get_secret_value())
+        return SitePluginAccountView.model_validate(status)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Cookie 登录失败：{exc}") from exc
+
+
+@plugins_router.delete(
+    "/plugins/{plugin_id}/account",
+    response_model=SitePluginAccountView,
+)
+async def delete_site_plugin_account(plugin_id: str, response: Response) -> SitePluginAccountView:
+    _mark_plugin_private_response(response)
+    plugin = _require_site_plugin_operation(plugin_id, "account_login")
+    runtime = _site_plugin_runtime(plugin)
+    runtime.logout()
+    return SitePluginAccountView(loggedIn=False)
+
+
+def _site_plugin_source_id_from_url(plugin: SitePlugin, source_url: str) -> str | None:
+    if plugin.id == "fanqie":
+        return fanqie_book_id_from_url(source_url)
+    if plugin.id == "qidian":
+        return qidian_book_id_from_url(source_url)
+    return None
+
+
+def _site_plugin_remote_book_payload(
+    plugin: SitePlugin,
+    remote_book: dict[str, object],
+) -> tuple[str, str, AddBookPayload | None, str]:
+    if plugin.id == "fanqie":
+        source_id = str(remote_book.get("bookId") or "").strip()
+        title = str(remote_book.get("bookName") or f"番茄作品 {source_id}").strip()
+        try:
+            book_type = int(remote_book.get("bookType", 0) or 0)
+        except (TypeError, ValueError):
+            book_type = -1
+        if book_type != 0:
+            return source_id, title, None, "当前番茄插件暂只支持文字作品"
+        if not source_id.isdigit():
+            return source_id, title, None, "账号书架条目缺少有效作品 ID"
+        payload = AddBookPayload(
+            sourceUrl=canonical_fanqie_book_url(source_id),
+            bookKind="长小说",
+            title=title,
+            language="中文",
+            needTranslation=False,
+            downloadMode="on_demand",
+        )
+        return source_id, title, payload, ""
+
+    if plugin.id == "qidian":
+        source_id = str(remote_book.get("bid") or "").strip()
+        title = str(remote_book.get("bookName") or "未命名作品").strip()
+        if not source_id.isdigit():
+            return source_id, title, None, "账号书架条目缺少有效作品 ID"
+        payload = AddBookPayload(
+            sourceUrl=canonical_book_url(source_id),
+            bookKind="轻小说" if "轻小说" in str(remote_book.get("cateName") or "") else "长小说",
+            title=title,
+            language="中文",
+            needTranslation=False,
+            downloadMode="on_demand",
+        )
+        return source_id, title, payload, ""
+
+    raise RuntimeError("该站点插件尚未提供书架条目映射")
+
+
+async def _run_site_plugin_bookshelf_import(job_id: str, plugin_id: str) -> None:
+    SITE_PLUGIN_IMPORT_JOB_STORE.start(job_id, "正在读取当前登录账号书架")
+    plugin = get_site_plugin(plugin_id)
+    if plugin is None:
+        SITE_PLUGIN_IMPORT_JOB_STORE.fail(job_id, "站点插件不存在")
+        return
+    runtime = _site_plugin_runtime(plugin)
+    try:
+        if not is_site_plugin_enabled(plugin.id):
+            raise RuntimeError(f"站点插件“{plugin.name}”已停用")
+        remote_books = await asyncio.to_thread(runtime.list_bookshelf_books)
+        SITE_PLUGIN_IMPORT_JOB_STORE.set_discovered(job_id, len(remote_books))
+        existing_source_ids = {
+            source_id
+            for book in list_books()
+            if (source_id := _site_plugin_source_id_from_url(plugin, book.sourceUrl)) is not None
+        }
+        for remote_book in remote_books:
+            if not is_site_plugin_enabled(plugin.id):
+                raise RuntimeError(f"站点插件“{plugin.name}”已停用")
+            source_id, title, payload, unsupported_message = _site_plugin_remote_book_payload(
+                plugin,
+                remote_book,
+            )
+            if unsupported_message:
+                SITE_PLUGIN_IMPORT_JOB_STORE.append_item(
+                    job_id,
+                    SitePluginBookshelfImportItem(
+                        sourceId=source_id or "unknown",
+                        title=title,
+                        status="unsupported" if source_id.isdigit() else "failed",
+                        message=unsupported_message,
+                    ),
+                )
+                continue
+            if source_id in existing_source_ids:
+                SITE_PLUGIN_IMPORT_JOB_STORE.append_item(
+                    job_id,
+                    SitePluginBookshelfImportItem(
+                        sourceId=source_id,
+                        title=title,
+                        status="skipped",
+                        message=f"青卷书架已存在该{plugin.name}作品",
+                    ),
+                )
+                continue
+
+            try:
+                if payload is None:
+                    raise RuntimeError("账号书架条目无法转换为导入请求")
+                preview = await preview_from_url(payload)
+                book = await _create_imported_book(payload, preview)
+                existing_source_ids.add(source_id)
+                SITE_PLUGIN_IMPORT_JOB_STORE.append_item(
+                    job_id,
+                    SitePluginBookshelfImportItem(
+                        sourceId=source_id,
+                        title=book.title,
+                        status="imported",
+                        message="已加入青卷书架（边看边下）",
+                        bookId=book.id,
+                    ),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                error_message = re.sub(r"\s+", " ", str(exc)).strip()[:300] or "作品导入失败"
+                SITE_PLUGIN_IMPORT_JOB_STORE.append_item(
+                    job_id,
+                    SitePluginBookshelfImportItem(
+                        sourceId=source_id,
+                        title=title,
+                        status="failed",
+                        message=error_message,
+                    ),
+                )
+        SITE_PLUGIN_IMPORT_JOB_STORE.complete(job_id)
+    except asyncio.CancelledError:
+        SITE_PLUGIN_IMPORT_JOB_STORE.fail(job_id, "后端正在停止，书架导入已取消")
+        raise
+    except Exception as exc:
+        SITE_PLUGIN_IMPORT_JOB_STORE.fail(job_id, exc)
+
+
+@plugins_router.post(
+    "/plugins/{plugin_id}/bookshelf/import-jobs",
+    response_model=SitePluginBookshelfImportJob,
+)
+async def post_site_plugin_bookshelf_import_job(
+    plugin_id: str,
+    request: Request,
+    response: Response,
+) -> SitePluginBookshelfImportJob:
+    _mark_plugin_private_response(response)
+    plugin = _require_site_plugin_operation(plugin_id, "bookshelf_import", require_enabled=True)
+    runtime = _site_plugin_runtime(plugin)
+    if not runtime.account_status()["loggedIn"]:
+        raise HTTPException(status_code=400, detail=f"请先登录{plugin.name}账号")
+    try:
+        job = SITE_PLUGIN_IMPORT_JOB_STORE.create(plugin.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    task = asyncio.create_task(_run_site_plugin_bookshelf_import(job.id, plugin.id))
+    tasks: set[asyncio.Task[Any]] = getattr(request.app.state, "site_plugin_import_tasks", set())
+    tasks.add(task)
+    request.app.state.site_plugin_import_tasks = tasks
+    task.add_done_callback(tasks.discard)
+    return job
+
+
+@plugins_router.get(
+    "/plugins/{plugin_id}/bookshelf/import-jobs/{job_id}",
+    response_model=SitePluginBookshelfImportJob,
+)
+async def get_site_plugin_bookshelf_import_job(
+    plugin_id: str,
+    job_id: str,
+    response: Response,
+) -> SitePluginBookshelfImportJob:
+    _mark_plugin_private_response(response)
+    _require_site_plugin_operation(plugin_id, "bookshelf_import")
+    try:
+        return SITE_PLUGIN_IMPORT_JOB_STORE.get(job_id, plugin_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @sources_router.get("/sources", response_model=list[PublicBookSourceRecord])
@@ -569,6 +957,15 @@ async def put_source(source_id: str, payload: BookSourceRecord) -> BookSourceRec
             "updatedAt": _now(),
         }
     )
+    return save_book_source(updated)
+
+
+@sources_router.put("/sources/{source_id}/enabled", response_model=PublicBookSourceRecord)
+async def put_source_enabled(source_id: str, payload: BookSourceEnabledPayload) -> BookSourceRecord:
+    current = _get_source_or_404(source_id)
+    if current.origin == "builtin":
+        raise HTTPException(status_code=400, detail="内置站点请通过插件配置接口启用或停用")
+    updated = current.model_copy(update={"enabled": payload.enabled, "updatedAt": _now()})
     return save_book_source(updated)
 
 
@@ -974,16 +1371,14 @@ async def post_preview(payload: AddBookPayload) -> PreviewResponse:
         raise HTTPException(status_code=400, detail=f"解析失败：{exc}") from exc
 
 
-def _is_fanqie_source_url(value: str) -> bool:
-    hostname = (urlparse(value.strip()).hostname or "").lower()
-    return hostname == "fanqienovel.com" or hostname.endswith(".fanqienovel.com")
-
-
 def _uses_manifest_only_import(payload: AddBookPayload) -> bool:
     if payload.sourceId:
         return True
-    return payload.downloadMode == "on_demand" and _is_fanqie_source_url(
-        str(payload.sourceUrl)
+    plugin = resolve_site_plugin(str(payload.sourceUrl))
+    return (
+        payload.downloadMode == "on_demand"
+        and plugin is not None
+        and plugin.supports_on_demand
     )
 
 
@@ -1066,15 +1461,9 @@ async def _run_link_job(job_id: str) -> None:
 
         manifest_only = _uses_manifest_only_import(payload)
         import_start_message = (
-            "开始创建章节目录，正文将在阅读时按需下载"
-            if manifest_only
-            else "开始下载全部正文并写入本地书库"
+            "开始创建章节目录，正文将在阅读时按需下载" if manifest_only else "开始下载全部正文并写入本地书库"
         )
-        import_wait_message = (
-            "正在写入章节目录"
-            if manifest_only
-            else "正在下载全部正文并写入本地书库"
-        )
+        import_wait_message = "正在写入章节目录" if manifest_only else "正在下载全部正文并写入本地书库"
         LINK_JOB_STORE.append_log(job_id, "info", import_start_message, progress=68)
         book = await _run_link_job_stage(
             job_id,
@@ -1083,9 +1472,7 @@ async def _run_link_job(job_id: str) -> None:
             start_progress=68,
             end_progress=98,
         )
-        completion_message = (
-            "链接导入完成，已启用边看边下" if manifest_only else "链接导入完成"
-        )
+        completion_message = "链接导入完成，已启用边看边下" if manifest_only else "链接导入完成"
         LINK_JOB_STORE.complete(job_id, completion_message, preview=preview, book=book)
     except asyncio.CancelledError:
         LINK_JOB_STORE.fail(job_id, "应用正在关闭，链接任务已取消")
@@ -1355,9 +1742,7 @@ def main() -> None:
         raise SystemExit(f"Unsupported command: {args.command}")
 
     if not _is_loopback_host(args.host) and not authentication_enabled():
-        raise SystemExit(
-            "监听非回环地址必须配置 QINGJUAN_AUTH_TOKEN_SHA256"
-        )
+        raise SystemExit("监听非回环地址必须配置 QINGJUAN_AUTH_TOKEN_SHA256")
     if not _is_loopback_host(args.host) and not validate_admin_auth_configuration():
         raise SystemExit("监听非回环地址必须配置管理界面密码与会话密钥")
 
@@ -3270,9 +3655,7 @@ def _load_export_chapters(
     book_dir = _resolve_book_dir(book)
     manifest = _load_or_initialize_manifest(book, book_dir)
     chapter_records = _load_chapter_records(book)
-    selected_indexes = (
-        set(_normalize_chapter_indexes(chapter_indexes)) if chapter_indexes else None
-    )
+    selected_indexes = set(_normalize_chapter_indexes(chapter_indexes)) if chapter_indexes else None
     export_items: list[dict[str, object]] = []
     exported_indexes: set[int] = set()
 
@@ -3313,9 +3696,7 @@ def _load_export_chapters(
         exported_indexes.add(chapter.index)
 
     if selected_indexes is not None and exported_indexes != selected_indexes:
-        unavailable = "、".join(
-            str(index) for index in sorted(selected_indexes - exported_indexes)
-        )
+        unavailable = "、".join(str(index) for index in sorted(selected_indexes - exported_indexes))
         raise HTTPException(
             status_code=400,
             detail=f"所选章节尚未下载或不存在：{unavailable}",
@@ -3534,9 +3915,7 @@ def _chapter_export_file_path(book: BookRecord, export_format: str) -> Path:
     return export_dir / f"{uuid4().hex}{extension}"
 
 
-def _load_chapter_export_item(
-    book: BookRecord, chapter_index: int
-) -> tuple[dict, dict[str, object]]:
+def _load_chapter_export_item(book: BookRecord, chapter_index: int) -> tuple[dict, dict[str, object]]:
     book_dir = _resolve_book_dir(book)
     manifest = _load_or_initialize_manifest(book, book_dir)
     chapter, content_path = _load_single_chapter(book, chapter_index, mode="translated")
@@ -3552,9 +3931,7 @@ def _load_chapter_export_item(
     )
     image_assets = translated_images if use_translated_images else chapter.imageFiles
     image_paths = [
-        candidate
-        for asset_path in image_assets
-        if (candidate := (book_dir / asset_path).resolve()).is_file()
+        candidate for asset_path in image_assets if (candidate := (book_dir / asset_path).resolve()).is_file()
     ]
     return manifest, {
         "chapter": chapter,
@@ -3567,10 +3944,7 @@ def _load_chapter_export_item(
 def _docx_paragraph_xml(text: str, *, heading: bool = False) -> str:
     paragraph_properties = '<w:pPr><w:pStyle w:val="Heading1"/></w:pPr>' if heading else ""
     escaped = html.escape(text)
-    return (
-        f"<w:p>{paragraph_properties}<w:r><w:t xml:space=\"preserve\">"
-        f"{escaped}</w:t></w:r></w:p>"
-    )
+    return f'<w:p>{paragraph_properties}<w:r><w:t xml:space="preserve">{escaped}</w:t></w:r></w:p>'
 
 
 def _write_docx_export(
@@ -3585,15 +3959,13 @@ def _write_docx_export(
         content = str(export_item["content"])
         document_paragraphs.append(_docx_paragraph_xml(str(chapter.title), heading=True))
         document_paragraphs.extend(
-            _docx_paragraph_xml(paragraph)
-            for paragraph in _split_paragraphs(content)
-            if paragraph.strip()
+            _docx_paragraph_xml(paragraph) for paragraph in _split_paragraphs(content) if paragraph.strip()
         )
-    document_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    document_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>{"".join(document_paragraphs)}<w:sectPr/></w:body>
-</w:document>'''
-    core_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+</w:document>"""
+    core_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
  xmlns:dc="http://purl.org/dc/elements/1.1/"
  xmlns:dcterms="http://purl.org/dc/terms/"
@@ -3601,19 +3973,19 @@ def _write_docx_export(
   <dc:title>{html.escape(book.title)}</dc:title>
   <dc:creator>{html.escape(_read_optional_string(manifest, "author") or "未知")}</dc:creator>
   <dcterms:created xsi:type="dcterms:W3CDTF">{datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}</dcterms:created>
-</cp:coreProperties>'''
-    content_types_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+</cp:coreProperties>"""
+    content_types_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
   <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
-</Types>'''
-    relationships_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+</Types>"""
+    relationships_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
-</Relationships>'''
+</Relationships>"""
     with zipfile.ZipFile(target_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", content_types_xml)
         archive.writestr("_rels/.rels", relationships_xml)
@@ -3650,11 +4022,7 @@ def _write_manga_images_zip(
     export_items: list[dict[str, object]],
     target_path: Path,
 ) -> int:
-    missing_titles = [
-        str(item["chapter"].title)
-        for item in export_items
-        if not list(item["image_paths"])
-    ]
+    missing_titles = [str(item["chapter"].title) for item in export_items if not list(item["image_paths"])]
     if missing_titles:
         raise HTTPException(
             status_code=400,
@@ -3747,11 +4115,7 @@ def _export_book(
     elif export_format == "epub":
         _write_epub_export(book, manifest, export_items, final_path)
     else:
-        image_paths = [
-            image_path
-            for item in export_items
-            for image_path in list(item["image_paths"])
-        ]
+        image_paths = [image_path for item in export_items for image_path in list(item["image_paths"])]
         _write_pdf_chapter_export(image_paths, final_path)
     file_count = len(image_paths) if export_format == "pdf" else 1
     return final_path, chapter_count, file_count

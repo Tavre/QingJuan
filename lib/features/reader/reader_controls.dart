@@ -1,5 +1,6 @@
 import 'package:fluent_ui/fluent_ui.dart';
 
+import '../../shared/motion.dart';
 import 'reader_theme.dart';
 
 class ReaderBottomAction extends StatelessWidget {
@@ -50,8 +51,8 @@ class ReaderBottomAction extends StatelessWidget {
           child: SizedBox(
             height: 64,
             child: TweenAnimationBuilder<double>(
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeOutCubic,
+              duration: QjMotion.duration(context),
+              curve: QjMotion.enterCurve,
               tween: Tween<double>(begin: 0, end: selected ? 1 : 0),
               builder: (context, progress, child) => Transform.scale(
                 scale: 1 + progress * 0.045,
@@ -135,8 +136,8 @@ class ReaderChoiceChip extends StatelessWidget {
         ),
         onPressed: onPressed,
         child: AnimatedDefaultTextStyle(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOutCubic,
+          duration: QjMotion.duration(context),
+          curve: QjMotion.enterCurve,
           style: TextStyle(
             color: selected ? palette.accent : palette.text,
             fontSize: compact ? 13 : 14,
@@ -178,8 +179,8 @@ class ReaderPaletteSwatch extends StatelessWidget {
             child: Center(
               child: AnimatedContainer(
                 key: ValueKey<String>('reader-palette-${palette.mode.name}'),
-                duration: const Duration(milliseconds: 220),
-                curve: Curves.easeOutCubic,
+                duration: QjMotion.duration(context, QjMotionSpeed.slow),
+                curve: QjMotion.enterCurve,
                 width: selected ? 39 : 34,
                 height: selected ? 39 : 34,
                 decoration: BoxDecoration(

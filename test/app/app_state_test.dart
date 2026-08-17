@@ -109,6 +109,25 @@ void main() {
     expect(secrets.token, 'remote-secret-token');
   });
 
+  test('remote mode hides client plugin management and leaves its page',
+      () async {
+    final state = AppState(
+      await SharedPreferences.getInstance(),
+      localBackendSupported: true,
+    );
+    state.selectSection(AppSection.plugins);
+
+    expect(state.clientPluginManagementAvailable, isTrue);
+    expect(state.section, AppSection.plugins);
+
+    await state.selectBackendMode(BackendConnectionMode.remote);
+
+    expect(state.clientPluginManagementAvailable, isFalse);
+    expect(state.section, AppSection.settings);
+    state.selectSection(AppSection.plugins);
+    expect(state.section, AppSection.settings);
+  });
+
   test('dedicated Linux profile wins over a stale v1.4 URL', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{
       'qingjuan.backendMode': 'remote',

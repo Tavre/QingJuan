@@ -5,6 +5,9 @@ import os
 import shutil
 import sqlite3
 import sys
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -21,6 +24,7 @@ from .models import (
     TaskRecord,
     TranslationSettings,
 )
+from .site_plugins import get_site_plugin, list_site_plugins
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LEGACY_DATA_DIR = BASE_DIR / "data"
@@ -58,6 +62,8 @@ def _resolve_data_dir() -> Path:
 DATA_DIR = _resolve_data_dir()
 DB_PATH = DATA_DIR / "qingjuan.db"
 _DATA_DIR_READY = False
+_SITE_PLUGIN_STATE_LOCK = threading.RLock()
+_SITE_PLUGIN_STATE_CACHE: tuple[Path, dict[str, bool]] | None = None
 
 DEFAULT_SETTINGS = TranslationSettings(
     autoTranslateNextChapters=0,
@@ -73,6 +79,17 @@ DEFAULT_SETTINGS = TranslationSettings(
 )
 
 DEFAULT_BOOK_SOURCES = [
+    BookSourceRecord(
+        id="source-builtin-fanqie",
+        name="番茄小说",
+        baseUrl="https://fanqienovel.com",
+        description="番茄中文网络小说，可搜索、按作品链接导入或同步当前登录账号书架。",
+        bookKind="长小说",
+        language="中文",
+        sampleUrl="https://fanqienovel.com",
+        tags=["中文", "连载", "账号书架"],
+        origin="builtin",
+    ),
     BookSourceRecord(
         id="source-builtin-linovelib",
         name="Linovelib",
@@ -186,13 +203,18 @@ DEFAULT_BOOK_SOURCES = [
 ]
 
 
-def get_connection() -> sqlite3.Connection:
+@contextmanager
+def get_connection() -> Iterator[sqlite3.Connection]:
     ensure_data_dir()
     connection = sqlite3.connect(DB_PATH, timeout=5)
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA busy_timeout = 5000")
-    connection.execute("PRAGMA journal_mode = WAL")
-    return connection
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("PRAGMA journal_mode = WAL")
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 def ensure_data_dir() -> None:
@@ -226,6 +248,7 @@ def _migrate_legacy_data() -> None:
 
 
 def init_db() -> None:
+    global _SITE_PLUGIN_STATE_CACHE
     with get_connection() as conn:
         conn.execute(
             """
@@ -335,6 +358,15 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS site_plugin_settings (
+                plugin_id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS devices (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -354,6 +386,9 @@ def init_db() -> None:
             """
         )
         _seed_builtin_book_sources(conn)
+        _seed_site_plugin_settings(conn)
+    with _SITE_PLUGIN_STATE_LOCK:
+        _SITE_PLUGIN_STATE_CACHE = None
 
 
 def _ensure_reading_progress_columns(conn: sqlite3.Connection) -> None:
@@ -412,10 +447,7 @@ def touch_device(
                 (device_id, name, platform, ip_address, timestamp_text, timestamp_text),
             )
         elif not bool(row[6]) and (
-            row[1] != name
-            or row[2] != platform
-            or row[3] != ip_address
-            or row[5] <= update_before
+            row[1] != name or row[2] != platform or row[3] != ip_address or row[5] <= update_before
         ):
             conn.execute(
                 """
@@ -660,6 +692,64 @@ def save_book_source(source: BookSourceRecord) -> BookSourceRecord:
 def delete_book_source(source_id: str) -> None:
     with get_connection() as conn:
         conn.execute("DELETE FROM book_sources WHERE id = ?", (source_id,))
+
+
+def list_site_plugin_enabled_states() -> dict[str, bool]:
+    global _SITE_PLUGIN_STATE_CACHE
+    with _SITE_PLUGIN_STATE_LOCK:
+        if _SITE_PLUGIN_STATE_CACHE is not None and _SITE_PLUGIN_STATE_CACHE[0] == DB_PATH:
+            return dict(_SITE_PLUGIN_STATE_CACHE[1])
+
+    states = {plugin.id: plugin.default_enabled for plugin in list_site_plugins()}
+    try:
+        with get_connection() as conn:
+            rows = conn.execute("SELECT plugin_id, enabled FROM site_plugin_settings").fetchall()
+    except sqlite3.OperationalError as exc:
+        error_text = str(exc).lower()
+        if "no such table" not in error_text or "site_plugin_settings" not in error_text:
+            raise
+        # 启动迁移前可以暂用代码默认值，但不能缓存；否则后续建表或一次临时锁库
+        # 都可能让停用状态在当前进程中永久回退为默认启用。
+        return dict(states)
+    for plugin_id, enabled in rows:
+        if plugin_id in states:
+            states[str(plugin_id)] = bool(enabled)
+    with _SITE_PLUGIN_STATE_LOCK:
+        _SITE_PLUGIN_STATE_CACHE = (DB_PATH, dict(states))
+    return dict(states)
+
+
+def is_site_plugin_enabled(plugin_id: str) -> bool:
+    plugin = get_site_plugin(plugin_id)
+    if plugin is None:
+        return False
+    return list_site_plugin_enabled_states().get(plugin_id, plugin.default_enabled)
+
+
+def save_site_plugin_enabled(plugin_id: str, enabled: bool) -> None:
+    global _SITE_PLUGIN_STATE_CACHE
+    if get_site_plugin(plugin_id) is None:
+        raise ValueError(f"未知站点插件：{plugin_id}")
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO site_plugin_settings (plugin_id, enabled, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(plugin_id) DO UPDATE SET
+                enabled = excluded.enabled,
+                updated_at = excluded.updated_at
+            """,
+            (
+                plugin_id,
+                int(enabled),
+                datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            ),
+        )
+    with _SITE_PLUGIN_STATE_LOCK:
+        if _SITE_PLUGIN_STATE_CACHE is not None and _SITE_PLUGIN_STATE_CACHE[0] == DB_PATH:
+            states = dict(_SITE_PLUGIN_STATE_CACHE[1])
+            states[plugin_id] = enabled
+            _SITE_PLUGIN_STATE_CACHE = (DB_PATH, states)
 
 
 def load_reading_progress(book_id: str) -> ReadingProgressRecord:
@@ -1137,6 +1227,19 @@ def _seed_builtin_book_sources(conn: sqlite3.Connection) -> None:
                 source.createdAt,
                 datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             ),
+        )
+
+
+def _seed_site_plugin_settings(conn: sqlite3.Connection) -> None:
+    now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    for plugin in list_site_plugins():
+        conn.execute(
+            """
+            INSERT INTO site_plugin_settings (plugin_id, enabled, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(plugin_id) DO NOTHING
+            """,
+            (plugin.id, int(plugin.default_enabled), now),
         )
 
 

@@ -4,6 +4,7 @@ import ast
 import asyncio
 import base64
 import hmac
+import html
 import importlib
 import json
 import math
@@ -33,7 +34,7 @@ from io import BytesIO
 from itertools import count
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -47,7 +48,7 @@ except Exception:  # pragma: no cover - RapidOCR environments normally provide b
     np = None
 
 try:
-    from .db import DATA_DIR
+    from .db import DATA_DIR, is_site_plugin_enabled
     from .manga_download import (
         MANGA_RETRYABLE_STATUS_CODES,
         fetch_image_with_retry,
@@ -66,12 +67,17 @@ try:
         PreviewResponse,
         TranslationSettings,
     )
+    from .site_plugins import (
+        is_manga_site_url,
+        resolve_site_plugin,
+        site_plugin_matches,
+    )
     from .translation_model_health import (
         normalize_openai_compatible_base_url,
         resolve_openai_compatible_model_config,
     )
 except ImportError:
-    from app.db import DATA_DIR
+    from app.db import DATA_DIR, is_site_plugin_enabled
     from app.manga_download import (
         MANGA_RETRYABLE_STATUS_CODES,
         fetch_image_with_retry,
@@ -89,6 +95,11 @@ except ImportError:
         MangaTranslatedRegion,
         PreviewResponse,
         TranslationSettings,
+    )
+    from app.site_plugins import (
+        is_manga_site_url,
+        resolve_site_plugin,
+        site_plugin_matches,
     )
     from app.translation_model_health import (
         normalize_openai_compatible_base_url,
@@ -113,6 +124,94 @@ except ImportError:
         parse_fanqie_book_page,
         parse_fanqie_reader_page,
     )
+
+try:
+    from .kakuyomu_parser import (
+        KAKUYOMU_GRAPHQL_ENDPOINT,
+        KAKUYOMU_WORK_QUERY,
+        parse_kakuyomu_episode_page,
+        parse_kakuyomu_work_response,
+    )
+except ImportError:
+    from app.kakuyomu_parser import (
+        KAKUYOMU_GRAPHQL_ENDPOINT,
+        KAKUYOMU_WORK_QUERY,
+        parse_kakuyomu_episode_page,
+        parse_kakuyomu_work_response,
+    )
+
+try:
+    from .yanmaga_parser import (
+        YANMAGA_CONTENT_HOSTS,
+        YANMAGA_ORIGIN,
+        YANMAGA_VIEWER_ORIGIN,
+        canonical_yanmaga_url,
+        decode_speedbinb_table,
+        descramble_yanmaga_image,
+        parse_yanmaga_book_page,
+        parse_yanmaga_episode_fragment,
+        speedbinb_page_keys,
+        speedbinb_request_key,
+        yanmaga_resource_from_url,
+    )
+except ImportError:
+    from app.yanmaga_parser import (
+        YANMAGA_CONTENT_HOSTS,
+        YANMAGA_ORIGIN,
+        YANMAGA_VIEWER_ORIGIN,
+        canonical_yanmaga_url,
+        decode_speedbinb_table,
+        descramble_yanmaga_image,
+        parse_yanmaga_book_page,
+        parse_yanmaga_episode_fragment,
+        speedbinb_page_keys,
+        speedbinb_request_key,
+        yanmaga_resource_from_url,
+    )
+
+try:
+    from .site_plugins.qidian_client import (
+        canonical_chapter_url as canonical_qidian_chapter_url,
+    )
+    from .site_plugins.qidian_client import (
+        get_book_info as get_qidian_book_info,
+    )
+    from .site_plugins.qidian_client import (
+        get_catalog as get_qidian_catalog,
+    )
+    from .site_plugins.qidian_client import (
+        get_chapter as get_qidian_chapter,
+    )
+    from .site_plugins.qidian_client import (
+        qidian_book_id_from_url,
+        qidian_chapter_ids_from_url,
+    )
+    from .site_plugins.qidian_runtime import QIDIAN_RUNTIME
+except ImportError:
+    from app.site_plugins.qidian_client import (
+        canonical_chapter_url as canonical_qidian_chapter_url,
+    )
+    from app.site_plugins.qidian_client import (
+        get_book_info as get_qidian_book_info,
+    )
+    from app.site_plugins.qidian_client import (
+        get_catalog as get_qidian_catalog,
+    )
+    from app.site_plugins.qidian_client import (
+        get_chapter as get_qidian_chapter,
+    )
+    from app.site_plugins.qidian_client import (
+        qidian_book_id_from_url,
+        qidian_chapter_ids_from_url,
+    )
+    from app.site_plugins.qidian_runtime import QIDIAN_RUNTIME
+
+try:
+    from .site_plugins.fanqie_client import search_books as search_fanqie_books
+    from .site_plugins.fanqie_runtime import FANQIE_RUNTIME
+except ImportError:
+    from app.site_plugins.fanqie_client import search_books as search_fanqie_books
+    from app.site_plugins.fanqie_runtime import FANQIE_RUNTIME
 
 try:
     from .fanqie_app import FanqieAppClient
@@ -150,23 +249,6 @@ GENERIC_CHAPTER_CONTAINER_SELECTORS = (
     "[class*='chapter'] a[href]",
     "[id*='episode'] a[href]",
     "[class*='episode'] a[href]",
-)
-KAKUYOMU_HOST_KEYWORDS = ("kakuyomu.jp",)
-SYOSETU_HOST_KEYWORDS = ("syosetu.com",)
-PIXIV_HOST_KEYWORDS = ("pixiv.net",)
-NOVELUP_HOST_KEYWORDS = ("novelup.plus",)
-ALPHAPOLIS_HOST_KEYWORDS = ("alphapolis.co.jp",)
-HAMELN_HOST_KEYWORDS = ("syosetu.org",)
-LINOVELIB_HOST_KEYWORDS = ("linovelib.com", "bilinovel.com")
-COMIC_18_HOST_KEYWORDS = ("18comic.vip",)
-BIKAWEBAPP_HOST_KEYWORDS = ("bikawebapp.com",)
-GENERIC_MANGA_HOST_KEYWORDS = (
-    "webtoons.com",
-    "mangabz.com",
-    "manhuagui.com",
-    "copymanga.com",
-    "copymanga.site",
-    "dmzj.com",
 )
 BUILTIN_MANGA_IMAGE_TIMEOUT_SECONDS = 1800
 CHAT_COMPLETION_IMAGE_MODEL_HINTS = (
@@ -294,6 +376,7 @@ BIKA_SIGNATURE_KEY = "~d}$Q7$eIni=V)9\\RK/P.RM4;9[7|@/CA}b~OW!3?EV`:<>M7pddUBL5n
 _BIKA_TOKEN_CACHE: dict[str, str] = {}
 _COMIC_18_SCRAMBLE_ID_CACHE: dict[str, int] = {}
 _PIXIV_COMIC_PAGE_KEYS: dict[str, tuple[str, int]] = {}
+_YANMAGA_PAGE_KEYS: dict[str, tuple[str, str, str]] = {}
 MANGA_RENDERER_VERSION = 11
 
 
@@ -330,51 +413,52 @@ class EdgeSnapshot:
     resolved_url: str
 
 
-def _host_matches(url: str, keywords: tuple[str, ...]) -> bool:
-    host = (urlparse(url).hostname or "").lower()
-    return any(host == keyword or host.endswith(f".{keyword}") for keyword in keywords)
-
-
 def _is_kakuyomu_url(url: str) -> bool:
-    return _host_matches(url, KAKUYOMU_HOST_KEYWORDS)
+    return site_plugin_matches("kakuyomu", url)
+
+
+def _is_yanmaga_url(url: str) -> bool:
+    return site_plugin_matches("yanmaga", url)
 
 
 def _is_fanqie_url(url: str) -> bool:
-    return is_fanqie_url(url)
+    return site_plugin_matches("fanqie", url)
+
+
+def _is_qidian_url(url: str) -> bool:
+    return site_plugin_matches("qidian", url)
 
 
 def _is_syosetu_url(url: str) -> bool:
-    return (
-        _host_matches(url, SYOSETU_HOST_KEYWORDS) and "novel18" not in (urlparse(url).hostname or "").lower()
-    )
+    return site_plugin_matches("syosetu", url)
 
 
 def _is_novel18_url(url: str) -> bool:
-    return "novel18.syosetu.com" in (urlparse(url).hostname or "").lower()
+    return site_plugin_matches("novel18", url)
 
 
 def _is_pixiv_url(url: str) -> bool:
-    return _host_matches(url, PIXIV_HOST_KEYWORDS)
+    return site_plugin_matches("pixiv", url)
 
 
 def _is_novelup_url(url: str) -> bool:
-    return _host_matches(url, NOVELUP_HOST_KEYWORDS)
+    return site_plugin_matches("novelup", url)
 
 
 def _is_alphapolis_url(url: str) -> bool:
-    return _host_matches(url, ALPHAPOLIS_HOST_KEYWORDS)
+    return site_plugin_matches("alphapolis", url)
 
 
 def _is_hameln_url(url: str) -> bool:
-    return _host_matches(url, HAMELN_HOST_KEYWORDS)
+    return site_plugin_matches("hameln", url)
 
 
 def _is_18comic_url(url: str) -> bool:
-    return _host_matches(url, COMIC_18_HOST_KEYWORDS)
+    return site_plugin_matches("18comic", url)
 
 
 def _is_bikawebapp_url(url: str) -> bool:
-    return _host_matches(url, BIKAWEBAPP_HOST_KEYWORDS)
+    return site_plugin_matches("bika", url)
 
 
 def _is_pixiv_manga_url(url: str) -> bool:
@@ -382,7 +466,7 @@ def _is_pixiv_manga_url(url: str) -> bool:
 
 
 def _is_pixiv_comic_url(url: str) -> bool:
-    return (urlparse(url).hostname or "").lower() == "comic.pixiv.net"
+    return site_plugin_matches("pixiv-comic", url)
 
 
 def _is_pixiv_comic_work_url(url: str) -> bool:
@@ -394,18 +478,21 @@ def _is_pixiv_comic_story_url(url: str) -> bool:
 
 
 def _is_generic_manga_url(url: str) -> bool:
-    return _host_matches(url, GENERIC_MANGA_HOST_KEYWORDS)
+    plugin = resolve_site_plugin(url)
+    return plugin is not None and plugin.chapter_handler == "generic_manga"
 
 
 def _is_manga_source_url(url: str) -> bool:
-    return (
-        _is_18comic_url(url)
-        or _is_bikawebapp_url(url)
-        or _is_pixiv_manga_url(url)
-        or _is_pixiv_comic_work_url(url)
-        or _is_pixiv_comic_story_url(url)
-        or _is_generic_manga_url(url)
-    )
+    return is_manga_site_url(url) or _is_pixiv_manga_url(url)
+
+
+def _require_enabled_site_plugin(url: str) -> Any:
+    plugin = resolve_site_plugin(url)
+    if plugin is None:
+        raise ValueError("没有可处理该链接的站点插件")
+    if not is_site_plugin_enabled(plugin.id):
+        raise ValueError(f"站点插件“{plugin.name}”已停用，请在左侧“插件配置”中启用后重试")
+    return plugin
 
 
 def _clean_title_suffix(title: str, suffixes: tuple[str, ...]) -> str:
@@ -450,8 +537,7 @@ def _result_cover_from_card(card: BeautifulSoup | Any, base_url: str) -> str | N
 
 
 def _is_linovelib_url(url: str) -> bool:
-    host = (urlparse(url).hostname or "").lower()
-    return any(keyword in host for keyword in LINOVELIB_HOST_KEYWORDS)
+    return site_plugin_matches("linovelib", url)
 
 
 def _normalize_source_url(url: str) -> str:
@@ -525,6 +611,54 @@ def _normalize_source_url(url: str) -> str:
 
 def _resolved_preview_book_kind(url: str, payload: AddBookPayload) -> str:
     return "漫画" if _is_manga_source_url(url) else payload.bookKind
+
+
+async def _search_fanqie_works(
+    source: BookSourceRecord,
+    keyword: str,
+    limit: int,
+) -> list[BuiltinSiteSearchResult]:
+    values = await asyncio.to_thread(
+        search_fanqie_books,
+        keyword,
+        limit,
+        cookies=FANQIE_RUNTIME.cookies(),
+    )
+    results: list[BuiltinSiteSearchResult] = []
+    seen: set[str] = set()
+    for item in values:
+        book_id = str(item.get("book_id") or item.get("bookId") or "").strip()
+        title = str(
+            item.get("book_name")
+            or item.get("original_book_name")
+            or item.get("bookName")
+            or ""
+        ).strip()
+        if not book_id.isdigit() or not title:
+            continue
+        source_url = canonical_fanqie_book_url(book_id)
+        if source_url in seen:
+            continue
+        seen.add(source_url)
+        results.append(
+            BuiltinSiteSearchResult(
+                title=title,
+                author=str(item.get("author") or item.get("author_name") or "").strip() or None,
+                synopsis=_normalize_search_text(item.get("abstract") or item.get("description") or ""),
+                cover=str(
+                    item.get("thumb_url")
+                    or item.get("thumbUri")
+                    or item.get("audio_thumb_url_hd")
+                    or ""
+                ).strip()
+                or None,
+                sourceUrl=source_url,
+                bookKind=source.bookKind,
+            )
+        )
+        if len(results) >= limit:
+            break
+    return results
 
 
 async def _search_kakuyomu_works(
@@ -732,11 +866,14 @@ async def search_builtin_site_books(
     if not normalized_keyword:
         return []
 
-    if _is_kakuyomu_url(source.baseUrl):
+    plugin = _require_enabled_site_plugin(source.baseUrl)
+    if plugin.search_handler == "fanqie":
+        return await _search_fanqie_works(source, normalized_keyword, limit)
+    if plugin.search_handler == "kakuyomu":
         return await _search_kakuyomu_works(source, normalized_keyword, limit)
-    if _is_18comic_url(source.baseUrl):
+    if plugin.search_handler == "18comic":
         return await _search_18comic_works(source, normalized_keyword, limit)
-    if _is_bikawebapp_url(source.baseUrl):
+    if plugin.search_handler == "bika":
         return await _search_bika_works(source, normalized_keyword, limit)
 
     raise ValueError("当前内置站点暂未实现作品搜索，请在书架页粘贴作品链接")
@@ -2993,13 +3130,9 @@ def _sample_region_fill_color_python(
                 if _color_luminance(color) <= 104 and _color_saturation(color) <= 96
             ]
             minimum_count = max(16, len(interior_pixels) // 5)
-            if len(high_luminance_pixels) >= minimum_count and len(
-                low_luminance_pixels
-            ) < minimum_count:
+            if len(high_luminance_pixels) >= minimum_count and len(low_luminance_pixels) < minimum_count:
                 return _dominant_rgb_pixels(high_luminance_pixels)
-            if len(low_luminance_pixels) >= minimum_count and len(
-                high_luminance_pixels
-            ) < minimum_count:
+            if len(low_luminance_pixels) >= minimum_count and len(high_luminance_pixels) < minimum_count:
                 return _dominant_rgb_pixels(low_luminance_pixels)
             if len(high_luminance_pixels) >= len(low_luminance_pixels) * 1.25:
                 return _dominant_rgb_pixels(high_luminance_pixels)
@@ -4140,9 +4273,7 @@ def _layout_score_tuple(layout: dict[str, Any], box_size: tuple[int, int]) -> tu
         # all horizontal space. Score the two-dimensional footprint as well so
         # longer translations split into readable right-to-left columns instead
         # of shrinking to a narrow strip.
-        footprint_ratio = (content_width / max(1, box_width)) * (
-            content_height / max(1, box_height)
-        )
+        footprint_ratio = (content_width / max(1, box_width)) * (content_height / max(1, box_height))
         underfill_penalty += max(0.0, 0.16 - footprint_ratio) * 8.0
     layout_penalty = float(layout.get("layout_penalty") or 0.0)
     return (
@@ -5105,9 +5236,7 @@ def _render_compressed_text_layout_to_bubble_layer(
     target_x = target_box[0] + max(0, (target_width - glyph_layer.width) // 2)
     target_y = target_box[1] + max(0, (target_height - glyph_layer.height) // 2)
     output_layer.alpha_composite(glyph_layer, (target_x, target_y))
-    output_layer.putalpha(
-        ImageChops.multiply(output_layer.getchannel("A"), safe_mask.convert("L"))
-    )
+    output_layer.putalpha(ImageChops.multiply(output_layer.getchannel("A"), safe_mask.convert("L")))
     return output_layer, scale
 
 
@@ -5604,9 +5733,10 @@ def _estimate_external_ocr_fill_color(
             if _color_luminance(color) <= 104 and _color_saturation(color) <= 96
         ]
         minimum_count = max(16, len(interior_pixels) // 5)
-        if len(high_luminance_pixels) >= minimum_count and len(
-            high_luminance_pixels
-        ) >= len(low_luminance_pixels) * 1.25:
+        if (
+            len(high_luminance_pixels) >= minimum_count
+            and len(high_luminance_pixels) >= len(low_luminance_pixels) * 1.25
+        ):
             return _dominant_rgb_pixels(high_luminance_pixels)
     # OCR boxes are often almost completely occupied by dark glyphs. Sample the
     # surrounding ring here; using the box interior would mistake source ink for
@@ -6048,7 +6178,9 @@ def _build_external_ocr_region(
         2, min(16, (body_bbox[3] - body_bbox[1]) // (10 if resolved_direction == "vertical" else 9))
     )
     body_safe = _shrink_absolute_bbox(body_bbox, body_padding_x, body_padding_y) or body_bbox
-    safe_box = body_safe if container_inferred else _intersect_region_bboxes(safe_source, body_safe) or body_safe
+    safe_box = (
+        body_safe if container_inferred else _intersect_region_bboxes(safe_source, body_safe) or body_safe
+    )
     padding_ratio = 0.80 if line_count > 1 else 0.84 if resolved_direction == "horizontal" else 0.82
     return {
         "order": order,
@@ -6936,8 +7068,7 @@ def _build_manga_page_translation_diagnostics(
     over_budget_translation_count = sum(
         1
         for region in translated_regions
-        if _manga_translation_char_count(region.translation)
-        > _estimate_manga_region_char_budget(region)
+        if _manga_translation_char_count(region.translation) > _estimate_manga_region_char_budget(region)
     )
     return {
         **dict(ocr_payload.diagnostics or {}),
@@ -7093,9 +7224,7 @@ async def _translate_manga_region_batch(
         if compact_translation and _manga_translation_char_count(
             compact_translation
         ) < _manga_translation_char_count(region.translation):
-            resolved_regions.append(
-                region.model_copy(update={"translation": compact_translation})
-            )
+            resolved_regions.append(region.model_copy(update={"translation": compact_translation}))
         else:
             resolved_regions.append(region)
     return resolved_regions
@@ -7432,9 +7561,7 @@ def _render_translated_manga_page_to_image(
                     outside_pixel_count,
                 )
             requires_compression = (
-                not bool(layout.get("fits"))
-                or overflow_value > 0
-                or outside_pixel_count > 0
+                not bool(layout.get("fits")) or overflow_value > 0 or outside_pixel_count > 0
             )
 
         if requires_compression:
@@ -7547,9 +7674,7 @@ async def _emit_single_image_diagnostics(
         "region_count": int(diagnostics.get("region_count") or len(page_payload.regions)),
         "empty_translation_count": int(diagnostics.get("empty_translation_count") or 0),
         "overflow_region_count": int(diagnostics.get("overflow_region_count") or 0),
-        "compressed_overflow_region_count": int(
-            diagnostics.get("compressed_overflow_region_count") or 0
-        ),
+        "compressed_overflow_region_count": int(diagnostics.get("compressed_overflow_region_count") or 0),
         "source_text_erased_region_count": int(diagnostics.get("source_text_erased_region_count") or 0),
         "average_source_font_size": diagnostics.get("average_source_font_size"),
         "pipeline_ms": diagnostics.get("pipeline_ms"),
@@ -8931,38 +9056,114 @@ async def _preview_bika(source_url: str, payload: AddBookPayload) -> PreviewResp
 
 
 async def _preview_kakuyomu(source_url: str, payload: AddBookPayload) -> PreviewResponse:
-    html, resolved_url = await _fetch_preview_html(source_url)
-    state = _kakuyomu_state_from_html(html)
     work_id = _kakuyomu_work_id_from_url(source_url)
     if not work_id:
         raise ValueError("无法识别 Kakuyomu 作品编号")
-    work = _kakuyomu_work_from_state(state, work_id)
-    title = str(work.get("title") or payload.title or "未命名小说").strip()
-    author = _kakuyomu_author_from_state(state, work)
-    synopsis = _kakuyomu_synopsis_from_work(work)
-    cover = str(work.get("adminCoverImageUrl") or work.get("ogImageUrl") or "").strip() or None
-    chapters = _kakuyomu_chapters_from_state(state, work_id, work)
-    if not chapters and work.get("firstPublicEpisodeUnion"):
-        first_ref = work["firstPublicEpisodeUnion"].get("__ref")
-        first_episode = state.get(str(first_ref or ""))
-        if isinstance(first_episode, dict):
-            episode_id = str(first_episode.get("id") or "").strip()
-            episode_title = str(first_episode.get("title") or title).strip()
-            if episode_id:
-                chapters = [
-                    ChapterPreview(
-                        title=episode_title,
-                        url=f"{_build_origin(resolved_url)}/works/{work_id}/episodes/{episode_id}",
-                    )
-                ]
+    async with _build_http_client() as client:
+        response = await client.post(
+            KAKUYOMU_GRAPHQL_ENDPOINT,
+            json={
+                "query": KAKUYOMU_WORK_QUERY,
+                "variables": {"workId": work_id},
+                "operationName": "GetQingJuanWork",
+            },
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Origin": "https://kakuyomu.jp",
+                "Referer": f"https://kakuyomu.jp/works/{work_id}",
+                "User-Agent": DEFAULT_HEADERS["User-Agent"],
+                "apollographql-client-name": "kakuyomu-web",
+                "apollographql-client-version": "1.0.0",
+            },
+        )
+        if response.status_code >= 400:
+            raise ValueError(f"Kakuyomu GraphQL 请求失败：HTTP {response.status_code}")
+        try:
+            graphql_payload = response.json()
+        except json.JSONDecodeError as exc:
+            raise ValueError("Kakuyomu GraphQL 返回的不是 JSON") from exc
+
+    work = parse_kakuyomu_work_response(graphql_payload, work_id)
+    chapters = [
+        ChapterPreview(
+            title=episode.title,
+            url=f"https://kakuyomu.jp/works/{work_id}/episodes/{episode.id}",
+        )
+        for episode in work.episodes
+    ]
+    if not chapters:
+        raise ValueError("Kakuyomu GraphQL 未返回任何公开章节")
 
     return PreviewResponse(
-        title=title,
-        author=author,
-        synopsis=synopsis,
-        cover=cover,
+        title=work.title or payload.title or "未命名小说",
+        author=work.author,
+        synopsis=work.synopsis,
+        cover=work.cover,
         chapterCount=len(chapters),
         chapters=chapters,
+    )
+
+
+async def _preview_yanmaga(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    resource = yanmaga_resource_from_url(source_url)
+    if resource is None:
+        raise ValueError("无法识别 Yanmaga 作品链接，请使用 https://yanmaga.jp/comics/作品路径")
+    book_path, _ = resource
+    book_url = canonical_yanmaga_url(book_path)
+
+    async with _build_http_client() as client:
+        response = await client.get(book_url, headers=_request_headers(book_url))
+        if response.status_code >= 400:
+            raise ValueError(f"Yanmaga 作品页请求失败：HTTP {response.status_code}")
+        book = parse_yanmaga_book_page(response.text, book_url)
+        episodes = list(book.episodes)
+
+        if book.next_path and book.next_offset is not None:
+            fragment_url = urljoin(YANMAGA_ORIGIN, book.next_path)
+            fragment_target = urlparse(fragment_url)
+            expected_path = unquote(urlparse(book_url).path).rstrip("/") + "/episodes"
+            if (
+                fragment_target.scheme != "https"
+                or (fragment_target.hostname or "").lower() != "yanmaga.jp"
+                or unquote(fragment_target.path).rstrip("/") != expected_path
+            ):
+                raise ValueError("Yanmaga 章节列表返回了不可信的翻页地址")
+            fragment_response = await client.get(
+                fragment_url,
+                params={"offset": book.next_offset, "sort": "older"},
+                headers={
+                    **_request_headers(fragment_url, referer=book_url),
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+            )
+            if fragment_response.status_code >= 400:
+                raise ValueError(f"Yanmaga 章节列表请求失败：HTTP {fragment_response.status_code}")
+            episodes.extend(parse_yanmaga_episode_fragment(fragment_response.text, book_path))
+
+    unique_episodes = []
+    seen_episode_ids: set[str] = set()
+    for episode in episodes:
+        if episode.id in seen_episode_ids:
+            continue
+        seen_episode_ids.add(episode.id)
+        if episode.publicly_readable:
+            unique_episodes.append(episode)
+    if not unique_episodes:
+        raise ValueError("Yanmaga 当前没有可供匿名访问的公开章节")
+
+    chapters = [
+        ChapterPreview(title=episode.title, url=episode.url)
+        for episode in unique_episodes
+    ]
+    return PreviewResponse(
+        title=book.title or payload.title or "未命名漫画",
+        author=book.author,
+        synopsis=book.synopsis,
+        cover=book.cover,
+        chapterCount=len(chapters),
+        chapters=chapters,
+        bookKind="漫画",
     )
 
 
@@ -9325,41 +9526,86 @@ async def _preview_fanqie(source_url: str, payload: AddBookPayload) -> PreviewRe
     )
 
 
+async def _preview_qidian(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    book_id = qidian_book_id_from_url(source_url)
+    if not book_id:
+        raise ValueError("起点链接缺少有效作品 ID，请使用作品页或章节页链接")
+    book_info, catalog = await asyncio.gather(
+        asyncio.to_thread(get_qidian_book_info, book_id),
+        asyncio.to_thread(get_qidian_catalog, book_id),
+    )
+    chapters = [
+        ChapterPreview(
+            title=str(chapter.get("chapterName") or "未命名章节"),
+            url=canonical_qidian_chapter_url(book_id, str(chapter["chapterId"])),
+            accessRestricted=bool(chapter.get("isVip")),
+        )
+        for volume in catalog.get("volumes") or []
+        if isinstance(volume, dict)
+        for chapter in volume.get("chapters") or []
+        if isinstance(chapter, dict) and str(chapter.get("chapterId") or "").isdigit()
+    ]
+    if not chapters:
+        raise ValueError("起点作品目录为空")
+    synopsis_html = str(book_info.get("desc") or "")
+    synopsis = BeautifulSoup(synopsis_html, "html.parser").get_text("\n", strip=True)
+    category = str(book_info.get("chanName") or "")
+    book_kind = "轻小说" if "轻小说" in category else payload.bookKind
+    return PreviewResponse(
+        title=str(book_info.get("bookName") or catalog.get("bookName") or "未命名作品"),
+        author=str(book_info.get("authorName") or "").strip() or None,
+        synopsis=synopsis,
+        cover=None,
+        chapterCount=len(chapters),
+        chapters=chapters,
+        bookKind=book_kind,
+    )
+
+
 async def preview_from_url(payload: AddBookPayload) -> PreviewResponse:
     source_url = _normalize_source_url(str(payload.sourceUrl))
+    plugin = _require_enabled_site_plugin(source_url)
     result: PreviewResponse
-    if _is_fanqie_url(source_url):
+    if plugin.preview_handler == "fanqie":
         result = await _preview_fanqie(source_url, payload)
         result = result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
         return _apply_payload_metadata_to_preview(result, payload)
-    if _is_18comic_url(source_url):
+    if plugin.preview_handler == "qidian":
+        result = await _preview_qidian(source_url, payload)
+        return _apply_payload_metadata_to_preview(result, payload)
+    if plugin.preview_handler == "18comic":
         result = await _preview_18comic(source_url, payload)
         return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
-    if _is_bikawebapp_url(source_url):
+    if plugin.preview_handler == "bika":
         result = await _preview_bika(source_url, payload)
         return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
-    if _is_pixiv_comic_work_url(source_url):
+    if plugin.preview_handler == "pixiv_comic":
+        if not _is_pixiv_comic_work_url(source_url):
+            raise ValueError("Pixiv Comic 章节链接不是作品页，请提交作品链接")
         result = await _preview_pixiv_comic(source_url, payload)
         return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
-    if _is_pixiv_manga_url(source_url):
-        result = await _preview_pixiv_artwork(source_url, payload)
+    if plugin.preview_handler == "pixiv":
+        if _is_pixiv_manga_url(source_url):
+            result = await _preview_pixiv_artwork(source_url, payload)
+        else:
+            result = await _preview_pixiv(source_url, payload)
         return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
-    if _is_kakuyomu_url(source_url):
+    if plugin.preview_handler == "kakuyomu":
         result = await _preview_kakuyomu(source_url, payload)
         return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
-    if _is_syosetu_url(source_url) or _is_novel18_url(source_url):
+    if plugin.preview_handler == "yanmaga":
+        result = await _preview_yanmaga(source_url, payload)
+        return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
+    if plugin.preview_handler == "syosetu":
         result = await _preview_syosetu(source_url, payload)
         return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
-    if _is_pixiv_url(source_url):
-        result = await _preview_pixiv(source_url, payload)
-        return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
-    if _is_hameln_url(source_url):
+    if plugin.preview_handler == "hameln":
         result = await _preview_hameln(source_url, payload)
         return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
-    if _is_novelup_url(source_url):
+    if plugin.preview_handler == "novelup":
         result = await _preview_novelup(source_url, payload)
         return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
-    if _is_alphapolis_url(source_url):
+    if plugin.preview_handler == "alphapolis":
         result = await _preview_alphapolis(source_url, payload)
         return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
 
@@ -9592,25 +9838,9 @@ async def _fetch_kakuyomu_chapter_data(
     chapter_title: str = "",
 ) -> ChapterFetchResult:
     response = await _get_html_response(client, chapter_url, referer=chapter_url)
-    soup = BeautifulSoup(response.text, "html.parser")
-    body = soup.select_one(".widget-episodeBody, .js-episode-body")
-    if body is None:
-        raise ValueError("未能从 Kakuyomu 页面提取出正文内容")
-    for selector in ("script", "style", ".widget-toc", ".widget-episodeTitle"):
-        for node in body.select(selector):
-            node.decompose()
-    text = body.get_text("\n", strip=True)
-    image_urls: list[str] = []
-    for image in body.select("img"):
-        for key in ("data-src", "src"):
-            value = str(image.get(key) or "").strip()
-            if value:
-                absolute = urljoin(str(response.url), value)
-                if absolute not in image_urls:
-                    image_urls.append(absolute)
-                break
-    if not text and not image_urls:
-        raise ValueError("未能从 Kakuyomu 页面提取出正文内容")
+    parsed = parse_kakuyomu_episode_page(response.text)
+    image_urls = [urljoin(str(response.url), source) for source in parsed.image_sources]
+    text = parsed.text
     illustration = _is_illustration_chapter(chapter_title)
     if not text and image_urls:
         text = _format_illustration_text(chapter_title or "插图", image_urls)
@@ -9618,6 +9848,148 @@ async def _fetch_kakuyomu_chapter_data(
     elif image_urls and illustration:
         text = _append_image_links(text, image_urls)
     return ChapterFetchResult(text=text, image_urls=image_urls, illustration=illustration)
+
+
+def _yanmaga_viewer_content_id(viewer_url: str, book_path: str, episode_id: str) -> str:
+    parsed = urlparse(viewer_url)
+    parts = [unquote(part) for part in parsed.path.strip("/").split("/") if part]
+    if (
+        parsed.scheme != "https"
+        or (parsed.hostname or "").lower() != "yanmaga.jp"
+        or parts != ["viewer", "comics", book_path, episode_id]
+    ):
+        raise ValueError("Yanmaga 章节没有跳转到同作品、同章节的官方 Viewer")
+    content_id = parse_qs(parsed.query).get("cid", [""])[0].strip()
+    if not content_id:
+        raise ValueError("Yanmaga 章节当前需要注册、登录、点数或已停止匿名公开")
+    return content_id
+
+
+def _validated_yanmaga_contents_server(value: Any) -> str:
+    server = str(value or "").strip().rstrip("/")
+    parsed = urlparse(server)
+    if (
+        parsed.scheme != "https"
+        or (parsed.hostname or "").lower() not in YANMAGA_CONTENT_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Yanmaga Viewer 返回了不可信的内容服务器")
+    return server
+
+
+async def _fetch_yanmaga_chapter_data(
+    client: httpx.AsyncClient,
+    chapter_url: str,
+    chapter_title: str = "",
+) -> ChapterFetchResult:
+    resource = yanmaga_resource_from_url(chapter_url)
+    if resource is None or resource[1] is None:
+        raise ValueError("Yanmaga 章节链接格式无效")
+    book_path, episode_id = resource
+    canonical_url = canonical_yanmaga_url(book_path, episode_id)
+    response = await client.get(
+        canonical_url,
+        headers=_request_headers(canonical_url),
+        follow_redirects=False,
+    )
+    if response.status_code not in {301, 302, 303, 307, 308}:
+        if response.status_code >= 400:
+            raise ValueError(f"Yanmaga 章节页请求失败：HTTP {response.status_code}")
+        raise ValueError("Yanmaga 章节当前未向匿名访问跳转到 Viewer")
+    viewer_url = urljoin(canonical_url, str(response.headers.get("Location") or ""))
+    content_id = _yanmaga_viewer_content_id(viewer_url, book_path, episode_id)
+
+    request_time = int(time.time() * 1000)
+    request_key = speedbinb_request_key(content_id, request_time)
+    info_response = await client.get(
+        f"{YANMAGA_VIEWER_ORIGIN}/bibGetCntntInfo",
+        params={
+            "random_identification": episode_id,
+            "type": "comics",
+            "cid": content_id,
+            "k": request_key,
+            "dmytime": str(request_time),
+        },
+        headers={
+            **_request_headers(viewer_url, referer=viewer_url),
+            "Accept": "application/json, text/plain, */*",
+        },
+    )
+    if info_response.status_code >= 400:
+        raise ValueError(f"Yanmaga Viewer 内容信息请求失败：HTTP {info_response.status_code}")
+    try:
+        info_payload = info_response.json()
+    except json.JSONDecodeError as exc:
+        raise ValueError("Yanmaga Viewer 内容信息不是 JSON") from exc
+    if not isinstance(info_payload, dict):
+        raise ValueError("Yanmaga Viewer 内容信息格式无效")
+    items = info_payload.get("items")
+    if info_payload.get("result") != 1 or not isinstance(items, list) or not items:
+        raise ValueError("Yanmaga Viewer 未返回公开章节内容，章节可能已停止公开")
+    item = items[0]
+    if not isinstance(item, dict):
+        raise ValueError("Yanmaga Viewer 内容信息格式无效")
+    if int(item.get("ServerType") or 2) != 2:
+        raise ValueError("Yanmaga Viewer 返回了当前不支持的内容服务器类型")
+
+    content_table = decode_speedbinb_table(content_id, request_key, str(item.get("ctbl") or ""))
+    position_table = decode_speedbinb_table(content_id, request_key, str(item.get("ptbl") or ""))
+    contents_server = _validated_yanmaga_contents_server(item.get("ContentsServer"))
+    content_response = await client.get(
+        f"{contents_server}/content",
+        params={"dmytime": str(item.get("ContentDate"))} if item.get("ContentDate") else None,
+        headers={"Referer": viewer_url, "Origin": YANMAGA_ORIGIN, "Accept": "application/json"},
+    )
+    if content_response.status_code >= 400:
+        raise ValueError(f"Yanmaga Viewer 页面列表请求失败：HTTP {content_response.status_code}")
+    try:
+        content_payload = content_response.json()
+    except json.JSONDecodeError as exc:
+        raise ValueError("Yanmaga Viewer 页面列表不是 JSON") from exc
+    if not isinstance(content_payload, dict):
+        raise ValueError("Yanmaga Viewer 页面列表格式无效")
+
+    ttx = html.unescape(str(content_payload.get("ttx") or ""))
+    image_sources = re.findall(r'<t-img[^>]*?src\s*=\s*["\']([^"\']+)["\']', ttx)
+    if not image_sources:
+        raise ValueError("Yanmaga Viewer 未返回漫画页面")
+
+    content_date = str(content_payload.get("ContentDate") or item.get("ContentDate") or "").strip()
+    image_base = f"{contents_server}/img/"
+    image_base_path = urlparse(image_base).path
+    image_urls: list[str] = []
+    for source in image_sources:
+        source_url = urlparse(source)
+        if source_url.scheme or source_url.netloc or source.startswith("/") or ".." in source.split("/"):
+            raise ValueError("Yanmaga Viewer 返回了不可信的页面图片地址")
+        image_url = urljoin(image_base, source)
+        image_target = urlparse(image_url)
+        if (
+            image_target.scheme != "https"
+            or (image_target.hostname or "").lower() not in YANMAGA_CONTENT_HOSTS
+            or not image_target.path.startswith(image_base_path)
+        ):
+            raise ValueError("Yanmaga Viewer 页面图片越出允许的内容服务器路径")
+        query = {"q": "1"}
+        if content_date:
+            query["dmytime"] = content_date
+        image_url = str(httpx.URL(image_url).copy_merge_params(query))
+        position_key, content_key = speedbinb_page_keys(source, content_table, position_table)
+        _YANMAGA_PAGE_KEYS[image_url] = (position_key, content_key, viewer_url)
+        image_urls.append(image_url)
+
+    title = chapter_title.strip() or str(item.get("Title") or "Yanmaga 漫画").strip()
+    return ChapterFetchResult(
+        text=_manga_placeholder_text(title, len(image_urls)),
+        image_urls=image_urls,
+        illustration=False,
+        content_source="yanmaga_public_viewer",
+        authorization_method="public_web",
+        access_restricted=False,
+    )
 
 
 async def _fetch_syosetu_chapter_data(
@@ -10049,39 +10421,67 @@ async def _fetch_fanqie_chapter_data(
     )
 
 
+async def _fetch_qidian_chapter_data(
+    chapter_url: str,
+) -> ChapterFetchResult:
+    ids = qidian_chapter_ids_from_url(chapter_url)
+    if ids is None:
+        raise ValueError("起点章节链接缺少作品或章节 ID")
+    book_id, chapter_id = ids
+    cookies = QIDIAN_RUNTIME.cookies()
+    chapter = await asyncio.to_thread(
+        get_qidian_chapter,
+        book_id,
+        chapter_id,
+        cookies=cookies,
+    )
+    return ChapterFetchResult(
+        text=str(chapter.get("text") or ""),
+        image_urls=[],
+        content_source="qidian-mobile-web",
+        authorization_method="qidian-web-session" if cookies else "public-web",
+        access_restricted=bool(chapter.get("accessRestricted")),
+    )
+
+
 async def _fetch_chapter_data(
     client: httpx.AsyncClient, chapter_url: str, chapter_title: str = ""
 ) -> ChapterFetchResult:
+    plugin = _require_enabled_site_plugin(chapter_url)
     try:
-        if _is_fanqie_url(chapter_url):
+        if plugin.chapter_handler == "fanqie":
             return await _fetch_fanqie_chapter_data(client, chapter_url, chapter_title)
-        if _is_18comic_url(chapter_url):
+        if plugin.chapter_handler == "qidian":
+            return await _fetch_qidian_chapter_data(chapter_url)
+        if plugin.chapter_handler == "18comic":
             return await _fetch_18comic_chapter_data(client, chapter_url, chapter_title)
-        if _is_bikawebapp_url(chapter_url):
+        if plugin.chapter_handler == "bika":
             return await _fetch_bika_chapter_data(client, chapter_url, chapter_title)
-        if _is_pixiv_comic_story_url(chapter_url):
-            return await _fetch_pixiv_comic_chapter_data(client, chapter_url, chapter_title)
-        if _is_pixiv_comic_work_url(chapter_url):
+        if plugin.chapter_handler == "pixiv_comic":
+            if _is_pixiv_comic_story_url(chapter_url):
+                return await _fetch_pixiv_comic_chapter_data(client, chapter_url, chapter_title)
             raise ValueError("Pixiv Comic 作品页不是章节地址，请先解析作品目录")
-        if _is_pixiv_manga_url(chapter_url):
-            return await _fetch_pixiv_manga_data(client, chapter_url, chapter_title)
-        if _is_generic_manga_url(chapter_url):
-            return await _fetch_generic_manga_chapter_data(client, chapter_url, chapter_title)
-        if _is_linovelib_url(chapter_url):
-            return await _fetch_linovelib_chapter_data(client, chapter_url, chapter_title)
-        if _is_kakuyomu_url(chapter_url):
-            return await _fetch_kakuyomu_chapter_data(client, chapter_url, chapter_title)
-        if _is_syosetu_url(chapter_url) or _is_novel18_url(chapter_url):
-            return await _fetch_syosetu_chapter_data(client, chapter_url, chapter_title)
-        if _is_pixiv_url(chapter_url):
+        if plugin.chapter_handler == "pixiv":
+            if _is_pixiv_manga_url(chapter_url):
+                return await _fetch_pixiv_manga_data(client, chapter_url, chapter_title)
             return await _fetch_pixiv_chapter_data(client, chapter_url, chapter_title)
-        if _is_hameln_url(chapter_url):
+        if plugin.chapter_handler == "generic_manga":
+            return await _fetch_generic_manga_chapter_data(client, chapter_url, chapter_title)
+        if plugin.chapter_handler == "linovelib":
+            return await _fetch_linovelib_chapter_data(client, chapter_url, chapter_title)
+        if plugin.chapter_handler == "kakuyomu":
+            return await _fetch_kakuyomu_chapter_data(client, chapter_url, chapter_title)
+        if plugin.chapter_handler == "yanmaga":
+            return await _fetch_yanmaga_chapter_data(client, chapter_url, chapter_title)
+        if plugin.chapter_handler == "syosetu":
+            return await _fetch_syosetu_chapter_data(client, chapter_url, chapter_title)
+        if plugin.chapter_handler == "hameln":
             return await _fetch_hameln_chapter_data(client, chapter_url, chapter_title)
-        if _is_novelup_url(chapter_url):
+        if plugin.chapter_handler == "novelup":
             raise ValueError(
                 "Novelup 当前访问被 CloudFront 拦截（403），当前环境下即使使用浏览器会话也无法直接抓取章节。"
             )
-        if _is_alphapolis_url(chapter_url):
+        if plugin.chapter_handler == "alphapolis":
             return await _fetch_alphapolis_chapter_data(client, chapter_url, chapter_title)
 
         response = await client.get(chapter_url, headers=_request_headers(chapter_url))
@@ -10521,18 +10921,30 @@ async def _download_binary_bytes(
         response = await _get_binary_response(client, url, referer=referer)
         return response.content
     pixiv_comic_page = _PIXIV_COMIC_PAGE_KEYS.get(url)
+    yanmaga_page = _YANMAGA_PAGE_KEYS.get(url)
     headers = _image_request_headers(url, referer)
     if pixiv_comic_page:
         headers["X-Cobalt-Thumber-Parameter-GridShuffle-Key"] = pixiv_comic_page[0]
+    if yanmaga_page:
+        headers["Referer"] = yanmaga_page[2]
+        headers["Origin"] = YANMAGA_ORIGIN
     image_bytes = await fetch_image_with_retry(
         client,
         url,
         headers=headers,
     )
-    if not pixiv_comic_page:
-        return image_bytes
-    key, grid_size = pixiv_comic_page
-    return await asyncio.to_thread(_pixiv_comic_descramble_bytes, image_bytes, key, grid_size)
+    if pixiv_comic_page:
+        key, grid_size = pixiv_comic_page
+        return await asyncio.to_thread(_pixiv_comic_descramble_bytes, image_bytes, key, grid_size)
+    if yanmaga_page:
+        position_key, content_key, _ = yanmaga_page
+        return await asyncio.to_thread(
+            descramble_yanmaga_image,
+            image_bytes,
+            position_key,
+            content_key,
+        )
+    return image_bytes
 
 
 def _image_download_concurrency(source_url: str, concurrency: int) -> int:

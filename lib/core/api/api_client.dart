@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import '../models/book.dart';
 import '../models/link_job.dart';
 import '../models/settings.dart';
+import '../models/site_plugin.dart';
 import '../models/source.dart';
 import '../models/task.dart';
 import 'api_exception.dart';
@@ -290,6 +291,111 @@ class ApiClient {
   Future<List<BookSource>> fetchSources() async {
     final payload = _decode(await _request('GET', '/sources'));
     return _list(payload).map(BookSource.fromJson).toList();
+  }
+
+  Future<List<SitePlugin>> fetchSitePlugins() async {
+    final payload = _decode(await _request('GET', '/plugins'));
+    return _list(payload).map(SitePlugin.fromJson).toList();
+  }
+
+  Future<SitePlugin> saveSitePluginEnabled(
+      String pluginId, bool enabled) async {
+    final payload = _decode(
+      await _request(
+        'PUT',
+        '/plugins/${Uri.encodeComponent(pluginId)}',
+        body: <String, dynamic>{'enabled': enabled},
+      ),
+    );
+    return SitePlugin.fromJson(_map(payload));
+  }
+
+  Future<SitePluginAccount> fetchSitePluginAccount(String pluginId) async {
+    final encodedId = Uri.encodeComponent(pluginId);
+    final payload =
+        _decode(await _request('GET', '/plugins/$encodedId/account'));
+    return SitePluginAccount.fromJson(_map(payload));
+  }
+
+  Future<SitePluginLoginQrCode> startSitePluginLogin(String pluginId) async {
+    final encodedId = Uri.encodeComponent(pluginId);
+    final payload = _decode(
+      await _request('POST', '/plugins/$encodedId/account/login-qrcode'),
+    );
+    return SitePluginLoginQrCode.fromJson(_map(payload));
+  }
+
+  Future<SitePluginLoginPoll> pollSitePluginLogin(
+    String pluginId,
+    String flowId,
+  ) async {
+    final encodedId = Uri.encodeComponent(pluginId);
+    final encodedFlowId = Uri.encodeComponent(flowId);
+    final payload = _decode(
+      await _request(
+        'GET',
+        '/plugins/$encodedId/account/login-qrcode/$encodedFlowId',
+      ),
+    );
+    return SitePluginLoginPoll.fromJson(_map(payload));
+  }
+
+  Future<SitePluginAccount> logoutSitePluginAccount(String pluginId) async {
+    final encodedId = Uri.encodeComponent(pluginId);
+    final payload =
+        _decode(await _request('DELETE', '/plugins/$encodedId/account'));
+    return SitePluginAccount.fromJson(_map(payload));
+  }
+
+  Future<SitePluginAccount> loginSitePluginWithCookies(
+    String pluginId,
+    String cookies,
+  ) async {
+    final encodedId = Uri.encodeComponent(pluginId);
+    final payload = _decode(
+      await _request(
+        'POST',
+        '/plugins/$encodedId/account/login-cookies',
+        body: <String, dynamic>{'cookies': cookies},
+      ),
+    );
+    return SitePluginAccount.fromJson(_map(payload));
+  }
+
+  Future<SitePluginBookshelfImportJob> startSitePluginBookshelfImport(
+    String pluginId,
+  ) async {
+    final encodedId = Uri.encodeComponent(pluginId);
+    final payload = _decode(
+      await _request('POST', '/plugins/$encodedId/bookshelf/import-jobs'),
+    );
+    return SitePluginBookshelfImportJob.fromJson(_map(payload));
+  }
+
+  Future<SitePluginBookshelfImportJob> fetchSitePluginBookshelfImport(
+    String pluginId,
+    String jobId,
+  ) async {
+    final encodedId = Uri.encodeComponent(pluginId);
+    final encodedJobId = Uri.encodeComponent(jobId);
+    final payload = _decode(
+      await _request(
+        'GET',
+        '/plugins/$encodedId/bookshelf/import-jobs/$encodedJobId',
+      ),
+    );
+    return SitePluginBookshelfImportJob.fromJson(_map(payload));
+  }
+
+  Future<BookSource> saveSourceEnabled(String sourceId, bool enabled) async {
+    final payload = _decode(
+      await _request(
+        'PUT',
+        '/sources/${Uri.encodeComponent(sourceId)}/enabled',
+        body: <String, dynamic>{'enabled': enabled},
+      ),
+    );
+    return BookSource.fromJson(_map(payload));
   }
 
   Future<List<SourceSearchResult>> searchSources(String keyword,

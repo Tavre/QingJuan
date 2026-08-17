@@ -13,6 +13,7 @@ import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/shell/app_shell.dart';
 import 'package:qingjuan/features/sources/sources_controller.dart';
 import 'package:qingjuan/features/tasks/tasks_controller.dart';
+import 'package:qingjuan/shared/responsive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -80,7 +81,7 @@ void main() {
       find.byKey(const ValueKey('mobile-navigation-sources')),
     );
     await tester.pump(const Duration(milliseconds: 180));
-    expect(find.text('建立你的内容来源'), findsOneWidget);
+    expect(find.text('暂未配置书源'), findsOneWidget);
 
     await tester.tap(
       find.byKey(const ValueKey('mobile-navigation-tasks')),
@@ -93,6 +94,7 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 180));
     expect(find.text('让青卷更适合你'), findsOneWidget);
+    expect(find.byKey(const ValueKey('settings-plugins-button')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -135,17 +137,93 @@ void main() {
   });
 
   testWidgets('tablet uses persistent Fluent navigation pane', (tester) async {
-    final harness = await _Harness.create(const Size(1280, 800));
+    final harness = await _Harness.create(
+      const Size(1280, 800),
+      targetPlatform: TargetPlatform.windows,
+      backendMode: BackendConnectionMode.local,
+    );
     addTearDown(harness.dispose);
     await tester.pumpWidget(harness.widget);
     await tester.pump(const Duration(milliseconds: 600));
 
     final view = tester.widget<NavigationView>(find.byType(NavigationView));
     expect(view.pane?.displayMode, PaneDisplayMode.open);
-    expect(view.pane?.items, hasLength(5));
+    expect(view.pane?.items, hasLength(6));
     expect(view.pane?.footerItems, hasLength(1));
     expect(find.byKey(const ValueKey('tablet-navigation')), findsOneWidget);
     expect(find.byKey(const ValueKey('mobile-app-bar')), findsNothing);
+    expect(find.byKey(const ValueKey('desktop-title-bar')), findsOneWidget);
+    expect(find.byKey(const ValueKey('window-minimize')), findsOneWidget);
+    expect(find.byKey(const ValueKey('window-maximize')), findsOneWidget);
+    expect(find.byKey(const ValueKey('window-close')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('navigation-pane-resizer')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('navigation-pane-toggle')),
+      findsOneWidget,
+    );
+    final sourceItem = view.pane!.items[2] as PaneItem;
+    final pluginItem = view.pane!.items[3] as PaneItem;
+    expect((sourceItem.title as Text).data, '书源管理');
+    expect((pluginItem.title as Text).data, '插件配置');
+  });
+
+  testWidgets('switching to Linux remote hides client plugin management',
+      (tester) async {
+    final harness = await _Harness.create(
+      const Size(1280, 800),
+      targetPlatform: TargetPlatform.windows,
+      backendMode: BackendConnectionMode.local,
+    );
+    addTearDown(harness.dispose);
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 600));
+
+    harness.appState.selectSection(AppSection.plugins);
+    await tester.pump(const Duration(milliseconds: 180));
+    expect(harness.appState.section, AppSection.plugins);
+    expect(find.text('插件配置'), findsWidgets);
+
+    await harness.appState.selectBackendMode(BackendConnectionMode.remote);
+    await tester.pump(const Duration(milliseconds: 180));
+
+    final view = tester.widget<NavigationView>(find.byType(NavigationView));
+    expect(view.pane?.items, hasLength(5));
+    expect(
+      view.pane?.items
+          .whereType<PaneItem>()
+          .map((item) => item.title)
+          .whereType<Text>()
+          .map((text) => text.data),
+      isNot(contains('插件配置')),
+    );
+    expect(harness.appState.section, AppSection.settings);
+    expect(find.byKey(const ValueKey('settings-plugins-button')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('narrow Windows keeps Fluent desktop navigation', (tester) async {
+    final harness = await _Harness.create(
+      const Size(620, 720),
+      targetPlatform: TargetPlatform.windows,
+    );
+    addTearDown(harness.dispose);
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 600));
+
+    final view = tester.widget<NavigationView>(find.byType(NavigationView));
+    expect(view.pane?.displayMode, PaneDisplayMode.compact);
+    expect(
+        find.byKey(const ValueKey('mobile-bottom-navigation')), findsNothing);
+    expect(find.byKey(const ValueKey('tablet-navigation')), findsOneWidget);
+    expect(find.byKey(const ValueKey('desktop-title-bar')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('navigation-pane-resizer')),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('phone settings opens cross-platform project information',
@@ -265,6 +343,8 @@ class _Harness {
     List<Book> books = const <Book>[],
     TextScaler textScaler = TextScaler.noScaling,
     Brightness brightness = Brightness.light,
+    TargetPlatform targetPlatform = TargetPlatform.android,
+    BackendConnectionMode backendMode = BackendConnectionMode.remote,
   }) async {
     final preferences = await SharedPreferences.getInstance();
     if (configured) {
@@ -273,9 +353,11 @@ class _Harness {
         'https://qingjuan.example.test',
       );
     }
+    await preferences.setString('qingjuan.backendMode', backendMode.name);
     final appState = AppState(
       preferences,
       initialRemoteBackendToken: configured ? 'test-token' : '',
+      localBackendSupported: targetPlatform == TargetPlatform.windows,
     );
     final api = ApiClient(() => appState.backendUrl);
     final backend = BackendConnectionManager(
@@ -291,18 +373,21 @@ class _Harness {
     final tasks = TasksController(api);
     final settings = SettingsController(api);
     final widget = FluentApp(
-      theme: buildQingJuanTheme(brightness),
+      theme: buildQingJuanTheme(brightness, platform: targetPlatform),
       home: MediaQuery(
         data: MediaQueryData(size: viewport, textScaler: textScaler),
-        child: AppScope(
-          appState: appState,
-          api: api,
-          backend: backend,
-          library: library,
-          sources: sources,
-          tasks: tasks,
-          settings: settings,
-          child: const AppShell(),
+        child: UiPlatformScope(
+          platform: targetPlatform,
+          child: AppScope(
+            appState: appState,
+            api: api,
+            backend: backend,
+            library: library,
+            sources: sources,
+            tasks: tasks,
+            settings: settings,
+            child: const AppShell(),
+          ),
         ),
       ),
     );

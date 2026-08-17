@@ -9,6 +9,11 @@ import type {
   SessionInfo,
   Settings,
   SettingsUpdate,
+  SitePlugin,
+  SitePluginAccount,
+  SitePluginBookshelfImportJob,
+  SitePluginLoginPoll,
+  SitePluginLoginQrCode,
   Task,
   TaskLog,
   TranslationModelCheck,
@@ -66,6 +71,7 @@ export const getDevices = (): Promise<Device[]> => request("/api/v1/devices");
 export const getBooks = (): Promise<Book[]> => request("/api/v1/books");
 export const getTasks = (): Promise<Task[]> => request("/api/v1/tasks");
 export const getSources = (): Promise<BookSource[]> => request("/api/v1/sources");
+export const getSitePlugins = (): Promise<SitePlugin[]> => request("/api/v1/plugins");
 export const getSettings = (): Promise<Settings> => request("/api/v1/settings");
 export const getTaskLogs = (taskId: string): Promise<TaskLog[]> =>
   request(`/api/v1/tasks/${encodeURIComponent(taskId)}/logs`);
@@ -80,6 +86,45 @@ export const setDeviceBanned = (deviceId: string, banned: boolean): Promise<Devi
     method: "PUT",
     body: JSON.stringify({ banned }),
   });
+export const setSitePluginEnabled = (pluginId: string, enabled: boolean): Promise<SitePlugin> =>
+  request(`/api/v1/plugins/${encodeURIComponent(pluginId)}`, {
+    method: "PUT",
+    body: JSON.stringify({ enabled }),
+  });
+export const startSitePluginLogin = (pluginId: string): Promise<SitePluginLoginQrCode> =>
+  request(`/api/v1/plugins/${encodeURIComponent(pluginId)}/account/login-qrcode`, {
+    method: "POST",
+  });
+export const pollSitePluginLogin = (
+  pluginId: string,
+  flowId: string,
+): Promise<SitePluginLoginPoll> =>
+  request(
+    `/api/v1/plugins/${encodeURIComponent(pluginId)}/account/login-qrcode/${encodeURIComponent(flowId)}`,
+  );
+export const loginSitePluginWithCookies = (
+  pluginId: string,
+  cookies: string,
+): Promise<SitePluginAccount> =>
+  request(`/api/v1/plugins/${encodeURIComponent(pluginId)}/account/login-cookies`, {
+    method: "POST",
+    body: JSON.stringify({ cookies }),
+  });
+export const logoutSitePluginAccount = (pluginId: string): Promise<SitePluginAccount> =>
+  request(`/api/v1/plugins/${encodeURIComponent(pluginId)}/account`, { method: "DELETE" });
+export const startSitePluginBookshelfImport = (
+  pluginId: string,
+): Promise<SitePluginBookshelfImportJob> =>
+  request(`/api/v1/plugins/${encodeURIComponent(pluginId)}/bookshelf/import-jobs`, {
+    method: "POST",
+  });
+export const getSitePluginBookshelfImport = (
+  pluginId: string,
+  jobId: string,
+): Promise<SitePluginBookshelfImportJob> =>
+  request(
+    `/api/v1/plugins/${encodeURIComponent(pluginId)}/bookshelf/import-jobs/${encodeURIComponent(jobId)}`,
+  );
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();

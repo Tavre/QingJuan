@@ -9,7 +9,7 @@ class LoadingView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final compact = windowClassOf(context) == WindowClass.compact;
+    final compact = usesMobileUi(context);
     return Center(
       child: Padding(
         padding: EdgeInsets.symmetric(
@@ -46,7 +46,31 @@ class EmptyView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
-    final compact = windowClassOf(context) == WindowClass.compact;
+    final compact = usesMobileUi(context);
+    if (!compact) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 64, horizontal: 24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 460),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Icon(icon, size: 34, color: theme.accentColor),
+                const SizedBox(height: 16),
+                Text(title, style: theme.typography.subtitle),
+                const SizedBox(height: 8),
+                Text(message, textAlign: TextAlign.center),
+                if (action != null) ...<Widget>[
+                  const SizedBox(height: 18),
+                  action!,
+                ],
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     final content = Column(
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[

@@ -827,6 +827,60 @@ code {
   min-width: max-content;
 }
 
+.plugin-scope-alert {
+  border-color: #91caff !important;
+  background: #e6f4ff !important;
+}
+
+:root[data-theme="dark"] .plugin-scope-alert {
+  border-color: #15325b !important;
+  background: #111a2c !important;
+}
+
+.plugin-filter-row {
+  padding: 10px 16px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--qj-border);
+  background: var(--qj-surface-muted);
+}
+
+.plugin-login-dialog,
+.plugin-import-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-height: 280px;
+  text-align: center;
+}
+
+.plugin-login-dialog img {
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 12px;
+}
+
+.plugin-import-list {
+  max-height: 300px;
+  overflow: auto;
+}
+
+.plugin-filter-row .ant-segmented {
+  min-width: max-content;
+}
+
+.plugin-title-cell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plugin-title-cell > .ant-typography:last-child {
+  max-width: 100%;
+  font-size: 12px;
+}
+
 .device-title-cell {
   min-width: 0;
   display: flex;

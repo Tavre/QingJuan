@@ -5,6 +5,7 @@ import '../../core/files/export_file_service.dart';
 import '../../core/models/book.dart';
 import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
+import '../../shared/motion.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
 import '../audiobook/audiobook_page.dart';
@@ -189,8 +190,10 @@ class _BookDetailPageState extends State<BookDetailPage> {
     final detail = _detail;
     if (detail == null) return;
     Navigator.of(context).push<void>(
-      PageRouteBuilder<void>(
-        pageBuilder: (_, __, ___) => ReaderPage(
+      qjPageRoute<void>(
+        context: context,
+        beginOffset: const Offset(0, 0.025),
+        builder: (_) => ReaderPage(
           detail: detail,
           initialChapterIndex: chapterIndex ?? detail.progress.chapterIndex,
         ),
@@ -202,8 +205,10 @@ class _BookDetailPageState extends State<BookDetailPage> {
     final detail = _detail;
     if (detail == null || detail.book.kind == '漫画') return;
     Navigator.of(context).push<void>(
-      PageRouteBuilder<void>(
-        pageBuilder: (_, __, ___) => AudiobookPage(
+      qjPageRoute<void>(
+        context: context,
+        beginOffset: const Offset(0, 0.025),
+        builder: (_) => AudiobookPage(
           detail: detail,
           voice: _scope.appState.ttsVoice,
           style: _scope.appState.ttsSpeechStyle,
@@ -450,6 +455,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
   }
 
   Widget _buildOverview(BookDetail detail, bool compact) {
+    if (!compact) return _buildDesktopOverview(detail);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
@@ -538,6 +544,85 @@ class _BookDetailPageState extends State<BookDetailPage> {
     );
   }
 
+  Widget _buildDesktopOverview(BookDetail detail) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        AppSurface(
+          child: Flex(
+            direction: Axis.horizontal,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              _DesktopBookSummary(detail: detail),
+              const SizedBox(width: 28),
+              Expanded(child: _DesktopStats(detail: detail)),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
+        if (_exportProgress case final progress?) ...<Widget>[
+          ProgressBar(value: (progress * 100).clamp(0, 100)),
+          const SizedBox(height: 6),
+          Text(
+            '正在接收导出文件 '
+            '${(progress * 100).clamp(0, 100).toStringAsFixed(0)}%',
+          ),
+          const SizedBox(height: 12),
+        ],
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: <Widget>[
+            FilledButton(
+              onPressed: () => _openReader(),
+              child: const Text('继续阅读'),
+            ),
+            if (detail.book.kind != '漫画' && detail.chapters.isNotEmpty)
+              Button(
+                onPressed: () => _openAudiobook(),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Icon(FluentIcons.headset, size: 16),
+                    SizedBox(width: 8),
+                    Text('听小说'),
+                  ],
+                ),
+              ),
+            Button(
+              onPressed: _actionRunning ? null : _exportSelectedChapters,
+              child: Text(_selected.isEmpty ? '下载全部' : '下载所选'),
+            ),
+            Button(
+              onPressed: _actionRunning ? null : () => _enqueue('translate'),
+              child: Text(_selected.isEmpty ? '翻译全部' : '翻译所选'),
+            ),
+            Button(
+              onPressed: () {
+                setState(() {
+                  if (_selected.length == detail.chapters.length) {
+                    _selected.clear();
+                  } else {
+                    _selected
+                      ..clear()
+                      ..addAll(
+                        detail.chapters.map((chapter) => chapter.index),
+                      );
+                  }
+                });
+              },
+              child: Text(
+                _selected.length == detail.chapters.length ? '取消全选' : '全选章节',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 30),
+        SectionTitle('章节', trailing: Text('已选择 ${_selected.length} 章')),
+      ],
+    );
+  }
+
   void _updateExportProgress(int receivedBytes, int totalBytes) {
     if (!mounted || totalBytes <= 0) return;
     setState(() => _exportProgress = receivedBytes / totalBytes);
@@ -558,8 +643,22 @@ class _BookDetailPageState extends State<BookDetailPage> {
       return _buildErrorPage();
     }
     final detail = _detail!;
-    final compact = windowClassOf(context) == WindowClass.compact;
+    final compact = usesMobileUi(context);
     return NavigationView(
+      appBar: compact
+          ? null
+          : NavigationAppBar(
+              automaticallyImplyLeading: false,
+              backgroundColor: FluentTheme.of(context).micaBackgroundColor,
+              leading: Tooltip(
+                message: '返回',
+                child: IconButton(
+                  icon: const Icon(FluentIcons.back, semanticLabel: '返回'),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ),
+              title: Text(detail.book.title),
+            ),
       content: PageFrame(
         title: detail.book.title,
         subtitle: [
@@ -618,6 +717,67 @@ class _BookDetailPageState extends State<BookDetailPage> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _DesktopBookSummary extends StatelessWidget {
+  const _DesktopBookSummary({required this.detail});
+
+  final BookDetail detail;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 620),
+      child: Text(
+        detail.synopsis.trim().isEmpty ? '暂无简介。' : detail.synopsis,
+        style: FluentTheme.of(context)
+            .typography
+            .bodyLarge
+            ?.copyWith(height: 1.65),
+      ),
+    );
+  }
+}
+
+class _DesktopStats extends StatelessWidget {
+  const _DesktopStats({required this.detail});
+
+  final BookDetail detail;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 20,
+      runSpacing: 12,
+      children: <Widget>[
+        _DesktopMetric(label: '总字数', value: '${detail.totalWords}'),
+        _DesktopMetric(label: '已下载', value: '${detail.downloadedCount}'),
+        _DesktopMetric(label: '已翻译', value: '${detail.translatedCount}'),
+      ],
+    );
+  }
+}
+
+class _DesktopMetric extends StatelessWidget {
+  const _DesktopMetric({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 92,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(value, style: FluentTheme.of(context).typography.subtitle),
+          const SizedBox(height: 3),
+          Text(label, style: FluentTheme.of(context).typography.caption),
+        ],
       ),
     );
   }
@@ -791,32 +951,45 @@ class _ChapterRow extends StatelessWidget {
           ),
           const SizedBox(width: 10),
           Expanded(
-            child: HoverButton(
-              onPressed: onOpen,
-              builder: (context, states) => AnimatedContainer(
-                duration: MediaQuery.disableAnimationsOf(context)
-                    ? Duration.zero
-                    : FluentTheme.of(context).fasterAnimationDuration,
-                alignment: AlignmentDirectional.centerStart,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                decoration: BoxDecoration(
-                  color: states.isPressed
-                      ? FluentTheme.of(context)
-                          .resources
-                          .subtleFillColorSecondary
-                      : states.isHovered
-                          ? FluentTheme.of(context)
-                              .resources
-                              .subtleFillColorTertiary
-                          : const Color(0x00000000),
-                  borderRadius: BorderRadius.circular(13),
-                ),
-                child: Text(
-                  '${chapter.index}. ${chapter.title}',
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ),
+            child: usesMobileUi(context)
+                ? HoverButton(
+                    onPressed: onOpen,
+                    builder: (context, states) => AnimatedContainer(
+                      duration: QjMotion.duration(
+                        context,
+                        QjMotionSpeed.faster,
+                      ),
+                      curve: QjMotion.enterCurve,
+                      alignment: AlignmentDirectional.centerStart,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: states.isPressed
+                            ? FluentTheme.of(context)
+                                .resources
+                                .subtleFillColorSecondary
+                            : states.isHovered
+                                ? FluentTheme.of(context)
+                                    .resources
+                                    .subtleFillColorTertiary
+                                : const Color(0x00000000),
+                        borderRadius: BorderRadius.circular(13),
+                      ),
+                      child: Text(
+                        '${chapter.index}. ${chapter.title}',
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  )
+                : Button(
+                    onPressed: onOpen,
+                    child: Align(
+                      alignment: AlignmentDirectional.centerStart,
+                      child: Text(
+                        '${chapter.index}. ${chapter.title}',
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
           ),
           const SizedBox(width: 10),
           Tooltip(

@@ -9,6 +9,8 @@ import '../../app/app_scope.dart';
 import '../../app/app_state.dart';
 import '../../core/models/book.dart';
 import '../../shared/feedback_widgets.dart';
+import '../../shared/motion.dart';
+import '../../shared/responsive.dart';
 import '../audiobook/audiobook_page.dart';
 import 'reader_controls.dart';
 import 'reader_hardware_key_service.dart';
@@ -57,6 +59,7 @@ class _ReaderPageState extends State<ReaderPage> {
   bool _initialized = false;
   bool _continuousPrefetching = false;
   bool _checkingVisibleChapter = false;
+  bool _mobileUi = true;
   int _loadToken = 0;
   int _pageIndex = 0;
   int _pageCount = 1;
@@ -84,6 +87,7 @@ class _ReaderPageState extends State<ReaderPage> {
     _scope = AppScope.of(context);
     if (_initialized) return;
     _initialized = true;
+    _mobileUi = usesMobileUi(context);
     _hostBrightness = FluentTheme.of(context).brightness;
     _flowMode = _scope.appState.readerFlowMode;
     _paletteMode = _scope.appState.readerPaletteMode;
@@ -91,15 +95,19 @@ class _ReaderPageState extends State<ReaderPage> {
     _lineSpacing = _scope.appState.readerLineSpacing;
     _fontSize = _scope.appState.readerFontSize;
     _volumeKeyReadingEnabled = _scope.appState.volumeKeyReadingEnabled;
-    unawaited(
-      _hardwareKeys.attach(
-        enabled: _volumeKeyReadingEnabled,
-        onKey: _handleHardwareKey,
-      ),
-    );
+    if (_mobileUi) {
+      unawaited(
+        _hardwareKeys.attach(
+          enabled: _volumeKeyReadingEnabled,
+          onKey: _handleHardwareKey,
+        ),
+      );
+    }
     unawaited(_loadChapter(_chapterIndex, initial: true));
-    _scheduleControlsHide();
-    _applySystemChrome();
+    if (_mobileUi) {
+      _scheduleControlsHide();
+      _applySystemChrome();
+    }
   }
 
   ReaderPalette get _palette => ReaderPalette.fromMode(_paletteMode);
@@ -183,7 +191,7 @@ class _ReaderPageState extends State<ReaderPage> {
       });
       WidgetsBinding.instance.addPostFrameCallback((_) {
         oldController.dispose();
-        if (_flowMode == ReaderFlowMode.continuous &&
+        if ((!_mobileUi || _flowMode == ReaderFlowMode.continuous) &&
             _scrollController.hasClients) {
           _scrollController.jumpTo(0);
         }
@@ -267,6 +275,10 @@ class _ReaderPageState extends State<ReaderPage> {
   }
 
   double _currentProgressRatio() {
+    if (!_mobileUi && _scrollController.hasClients) {
+      final max = _scrollController.position.maxScrollExtent;
+      return max <= 0 ? 0 : (_scrollController.offset / max).clamp(0.0, 1.0);
+    }
     if (_flowMode == ReaderFlowMode.paged) {
       return _pageCount <= 1
           ? 0
@@ -296,8 +308,8 @@ class _ReaderPageState extends State<ReaderPage> {
       if (targetContext != null) {
         await Scrollable.ensureVisible(
           targetContext,
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOutCubic,
+          duration: _motionDuration(220),
+          curve: QjMotion.enterCurve,
           alignment: 0.02,
         );
         return;
@@ -310,11 +322,7 @@ class _ReaderPageState extends State<ReaderPage> {
     if (chapterIndex == _chapterIndex) {
       if (_flowMode == ReaderFlowMode.continuous &&
           _scrollController.hasClients) {
-        await _scrollController.animateTo(
-          0,
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOutCubic,
-        );
+        await _moveScrollTo(0, milliseconds: 180);
       }
       return;
     }
@@ -368,10 +376,22 @@ class _ReaderPageState extends State<ReaderPage> {
             position.viewportDimension * 0.84 * direction)
         .clamp(position.minScrollExtent, position.maxScrollExtent)
         .toDouble();
+    await _moveScrollTo(target);
+  }
+
+  Future<void> _moveScrollTo(
+    double target, {
+    int milliseconds = 220,
+  }) async {
+    if (!_scrollController.hasClients) return;
+    if (QjMotion.disabled(context)) {
+      _scrollController.jumpTo(target);
+      return;
+    }
     await _scrollController.animateTo(
       target,
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOutCubic,
+      duration: Duration(milliseconds: milliseconds),
+      curve: QjMotion.enterCurve,
     );
   }
 
@@ -396,7 +416,7 @@ class _ReaderPageState extends State<ReaderPage> {
   Future<void> _goToPage(int pageIndex) async {
     if (_pageController.positions.length != 1) return;
     if (_pageAnimation == ReaderPageAnimation.none ||
-        MediaQuery.disableAnimationsOf(context)) {
+        QjMotion.disabled(context)) {
       _pageController.jumpToPage(pageIndex);
       return;
     }
@@ -470,9 +490,10 @@ class _ReaderPageState extends State<ReaderPage> {
     BuildContext? targetContext,
   }) {
     final mediaContext = targetContext ?? context;
-    return MediaQuery.disableAnimationsOf(mediaContext)
-        ? Duration.zero
-        : Duration(milliseconds: milliseconds);
+    return QjMotion.resolve(
+      mediaContext,
+      Duration(milliseconds: milliseconds),
+    );
   }
 
   void _applySystemChrome() {
@@ -591,10 +612,10 @@ class _ReaderPageState extends State<ReaderPage> {
     _hideControlsTimer?.cancel();
     unawaited(_hardwareKeys.setEnabled(false));
     await Navigator.of(context).push<void>(
-      PageRouteBuilder<void>(
-        transitionDuration: _motionDuration(260),
-        reverseTransitionDuration: _motionDuration(220),
-        pageBuilder: (_, animation, secondaryAnimation) => AudiobookPage(
+      qjPageRoute<void>(
+        context: context,
+        beginOffset: const Offset(0, 0.025),
+        builder: (_) => AudiobookPage(
           detail: widget.detail,
           voice: _scope.appState.ttsVoice,
           style: _scope.appState.ttsSpeechStyle,
@@ -602,18 +623,6 @@ class _ReaderPageState extends State<ReaderPage> {
           initialChapterIndex: _chapterIndex,
           loadChapter: (index, mode) => _getChapter(index, mode),
         ),
-        transitionsBuilder: (_, animation, secondaryAnimation, child) {
-          final offset = Tween<Offset>(
-            begin: const Offset(0, 0.035),
-            end: Offset.zero,
-          ).animate(
-            CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
-          );
-          return FadeTransition(
-            opacity: animation,
-            child: SlideTransition(position: offset, child: child),
-          );
-        },
       ),
     );
     if (!mounted) return;
@@ -800,7 +809,7 @@ class _ReaderPageState extends State<ReaderPage> {
           begin: const Offset(0, 0.16),
           end: Offset.zero,
         ).animate(
-          CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+          CurvedAnimation(parent: animation, curve: QjMotion.enterCurve),
         );
         return FadeTransition(
           opacity: animation,
@@ -832,19 +841,21 @@ class _ReaderPageState extends State<ReaderPage> {
     _hideControlsTimer?.cancel();
     unawaited(_saveProgress());
     unawaited(_hardwareKeys.detach());
-    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
-    SystemChrome.setSystemUIOverlayStyle(
-      SystemUiOverlayStyle(
-        statusBarColor: const Color(0x00000000),
-        statusBarIconBrightness: _hostBrightness == Brightness.dark
-            ? Brightness.light
-            : Brightness.dark,
-        systemNavigationBarColor: const Color(0x00000000),
-        systemNavigationBarIconBrightness: _hostBrightness == Brightness.dark
-            ? Brightness.light
-            : Brightness.dark,
-      ),
-    );
+    if (_mobileUi) {
+      unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
+      SystemChrome.setSystemUIOverlayStyle(
+        SystemUiOverlayStyle(
+          statusBarColor: const Color(0x00000000),
+          statusBarIconBrightness: _hostBrightness == Brightness.dark
+              ? Brightness.light
+              : Brightness.dark,
+          systemNavigationBarColor: const Color(0x00000000),
+          systemNavigationBarIconBrightness: _hostBrightness == Brightness.dark
+              ? Brightness.light
+              : Brightness.dark,
+        ),
+      );
+    }
     for (final content in _chapterCache.values) {
       _evictChapterImages(content);
     }
@@ -1237,27 +1248,29 @@ class _ReaderPageState extends State<ReaderPage> {
       borderRadius: borderRadius,
       child: BackdropFilter(
         filter: ui.ImageFilter.blur(sigmaX: blur, sigmaY: blur),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: palette.surface.withAlpha(palette.isDark ? 218 : 210),
-            borderRadius: borderRadius,
-            border: Border.all(
-              color: palette.isDark
-                  ? const Color(0xFFFFFFFF).withAlpha(24)
-                  : const Color(0xFFFFFFFF).withAlpha(160),
-              width: 0.8,
-            ),
-            boxShadow: <BoxShadow>[
-              BoxShadow(
-                color: const Color(0xFF000000).withAlpha(
-                  palette.isDark ? 42 : 18,
-                ),
-                blurRadius: 24,
-                offset: const Offset(0, 8),
+        child: RepaintBoundary(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: palette.surface.withAlpha(palette.isDark ? 218 : 210),
+              borderRadius: borderRadius,
+              border: Border.all(
+                color: palette.isDark
+                    ? const Color(0xFFFFFFFF).withAlpha(24)
+                    : const Color(0xFFFFFFFF).withAlpha(160),
+                width: 0.8,
               ),
-            ],
+              boxShadow: <BoxShadow>[
+                BoxShadow(
+                  color: const Color(0xFF000000).withAlpha(
+                    palette.isDark ? 42 : 18,
+                  ),
+                  blurRadius: 24,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+            ),
+            child: child,
           ),
-          child: child,
         ),
       ),
     );
@@ -1277,7 +1290,7 @@ class _ReaderPageState extends State<ReaderPage> {
         child: AnimatedSlide(
           key: const ValueKey('reader-top-controls'),
           duration: duration,
-          curve: Curves.easeOutCubic,
+          curve: QjMotion.enterCurve,
           offset: _controlsVisible ? Offset.zero : const Offset(0, -0.35),
           child: IgnorePointer(
             ignoring: !_controlsVisible,
@@ -1384,7 +1397,7 @@ class _ReaderPageState extends State<ReaderPage> {
         child: AnimatedSlide(
           key: const ValueKey('reader-bottom-controls'),
           duration: duration,
-          curve: Curves.easeOutCubic,
+          curve: QjMotion.enterCurve,
           offset: _controlsVisible ? Offset.zero : const Offset(0, 0.28),
           child: IgnorePointer(
             ignoring: !_controlsVisible,
@@ -1408,8 +1421,8 @@ class _ReaderPageState extends State<ReaderPage> {
                       ),
                     AnimatedSwitcher(
                       duration: _motionDuration(240, targetContext: context),
-                      switchInCurve: Curves.easeOutCubic,
-                      switchOutCurve: Curves.easeInCubic,
+                      switchInCurve: QjMotion.enterCurve,
+                      switchOutCurve: QjMotion.exitCurve,
                       transitionBuilder: (child, animation) {
                         final slide = Tween<Offset>(
                           begin: const Offset(0, 0.06),
@@ -1795,8 +1808,215 @@ class _ReaderPageState extends State<ReaderPage> {
     );
   }
 
+  Widget _buildDesktopReaderItem(
+    BuildContext context,
+    ChapterContent content,
+    int index,
+  ) {
+    final theme = FluentTheme.of(context);
+    if (index == 0) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 30),
+        child: Text(content.chapter.title, style: theme.typography.title),
+      );
+    }
+
+    final contentIndex = index - 1;
+    if (content.imageSources.isNotEmpty) {
+      final translation = contentIndex < content.pageTranslations.length
+          ? content.pageTranslations[contentIndex].trim()
+          : '';
+      final placeholderHeight =
+          (MediaQuery.sizeOf(context).height * 0.72).clamp(360.0, 720.0);
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 18),
+        child: Column(
+          children: <Widget>[
+            Image.network(
+              content.imageSources[contentIndex],
+              headers:
+                  _scope.api.headersForUrl(content.imageSources[contentIndex]),
+              width: double.infinity,
+              fit: BoxFit.contain,
+              filterQuality: FilterQuality.medium,
+              loadingBuilder: (context, child, progress) => progress == null
+                  ? child
+                  : SizedBox(
+                      height: placeholderHeight,
+                      child: const Center(child: ProgressRing()),
+                    ),
+              errorBuilder: (_, __, ___) => const InfoBar(
+                title: Text('图片加载失败'),
+                severity: InfoBarSeverity.warning,
+              ),
+            ),
+            if (translation.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: SelectableText(
+                  translation,
+                  style: TextStyle(fontSize: _fontSize, height: 1.7),
+                ),
+              ),
+          ],
+        ),
+      );
+    }
+
+    final paragraphs = content.paragraphs.isEmpty
+        ? <String>[content.content]
+        : content.paragraphs;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 18),
+      child: SelectableText(
+        paragraphs[contentIndex],
+        style: TextStyle(fontSize: _fontSize, height: 1.85),
+      ),
+    );
+  }
+
+  Widget _buildDesktopReader(BuildContext context) {
+    final theme = FluentTheme.of(context);
+    return NavigationView(
+      key: const ValueKey('desktop-reader-page'),
+      appBar: NavigationAppBar(
+        automaticallyImplyLeading: false,
+        backgroundColor: theme.micaBackgroundColor,
+        leading: Tooltip(
+          message: '返回作品详情',
+          child: IconButton(
+            icon: const Icon(
+              FluentIcons.back,
+              semanticLabel: '返回作品详情',
+            ),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ),
+        title: Text(widget.detail.book.title),
+        actions: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Tooltip(
+              message: '减小字号',
+              child: IconButton(
+                icon: const Icon(
+                  FluentIcons.font_decrease,
+                  semanticLabel: '减小字号',
+                ),
+                onPressed: () => _changeFontSize(-1),
+              ),
+            ),
+            Tooltip(
+              message: '增大字号',
+              child: IconButton(
+                icon: const Icon(
+                  FluentIcons.font_increase,
+                  semanticLabel: '增大字号',
+                ),
+                onPressed: () => _changeFontSize(1),
+              ),
+            ),
+            ToggleButton(
+              checked: _mode == 'original',
+              onChanged: (checked) => unawaited(
+                _setContentMode(checked ? 'original' : 'translated'),
+              ),
+              child: Text(_mode == 'original' ? '原文' : '译文'),
+            ),
+            const SizedBox(width: 12),
+          ],
+        ),
+      ),
+      content: Column(
+        children: <Widget>[
+          if (_switchError != null)
+            InfoBar(
+              title: const Text('章节切换失败'),
+              content: Text(_switchError!),
+              severity: InfoBarSeverity.warning,
+            ),
+          Expanded(
+            child: _loading
+                ? const LoadingView(label: '正在打开章节')
+                : _error != null
+                    ? ErrorView(
+                        message: _error!,
+                        onRetry: () => _loadChapter(_chapterIndex),
+                      )
+                    : Scrollbar(
+                        controller: _scrollController,
+                        child: ListView.builder(
+                          key: ValueKey<String>(
+                            'desktop-reader-$_chapterIndex-$_mode',
+                          ),
+                          controller: _scrollController,
+                          padding: const EdgeInsets.fromLTRB(24, 32, 24, 72),
+                          addAutomaticKeepAlives: false,
+                          itemCount: 1 +
+                              (_content!.imageSources.isNotEmpty
+                                  ? _content!.imageSources.length
+                                  : (_content!.paragraphs.isEmpty
+                                      ? 1
+                                      : _content!.paragraphs.length)),
+                          itemBuilder: (context, index) => Center(
+                            child: ConstrainedBox(
+                              constraints: BoxConstraints(
+                                maxWidth: _content!.imageSources.isNotEmpty
+                                    ? 920
+                                    : 760,
+                              ),
+                              child: _buildDesktopReaderItem(
+                                context,
+                                _content!,
+                                index,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+            decoration: BoxDecoration(
+              color: theme.micaBackgroundColor,
+              border: Border(
+                top: BorderSide(
+                  color: theme.resources.cardStrokeColorDefault,
+                ),
+              ),
+            ),
+            child: Row(
+              children: <Widget>[
+                Button(
+                  onPressed:
+                      _hasPreviousChapter && !_loading && !_switchingChapter
+                          ? () => _moveChapter(-1)
+                          : null,
+                  child: const Text('上一章'),
+                ),
+                Expanded(
+                  child: Text(
+                    '第 $_chapterIndex / $_chapterCount 章',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+                FilledButton(
+                  onPressed: _hasNextChapter && !_loading && !_switchingChapter
+                      ? () => _moveChapter(1)
+                      : null,
+                  child: const Text('下一章'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (!usesMobileUi(context)) return _buildDesktopReader(context);
     return PopScope(
       canPop: !_settingsVisible,
       onPopInvokedWithResult: (didPop, result) {
@@ -1804,7 +2024,7 @@ class _ReaderPageState extends State<ReaderPage> {
       },
       child: AnimatedContainer(
         duration: _motionDuration(260, targetContext: context),
-        curve: Curves.easeOutCubic,
+        curve: QjMotion.enterCurve,
         color: _readerBackgroundColor(context),
         child: Stack(
           children: <Widget>[

@@ -1,6 +1,8 @@
 import hashlib
 import io
+import sqlite3
 
+import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
@@ -35,6 +37,18 @@ def test_application_factory_sets_metadata() -> None:
 
     assert application.title == APP_TITLE
     assert application.version == APP_VERSION
+
+
+def test_database_connection_context_closes_handle(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "qingjuan.db")
+    monkeypatch.setattr(db, "_DATA_DIR_READY", True)
+
+    with db.get_connection() as connection:
+        connection.execute("CREATE TABLE connection_test (id INTEGER PRIMARY KEY)")
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        connection.execute("SELECT 1")
 
 
 def test_api_prefix_and_bearer_authentication(monkeypatch) -> None:

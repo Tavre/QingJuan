@@ -35,6 +35,33 @@ void main() {
       () => 'https://qingjuan.example.test',
       client: MockClient((request) async {
         requests.add(request);
+        if (request.method == 'POST' &&
+            request.url.path == '/api/v1/books/link-jobs') {
+          return _jsonResponse(<String, Object?>{
+            'id': 'link-quark-1',
+            'mode': 'import',
+            'status': 'queued',
+            'progress': 0,
+            'message': '等待解析',
+            'logs': <Object?>[],
+            'createdAt': '2026-08-19T12:00:00Z',
+            'updatedAt': '2026-08-19T12:00:00Z',
+          });
+        }
+        if (request.method == 'GET' &&
+            request.url.path == '/api/v1/books/link-jobs/link-quark-1') {
+          return _jsonResponse(<String, Object?>{
+            'id': 'link-quark-1',
+            'mode': 'import',
+            'status': 'failed',
+            'progress': 20,
+            'message': '测试停止导入',
+            'error': '测试停止导入',
+            'logs': <Object?>[],
+            'createdAt': '2026-08-19T12:00:00Z',
+            'updatedAt': '2026-08-19T12:00:01Z',
+          });
+        }
         if (request.url.path == '/api/v1/sources/search') {
           return _jsonResponse(<Map<String, Object?>>[
             <String, Object?>{
@@ -162,6 +189,25 @@ void main() {
     expect(quarkBody['sourceId'], 'source-builtin-quark');
     expect(find.text('夸克结果'), findsOneWidget);
     expect(find.text('夸克小说'), findsWidgets);
+
+    await tester.tap(find.text('加入').last);
+    await tester.pumpAndSettle();
+
+    final linkJobRequest = requests.lastWhere(
+      (request) => request.url.path == '/api/v1/books/link-jobs',
+    );
+    final linkJobBody = jsonDecode(linkJobRequest.body) as Map<String, dynamic>;
+    final importPayload = linkJobBody['payload'] as Map<String, dynamic>;
+    expect(linkJobBody['mode'], 'import');
+    expect(importPayload['sourceId'], 'source-builtin-quark');
+    expect(importPayload['downloadMode'], 'on_demand');
+    expect(
+      requests.where((request) => request.url.path == '/api/v1/books/import'),
+      isEmpty,
+    );
+    expect(find.text('导入失败'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 7));
+    await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const ValueKey('search-engine-selector')));
     await tester.pumpAndSettle();

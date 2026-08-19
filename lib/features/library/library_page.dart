@@ -272,7 +272,7 @@ class _LibraryContent extends StatelessWidget {
     final scaleAllowance = 48 * (textScale - 1).clamp(0.0, 1.0).toDouble();
     final recent = _mostRecentBook(allBooks);
     return CustomScrollView(
-      cacheExtent: 520,
+      cacheExtent: compact ? 360 : 520,
       slivers: <Widget>[
         if (compact && recent != null) ...<Widget>[
           SliverToBoxAdapter(

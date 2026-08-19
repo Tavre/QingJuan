@@ -2,11 +2,18 @@ import 'dart:math' as math;
 
 import 'package:flutter/widgets.dart';
 
-int estimateReaderPageCharacters(Size viewport, double fontSize) {
+int estimateReaderPageCharacters(
+  Size viewport,
+  double fontSize, {
+  double lineHeight = 1.85,
+}) {
   final usableWidth = math.max(120.0, viewport.width - 48);
   final usableHeight = math.max(180.0, viewport.height - 170);
   final charactersPerLine = math.max(10, (usableWidth / fontSize).floor());
-  final linesPerPage = math.max(6, (usableHeight / (fontSize * 1.85)).floor());
+  final linesPerPage = math.max(
+    6,
+    (usableHeight / (fontSize * math.max(1.2, lineHeight))).floor(),
+  );
   return math.max(80, (charactersPerLine * linesPerPage * 0.9).floor());
 }
 

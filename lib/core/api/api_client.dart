@@ -101,6 +101,22 @@ class ApiClient {
       payload = utf8.decode(response.bodyBytes);
     }
     if (response.statusCode >= 200 && response.statusCode < 300) return payload;
+    final contentType = response.headers['content-type']?.toLowerCase() ?? '';
+    final rawText = payload is String ? payload.trim().toLowerCase() : '';
+    final htmlResponse = contentType.contains('text/html') ||
+        rawText.startsWith('<!doctype html') ||
+        rawText.startsWith('<html') ||
+        rawText.contains('<head>') ||
+        rawText.contains('<body>');
+    if (htmlResponse ||
+        response.statusCode == 502 ||
+        response.statusCode == 503 ||
+        response.statusCode == 504) {
+      throw ApiException(
+        '服务器暂时无法完成请求（HTTP ${response.statusCode}），请稍后重试。',
+        statusCode: response.statusCode,
+      );
+    }
     final detail = payload is Map ? payload['detail'] : payload;
     final message = switch (detail) {
       String value when value.trim().isNotEmpty => value,

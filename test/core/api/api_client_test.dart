@@ -4,9 +4,38 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:qingjuan/core/api/api_client.dart';
+import 'package:qingjuan/core/api/api_exception.dart';
 import 'package:qingjuan/core/models/settings.dart';
 
 void main() {
+  test('gateway HTML is replaced with a concise public error', () async {
+    final api = ApiClient(
+      () => 'https://qingjuan.example.test',
+      client: MockClient(
+        (_) async => http.Response(
+          '<html><head><title>504 Gateway Time-out</title></head>'
+          '<body><center>openresty</center></body></html>',
+          504,
+          headers: const <String, String>{'content-type': 'text/html'},
+        ),
+      ),
+    );
+    addTearDown(api.close);
+
+    await expectLater(
+      api.fetchBooks(),
+      throwsA(
+        isA<ApiException>()
+            .having((error) => error.statusCode, 'statusCode', 504)
+            .having((error) => error.message, 'message', contains('请稍后重试'))
+            .having(
+                (error) => error.message, 'message', isNot(contains('<html>')))
+            .having((error) => error.message, 'message',
+                isNot(contains('openresty'))),
+      ),
+    );
+  });
+
   test('Bearer token is limited to the configured QingJuan origin', () async {
     final api = ApiClient(
       () => 'https://qingjuan.example.test',

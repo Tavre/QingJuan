@@ -2,7 +2,13 @@ package com.tavre.qingjuan
 
 import android.app.Activity
 import android.content.Intent
+import android.os.Build
+import android.os.Bundle
 import android.view.KeyEvent
+import android.view.Surface
+import android.view.SurfaceView
+import android.view.View
+import android.view.ViewGroup
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
@@ -15,12 +21,24 @@ class MainActivity : FlutterActivity() {
         private const val FILE_CHANNEL = "qingjuan/files"
         private const val READER_CHANNEL = "qingjuan/reader"
         private const val CREATE_DOCUMENT_REQUEST = 0x514A
+        private const val TARGET_REFRESH_RATE = 120f
+        private const val REFRESH_RATE_TOLERANCE = 0.5f
     }
 
     private var pendingResult: MethodChannel.Result? = null
     private var pendingSource: File? = null
     private var readerChannel: MethodChannel? = null
     private var volumeKeyReadingEnabled = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        preferHighRefreshRate()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        preferHighRefreshRate()
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -63,6 +81,62 @@ class MainActivity : FlutterActivity() {
             return true
         }
         return super.onKeyUp(keyCode, event)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun preferHighRefreshRate() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val activeDisplay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            display
+        } else {
+            windowManager.defaultDisplay
+        } ?: return
+        val currentMode = activeDisplay.mode
+        val sameResolutionModes = activeDisplay.supportedModes.filter { mode ->
+            mode.physicalWidth == currentMode.physicalWidth &&
+                mode.physicalHeight == currentMode.physicalHeight
+        }
+        val atOrBelowTarget = sameResolutionModes
+            .filter { it.refreshRate <= TARGET_REFRESH_RATE + REFRESH_RATE_TOLERANCE }
+            .maxByOrNull { it.refreshRate }
+        val aboveTarget = sameResolutionModes
+            .filter { it.refreshRate > TARGET_REFRESH_RATE + REFRESH_RATE_TOLERANCE }
+            .minByOrNull { it.refreshRate }
+        val preferredMode = when {
+            atOrBelowTarget != null && atOrBelowTarget.refreshRate > 60.5f -> {
+                atOrBelowTarget
+            }
+
+            aboveTarget != null -> aboveTarget
+            else -> atOrBelowTarget
+        } ?: return
+        requestFlutterSurfaceFrameRate(preferredMode.refreshRate)
+        if (preferredMode.modeId == currentMode.modeId) return
+        val attributes = window.attributes
+        if (attributes.preferredDisplayModeId == preferredMode.modeId) return
+        attributes.preferredDisplayModeId = preferredMode.modeId
+        window.attributes = attributes
+    }
+
+    private fun requestFlutterSurfaceFrameRate(frameRate: Float) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        window.decorView.post {
+            val surface = findSurfaceView(window.decorView)?.holder?.surface
+            if (surface?.isValid != true) return@post
+            surface.setFrameRate(
+                frameRate,
+                Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+            )
+        }
+    }
+
+    private fun findSurfaceView(view: View): SurfaceView? {
+        if (view is SurfaceView) return view
+        if (view !is ViewGroup) return null
+        for (index in 0 until view.childCount) {
+            findSurfaceView(view.getChildAt(index))?.let { return it }
+        }
+        return null
     }
 
     private fun handleFileMethod(call: MethodCall, result: MethodChannel.Result) {

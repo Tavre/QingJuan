@@ -14,6 +14,13 @@ from app.models import AddBookPayload, BookSourceRecord
 from app.site_plugins import quark_client
 
 
+@pytest.fixture(autouse=True)
+def _reset_quark_catalog_cache():
+    quark_client.clear_quark_catalog_cache()
+    yield
+    quark_client.clear_quark_catalog_cache()
+
+
 def _reader_html(chapters_info: dict[str, object]) -> str:
     payload = html.escape(json.dumps(chapters_info, ensure_ascii=False))
     return f'<i class="page-data js-dataChapters">{payload}</i>'
@@ -287,6 +294,57 @@ async def test_quark_catalog_retries_429_with_bounded_backoff(monkeypatch) -> No
     assert len(chapters) == 1
     assert calls == 3
     assert delays == [8, 16]
+
+
+@pytest.mark.asyncio
+async def test_quark_catalog_is_reused_for_preview_and_chapter(monkeypatch) -> None:
+    monkeypatch.setattr(quark_client, "QUARK_PAGE_MIN_INTERVAL_SECONDS", 0)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.params["cid"] == "0"
+        return httpx.Response(200, text=_reader_html(_chapters_info()))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        first_info, first_chapters = await quark_client.get_quark_catalog(client, "46543")
+        second_info, second_chapters = await quark_client.get_quark_catalog(
+            client,
+            "46543",
+            chapter_id="2206013",
+        )
+
+    assert calls == 1
+    assert first_info == second_info
+    assert first_chapters == second_chapters
+    assert first_info is not second_info
+    assert first_chapters is not second_chapters
+
+
+@pytest.mark.asyncio
+async def test_quark_catalog_retries_temporary_gateway_error(monkeypatch) -> None:
+    monkeypatch.setattr(quark_client, "QUARK_PAGE_MIN_INTERVAL_SECONDS", 0)
+    delays: list[float] = []
+    calls = 0
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(504, text="<html>gateway timeout</html>")
+        return httpx.Response(200, text=_reader_html(_chapters_info()))
+
+    monkeypatch.setattr(quark_client.asyncio, "sleep", fake_sleep)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        _, chapters = await quark_client.get_quark_catalog(client, "46543")
+
+    assert len(chapters) == 1
+    assert calls == 2
+    assert delays == [2]
 
 
 @pytest.mark.asyncio

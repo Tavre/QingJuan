@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/api/api_exception.dart';
 import '../../core/models/book.dart';
 import '../../core/models/link_job.dart';
 import '../../core/state/load_state.dart';
@@ -135,6 +136,48 @@ class LibraryController extends ChangeNotifier {
     final book = await api.importBook(payload);
     await load(silent: true);
     return book;
+  }
+
+  Future<Book> importFromSearch(
+    JsonMap payload, {
+    Duration pollInterval = const Duration(milliseconds: 600),
+    Duration timeout = const Duration(minutes: 3),
+  }) async {
+    if (hasActiveLinkJob) {
+      throw const ApiException('已有链接任务正在处理，请等待当前任务完成后重试');
+    }
+    await startLinkJob('import', payload);
+    final jobId = linkJob?.id;
+    if (jobId == null || jobId.isEmpty) {
+      throw const ApiException('后端未返回导入任务编号');
+    }
+    final deadline = DateTime.now().add(timeout);
+    while (!_disposed && DateTime.now().isBefore(deadline)) {
+      final current = linkJob;
+      if (current == null || current.id != jobId) {
+        throw const ApiException('导入任务状态已失效，请重新加入书架');
+      }
+      if (current.isCompleted) {
+        final book = current.book;
+        if (book == null) {
+          throw const ApiException('导入任务已完成，但未返回书籍信息');
+        }
+        return book;
+      }
+      if (current.isFailed) {
+        throw ApiException(
+          current.error?.trim().isNotEmpty == true
+              ? current.error!.trim()
+              : (current.message.trim().isEmpty
+                  ? '导入失败，请稍后重试'
+                  : current.message.trim()),
+        );
+      }
+      await Future<void>.delayed(pollInterval);
+      await refreshLinkJob();
+    }
+    if (_disposed) throw const ApiException('导入已取消');
+    throw const ApiException('导入等待超时，任务仍可在书架页继续查看');
   }
 
   Future<Book> importLocal({

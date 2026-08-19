@@ -165,7 +165,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
 
   Widget _buildErrorPage() {
     final canDeleteMissingBook = _error!.contains('本地书籍目录不存在');
-    return NavigationView(
+    final page = NavigationView(
       appBar: NavigationAppBar(
         automaticallyImplyLeading: false,
         backgroundColor: FluentTheme.of(context).micaBackgroundColor,
@@ -212,6 +212,15 @@ class _BookDetailPageState extends State<BookDetailPage> {
           ),
         ],
       ),
+    );
+    return _withMobileSafeArea(page);
+  }
+
+  Widget _withMobileSafeArea(Widget child) {
+    if (!usesMobileUi(context)) return child;
+    return ColoredBox(
+      color: FluentTheme.of(context).micaBackgroundColor,
+      child: SafeArea(child: child),
     );
   }
 
@@ -681,14 +690,17 @@ class _BookDetailPageState extends State<BookDetailPage> {
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const NavigationView(content: LoadingView(label: '正在加载作品详情'));
+      const loading = NavigationView(
+        content: LoadingView(label: '正在加载作品详情'),
+      );
+      return _withMobileSafeArea(loading);
     }
     if (_error != null) {
       return _buildErrorPage();
     }
     final detail = _detail!;
     final compact = usesMobileUi(context);
-    return NavigationView(
+    final page = NavigationView(
       appBar: compact
           ? null
           : NavigationAppBar(
@@ -727,7 +739,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
             controller: _chapterScrollController,
             child: CustomScrollView(
               controller: _chapterScrollController,
-              cacheExtent: 600,
+              cacheExtent: compact ? 360 : 600,
               slivers: <Widget>[
                 SliverToBoxAdapter(child: _buildOverview(detail, compact)),
                 SliverFixedExtentList(
@@ -763,6 +775,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
         ),
       ),
     );
+    return _withMobileSafeArea(page);
   }
 }
 
@@ -844,6 +857,7 @@ class _DetailHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
     return Row(
+      key: const ValueKey('detail-mobile-header'),
       children: <Widget>[
         Tooltip(
           message: '返回书架',
@@ -998,12 +1012,7 @@ class _ChapterRow extends StatelessWidget {
             child: usesMobileUi(context)
                 ? HoverButton(
                     onPressed: onOpen,
-                    builder: (context, states) => AnimatedContainer(
-                      duration: QjMotion.duration(
-                        context,
-                        QjMotionSpeed.faster,
-                      ),
-                      curve: QjMotion.enterCurve,
+                    builder: (context, states) => Container(
                       alignment: AlignmentDirectional.centerStart,
                       padding: const EdgeInsets.symmetric(horizontal: 12),
                       decoration: BoxDecoration(

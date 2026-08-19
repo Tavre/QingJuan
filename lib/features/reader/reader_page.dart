@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:ui' as ui;
 
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter/services.dart';
@@ -32,6 +31,10 @@ class ReaderPage extends StatefulWidget {
 }
 
 class _ReaderPageState extends State<ReaderPage> {
+  static const Duration _visibleChapterCheckInterval =
+      Duration(milliseconds: 80);
+  static const Duration _progressSaveDelay = Duration(milliseconds: 420);
+
   final ScrollController _scrollController = ScrollController();
   final ReaderHardwareKeyService _hardwareKeys = ReaderHardwareKeyService();
   final Map<String, ChapterContent> _chapterCache = <String, ChapterContent>{};
@@ -65,6 +68,13 @@ class _ReaderPageState extends State<ReaderPage> {
   int _pageCount = 1;
   double? _pendingChapterSlider;
   Timer? _hideControlsTimer;
+  Timer? _visibleChapterTimer;
+  Timer? _progressSaveTimer;
+  ChapterContent? _paginationContent;
+  Size? _paginationViewport;
+  double? _paginationFontSize;
+  double? _paginationLineHeight;
+  List<String> _paginationPages = const <String>[];
   DateTime? _lastHardwareKeyAt;
   Offset? _readerPointerDown;
   String? _error;
@@ -280,6 +290,19 @@ class _ReaderPageState extends State<ReaderPage> {
     }
   }
 
+  void _scheduleProgressSave() {
+    _progressSaveTimer?.cancel();
+    _progressSaveTimer = Timer(_progressSaveDelay, () {
+      _progressSaveTimer = null;
+      if (mounted) unawaited(_saveProgress());
+    });
+  }
+
+  void _cancelScheduledProgressSave() {
+    _progressSaveTimer?.cancel();
+    _progressSaveTimer = null;
+  }
+
   double _currentProgressRatio() {
     if (!_mobileUi && _scrollController.hasClients) {
       final max = _scrollController.position.maxScrollExtent;
@@ -307,6 +330,7 @@ class _ReaderPageState extends State<ReaderPage> {
     final next = _chapterIndex + delta;
     if (next < 1 || next > _chapterCount || _switchingChapter) return;
     final previous = _chapterIndex;
+    _cancelScheduledProgressSave();
     unawaited(_saveProgress(chapterIndex: previous));
     if (_flowMode == ReaderFlowMode.continuous &&
         _continuousChapterIndices.contains(next)) {
@@ -332,6 +356,7 @@ class _ReaderPageState extends State<ReaderPage> {
       }
       return;
     }
+    _cancelScheduledProgressSave();
     unawaited(_saveProgress());
     await _loadChapter(chapterIndex);
   }
@@ -345,11 +370,15 @@ class _ReaderPageState extends State<ReaderPage> {
     if (position.extentAfter < position.viewportDimension * 1.4) {
       unawaited(_ensureContinuousChapterAhead());
     }
-    if (_checkingVisibleChapter) return;
-    _checkingVisibleChapter = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _checkingVisibleChapter = false;
-      if (mounted) _updateVisibleChapter();
+    if (_checkingVisibleChapter || _visibleChapterTimer != null) return;
+    _visibleChapterTimer = Timer(_visibleChapterCheckInterval, () {
+      _visibleChapterTimer = null;
+      if (!mounted || _flowMode != ReaderFlowMode.continuous) return;
+      _checkingVisibleChapter = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _checkingVisibleChapter = false;
+        if (mounted) _updateVisibleChapter();
+      });
     });
   }
 
@@ -359,9 +388,9 @@ class _ReaderPageState extends State<ReaderPage> {
     for (final index in _continuousChapterIndices) {
       final context = _chapterHeadingKeys[index]?.currentContext;
       final box = context?.findRenderObject() as RenderBox?;
-      if (box != null && box.localToGlobal(Offset.zero).dy <= 92) {
-        visible = index;
-      }
+      if (box == null) continue;
+      if (box.localToGlobal(Offset.zero).dy > 92) break;
+      visible = index;
     }
     if (visible == _chapterIndex) return;
     final previous = _chapterIndex;
@@ -503,15 +532,21 @@ class _ReaderPageState extends State<ReaderPage> {
   }
 
   void _applySystemChrome() {
+    if (!_mobileUi) return;
     final palette = _palette;
+    unawaited(
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge),
+    );
     SystemChrome.setSystemUIOverlayStyle(
       SystemUiOverlayStyle(
-        statusBarColor: palette.background,
+        statusBarColor: const Color(0x00000000),
         statusBarIconBrightness:
             palette.isDark ? Brightness.light : Brightness.dark,
-        systemNavigationBarColor: palette.surface,
+        systemNavigationBarColor: const Color(0x00000000),
         systemNavigationBarIconBrightness:
             palette.isDark ? Brightness.light : Brightness.dark,
+        systemStatusBarContrastEnforced: false,
+        systemNavigationBarContrastEnforced: false,
       ),
     );
   }
@@ -522,12 +557,7 @@ class _ReaderPageState extends State<ReaderPage> {
       _controlsVisible = value;
       if (!value) _settingsVisible = false;
     });
-    unawaited(
-      SystemChrome.setEnabledSystemUIMode(
-        value ? SystemUiMode.edgeToEdge : SystemUiMode.immersiveSticky,
-      ),
-    );
-    if (value) _applySystemChrome();
+    _applySystemChrome();
     if (value) {
       _scheduleControlsHide();
     } else {
@@ -588,6 +618,8 @@ class _ReaderPageState extends State<ReaderPage> {
 
   void _setFlowMode(ReaderFlowMode value) {
     if (_flowMode == value) return;
+    _cancelScheduledProgressSave();
+    unawaited(_saveProgress());
     setState(() {
       _flowMode = value;
       _pageIndex = 0;
@@ -670,7 +702,6 @@ class _ReaderPageState extends State<ReaderPage> {
                 borderRadius: const BorderRadius.vertical(
                   top: Radius.circular(28),
                 ),
-                blur: 24,
                 child: Column(
                   children: <Widget>[
                     Padding(
@@ -845,6 +876,8 @@ class _ReaderPageState extends State<ReaderPage> {
   @override
   void dispose() {
     _hideControlsTimer?.cancel();
+    _visibleChapterTimer?.cancel();
+    _cancelScheduledProgressSave();
     unawaited(_saveProgress());
     unawaited(_hardwareKeys.detach());
     if (_mobileUi) {
@@ -908,7 +941,7 @@ class _ReaderPageState extends State<ReaderPage> {
             24,
             math.max(28, viewPadding.bottom + 18),
           ),
-          cacheExtent: 1200,
+          cacheExtent: 420,
           addAutomaticKeepAlives: false,
           itemCount: elements.length,
           itemBuilder: (context, index) => Center(
@@ -1062,42 +1095,55 @@ class _ReaderPageState extends State<ReaderPage> {
     }
     return AnimatedBuilder(
       animation: _pageController,
-      builder: (context, _) {
+      child: child,
+      builder: (context, page) {
         var activePage = _pageIndex.toDouble();
         if (_pageController.positions.length == 1 &&
             _pageController.position.hasContentDimensions) {
           activePage = _pageController.page ?? activePage;
         }
-        final distance = (activePage - index).abs().clamp(0.0, 1.0);
+        final pageDelta = (activePage - index).clamp(-1.0, 1.0).toDouble();
+        final distance = pageDelta.abs();
         if (_pageAnimation == ReaderPageAnimation.fade) {
           return Opacity(
             opacity: 1 - distance * 0.72,
-            child: child,
+            child: page,
           );
         }
-        return Transform.scale(
-          alignment: Alignment.centerLeft,
-          scale: 1 - distance * 0.028,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: _palette.background,
-              boxShadow: distance < 0.98
-                  ? <BoxShadow>[
-                      BoxShadow(
-                        color: const Color(0xFF000000).withAlpha(
-                          _palette.isDark ? 30 : 18,
-                        ),
-                        blurRadius: 18,
-                        offset: const Offset(-5, 0),
-                      ),
-                    ]
-                  : null,
-            ),
-            child: child,
-          ),
+        return FractionalTranslation(
+          translation: Offset(pageDelta * 0.035, 0),
+          child: page,
         );
       },
     );
+  }
+
+  List<String> _pagesFor(ChapterContent content, Size viewport) {
+    final lineHeight = _lineSpacing.height;
+    if (identical(_paginationContent, content) &&
+        _paginationViewport == viewport &&
+        _paginationFontSize == _fontSize &&
+        _paginationLineHeight == lineHeight) {
+      return _paginationPages;
+    }
+    final pages = content.imageSources.isNotEmpty
+        ? List<String>.filled(content.imageSources.length, '', growable: false)
+        : paginateReaderText(
+            content.content.isEmpty
+                ? content.paragraphs.join('\n\n')
+                : content.content,
+            estimateReaderPageCharacters(
+              viewport,
+              _fontSize,
+              lineHeight: lineHeight,
+            ),
+          );
+    _paginationContent = content;
+    _paginationViewport = viewport;
+    _paginationFontSize = _fontSize;
+    _paginationLineHeight = lineHeight;
+    _paginationPages = pages;
+    return pages;
   }
 
   Widget _buildPagedReader(BuildContext context) {
@@ -1118,23 +1164,16 @@ class _ReaderPageState extends State<ReaderPage> {
           16,
           math.max(20, viewPadding.bottom + 14),
         );
-        final pages = content.imageSources.isNotEmpty
-            ? List<String>.filled(content.imageSources.length, '')
-            : paginateReaderText(
-                content.content.isEmpty
-                    ? content.paragraphs.join('\n\n')
-                    : content.content,
-                estimateReaderPageCharacters(
-                  Size(
-                    constraints.maxWidth,
-                    math.max(
-                      240,
-                      constraints.maxHeight - viewPadding.vertical,
-                    ),
-                  ),
-                  _fontSize,
-                ),
-              );
+        final pages = _pagesFor(
+          content,
+          Size(
+            constraints.maxWidth,
+            math.max(
+              240,
+              constraints.maxHeight - viewPadding.vertical,
+            ),
+          ),
+        );
         _pageCount = math.max(1, pages.length);
         return Listener(
           behavior: HitTestBehavior.translucent,
@@ -1154,7 +1193,7 @@ class _ReaderPageState extends State<ReaderPage> {
                 return;
               }
               setState(() => _pageIndex = index);
-              unawaited(_saveProgress());
+              _scheduleProgressSave();
             },
             itemBuilder: (context, index) {
               if (index >= pages.length) {
@@ -1197,13 +1236,15 @@ class _ReaderPageState extends State<ReaderPage> {
                         const SizedBox(height: 23),
                       ],
                       Expanded(
-                        child: SelectableText(
-                          pages[index],
-                          style: TextStyle(
-                            color: textColor,
-                            fontSize: _fontSize,
-                            height: _lineSpacing.height,
-                            letterSpacing: 0.12,
+                        child: SelectionArea(
+                          child: Text(
+                            pages[index],
+                            style: TextStyle(
+                              color: textColor,
+                              fontSize: _fontSize,
+                              height: _lineSpacing.height,
+                              letterSpacing: 0.12,
+                            ),
                           ),
                         ),
                       ),
@@ -1247,36 +1288,32 @@ class _ReaderPageState extends State<ReaderPage> {
   Widget _readerGlassSurface({
     required Widget child,
     required BorderRadius borderRadius,
-    double blur = 14,
   }) {
     final palette = _palette;
-    return ClipRRect(
-      borderRadius: borderRadius,
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: blur, sigmaY: blur),
-        child: RepaintBoundary(
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: palette.surface.withAlpha(palette.isDark ? 240 : 242),
-              borderRadius: borderRadius,
-              border: Border.all(
-                color: palette.isDark
-                    ? const Color(0xFFFFFFFF).withAlpha(24)
-                    : const Color(0xFFFFFFFF).withAlpha(160),
-                width: 0.8,
-              ),
-              boxShadow: <BoxShadow>[
-                BoxShadow(
-                  color: const Color(0xFF000000).withAlpha(
-                    palette.isDark ? 34 : 14,
-                  ),
-                  blurRadius: 18,
-                  offset: const Offset(0, 6),
-                ),
-              ],
+    return RepaintBoundary(
+      child: ClipRRect(
+        borderRadius: borderRadius,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: palette.surface.withAlpha(palette.isDark ? 240 : 242),
+            borderRadius: borderRadius,
+            border: Border.all(
+              color: palette.isDark
+                  ? const Color(0xFFFFFFFF).withAlpha(24)
+                  : const Color(0xFFFFFFFF).withAlpha(160),
+              width: 0.8,
             ),
-            child: child,
+            boxShadow: <BoxShadow>[
+              BoxShadow(
+                color: const Color(0xFF000000).withAlpha(
+                  palette.isDark ? 34 : 14,
+                ),
+                blurRadius: 18,
+                offset: const Offset(0, 6),
+              ),
+            ],
           ),
+          child: child,
         ),
       ),
     );

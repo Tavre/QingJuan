@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -164,7 +165,8 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('reader-settings-button')));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.byKey(const ValueKey('reader-settings-panel')), findsOneWidget);
-    expect(find.byType(BackdropFilter), findsAtLeastNWidgets(2));
+    expect(find.byType(BackdropFilter), findsNothing);
+    expect(find.byType(RepaintBoundary), findsWidgets);
     final bottomControls = find.byKey(
       const ValueKey('reader-bottom-controls'),
     );
@@ -221,6 +223,7 @@ void main() {
     final continuousList = tester.widget<ListView>(continuousReader);
     final contentPadding = continuousList.padding! as EdgeInsets;
     expect(contentPadding.bottom, lessThan(80));
+    expect(continuousList.cacheExtent, 420);
     expect(tester.getSize(continuousReader).height, 600);
 
     await tester.tap(find.byKey(const ValueKey('reader-settings-button')));
@@ -279,6 +282,54 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     expect(tester.widget<AnimatedSlide>(topControls).offset, Offset.zero);
     expect(tester.widget<AnimatedSlide>(bottomControls).offset, Offset.zero);
+  });
+
+  testWidgets('hiding Android reader controls keeps edge-to-edge system UI',
+      (tester) async {
+    final platformCalls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      platformCalls.add(call);
+      return null;
+    });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+    final harness = await _Harness.create(
+      MockClient((request) async {
+        if (request.method == 'PUT') return http.Response('{}', 200);
+        return http.Response(
+          jsonEncode(_chapterPayload),
+          200,
+          headers: const <String, String>{
+            'content-type': 'application/json; charset=utf-8',
+          },
+        );
+      }),
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+    platformCalls.clear();
+
+    await tester.tapAt(const Offset(400, 300));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final modeCalls = platformCalls.where(
+      (call) => call.method == 'SystemChrome.setEnabledSystemUIMode',
+    );
+    expect(modeCalls, isNotEmpty);
+    expect(
+      modeCalls.map((call) => '${call.arguments}').join('\n'),
+      contains('SystemUiMode.edgeToEdge'),
+    );
+    expect(
+      modeCalls.map((call) => '${call.arguments}').join('\n'),
+      isNot(contains('SystemUiMode.immersiveSticky')),
+    );
   });
 
   testWidgets('reader settings fit a narrow phone viewport', (tester) async {

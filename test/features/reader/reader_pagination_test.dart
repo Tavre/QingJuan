@@ -23,4 +23,19 @@ void main() {
     expect(compact, greaterThanOrEqualTo(80));
     expect(spacious, greaterThan(compact));
   });
+
+  test('relaxed line spacing fits fewer characters per page', () {
+    final compact = estimateReaderPageCharacters(
+      const Size(390, 844),
+      19,
+      lineHeight: 1.62,
+    );
+    final relaxed = estimateReaderPageCharacters(
+      const Size(390, 844),
+      19,
+      lineHeight: 2.04,
+    );
+
+    expect(relaxed, lessThan(compact));
+  });
 }

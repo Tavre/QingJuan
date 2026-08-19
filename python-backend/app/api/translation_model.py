@@ -5,6 +5,7 @@ from ..db import load_settings
 from ..translation_model_health import (
     TranslationModelCheckResponse,
     check_translation_model,
+    get_translation_model_check_snapshot,
 )
 
 router = APIRouter(tags=["translation-model"])
@@ -17,4 +18,5 @@ async def post_translation_model_check(
 ) -> TranslationModelCheckResponse:
     if force:
         require_admin_session(request, require_csrf=True)
-    return await check_translation_model(load_settings(), force=force)
+        return await check_translation_model(load_settings(), force=True)
+    return get_translation_model_check_snapshot(load_settings())

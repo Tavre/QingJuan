@@ -130,7 +130,11 @@ class _ReaderPageState extends State<ReaderPage> {
 
   String _cacheKey(int chapterIndex, String mode) => '$mode:$chapterIndex';
 
-  Future<ChapterContent> _getChapter(int chapterIndex, String mode) {
+  Future<ChapterContent> _getChapter(
+    int chapterIndex,
+    String mode, {
+    bool prefetch = false,
+  }) {
     final key = _cacheKey(chapterIndex, mode);
     final cached = _chapterCache[key];
     if (cached != null) return Future<ChapterContent>.value(cached);
@@ -141,6 +145,7 @@ class _ReaderPageState extends State<ReaderPage> {
       widget.detail.book.id,
       chapterIndex,
       mode: mode,
+      prefetch: prefetch,
     )
         .then((content) {
       _chapterCache[key] = content;
@@ -188,7 +193,12 @@ class _ReaderPageState extends State<ReaderPage> {
       });
     }
     try {
-      final content = await _getChapter(chapterIndex, _mode);
+      final mode = _mode;
+      final contentRequest = _getChapter(chapterIndex, mode);
+      if (chapterIndex < _chapterCount) {
+        unawaited(_prefetchChapter(chapterIndex + 1, mode));
+      }
+      final content = await contentRequest;
       if (!mounted || loadToken != _loadToken) return;
       final oldController = _pageController;
       _pageController = PageController();
@@ -212,7 +222,9 @@ class _ReaderPageState extends State<ReaderPage> {
           _scrollController.jumpTo(0);
         }
       });
-      unawaited(_prefetchAdjacent(chapterIndex));
+      if (chapterIndex > 1) {
+        unawaited(_prefetchChapter(chapterIndex - 1, mode));
+      }
       if (_flowMode == ReaderFlowMode.continuous) {
         unawaited(_ensureContinuousChapterAhead());
       }
@@ -232,17 +244,21 @@ class _ReaderPageState extends State<ReaderPage> {
 
   Future<void> _prefetchAdjacent(int chapterIndex) async {
     final mode = _mode;
-    final requests = <Future<ChapterContent>>[];
+    final requests = <Future<void>>[];
     if (chapterIndex < _chapterCount) {
-      requests.add(_getChapter(chapterIndex + 1, mode));
+      requests.add(_prefetchChapter(chapterIndex + 1, mode));
     }
-    if (chapterIndex > 1) requests.add(_getChapter(chapterIndex - 1, mode));
-    for (final request in requests) {
-      try {
-        await request;
-      } catch (_) {
-        // 预取失败不覆盖当前正文；真正切章时会再次给出可重试错误。
-      }
+    if (chapterIndex > 1) {
+      requests.add(_prefetchChapter(chapterIndex - 1, mode));
+    }
+    await Future.wait(requests);
+  }
+
+  Future<void> _prefetchChapter(int chapterIndex, String mode) async {
+    try {
+      await _getChapter(chapterIndex, mode, prefetch: true);
+    } catch (_) {
+      // 预取失败不覆盖当前正文；真正切章时会再次给出可重试错误。
     }
   }
 

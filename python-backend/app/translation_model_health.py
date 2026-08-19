@@ -13,6 +13,11 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel
 
+from .model_endpoint_security import (
+    ModelEndpointSecurityError,
+    create_model_http_client,
+    model_endpoint_origin,
+)
 from .models import TranslationSettings
 
 TranslationModelCheckStatus = Literal["ready", "disabled", "unconfigured", "failed"]
@@ -43,8 +48,10 @@ def normalize_openai_compatible_base_url(value: str) -> str:
     normalized_value = value.strip()
     if not normalized_value:
         return ""
-    parsed = urlparse(normalized_value)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+    try:
+        model_endpoint_origin(normalized_value)
+        parsed = urlparse(normalized_value)
+    except (ModelEndpointSecurityError, ValueError):
         return ""
     normalized_path = parsed.path.rstrip("/")
     endpoint_suffix = "/chat/completions"
@@ -115,6 +122,57 @@ async def check_translation_model(
         return result
 
 
+def get_translation_model_check_snapshot(
+    settings: TranslationSettings,
+) -> TranslationModelCheckResponse:
+    """Return cached/passive status without making an outbound request."""
+
+    cache_key = _configuration_fingerprint(settings)
+    if (
+        cache_key == _CACHE_KEY
+        and _CACHE_VALUE is not None
+        and time.monotonic() - _CACHE_CREATED_AT < _CHECK_CACHE_TTL_SECONDS
+    ):
+        return _CACHE_VALUE.model_copy(update={"cached": True})
+
+    model_config = settings.translationModel
+    public_model = _public_model_name(model_config.model)
+    configured = bool(
+        normalize_openai_compatible_base_url(str(model_config.baseUrl or ""))
+        and str(model_config.apiKey or "").strip()
+        and str(model_config.model or "").strip()
+    )
+    if not model_config.enabled:
+        return _result(
+            enabled=False,
+            configured=configured,
+            available=False,
+            status="disabled",
+            model=public_model,
+            supports_vision=model_config.supportsVision,
+            message="Linux 服务端翻译模型未启用",
+        )
+    if not configured:
+        return _result(
+            enabled=True,
+            configured=False,
+            available=False,
+            status="unconfigured",
+            model=public_model,
+            supports_vision=model_config.supportsVision,
+            message="翻译模型配置不完整，请在 Linux 管理界面补充地址、密钥和模型名",
+        )
+    return _result(
+        enabled=True,
+        configured=True,
+        available=False,
+        status="failed",
+        model=public_model,
+        supports_vision=model_config.supportsVision,
+        message="翻译模型尚未由管理员执行安全自检",
+    )
+
+
 async def probe_translation_model(
     settings: TranslationSettings,
     *,
@@ -126,11 +184,7 @@ async def probe_translation_model(
     raw_base_url = str(model_config.baseUrl or "").strip()
     raw_api_key = str(model_config.apiKey or "").strip()
     raw_model = str(model_config.model or "").strip()
-    configured = bool(
-        normalize_openai_compatible_base_url(raw_base_url)
-        and raw_api_key
-        and raw_model
-    )
+    configured = bool(normalize_openai_compatible_base_url(raw_base_url) and raw_api_key and raw_model)
     if not model_config.enabled:
         return _result(
             enabled=False,
@@ -176,9 +230,8 @@ async def probe_translation_model(
     }
     started = time.perf_counter()
     owns_client = client is None
-    active_client = client or httpx.AsyncClient(
+    active_client = client or create_model_http_client(
         timeout=httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 5.0)),
-        follow_redirects=True,
     )
     try:
         response = await active_client.post(
@@ -226,6 +279,17 @@ async def probe_translation_model(
             supports_vision=model_config.supportsVision,
             latency_ms=latency_ms,
             message="Linux 服务端翻译模型自检通过",
+        )
+    except ModelEndpointSecurityError:
+        _LOGGER.warning("翻译模型自检拒绝不安全的 API 地址：model=%s", public_model)
+        return _result(
+            enabled=True,
+            configured=True,
+            available=False,
+            status="failed",
+            model=public_model,
+            supports_vision=model_config.supportsVision,
+            message="翻译模型 API 地址不符合服务端出站安全策略",
         )
     except httpx.TimeoutException:
         _LOGGER.warning("翻译模型自检超时：model=%s", public_model)

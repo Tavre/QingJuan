@@ -13,6 +13,7 @@ import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/shell/app_shell.dart';
 import 'package:qingjuan/features/sources/sources_controller.dart';
 import 'package:qingjuan/features/tasks/tasks_controller.dart';
+import 'package:qingjuan/shared/app_surface.dart';
 import 'package:qingjuan/shared/responsive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -32,12 +33,30 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('我的'), findsOneWidget);
-    final navigation = tester.widget<Container>(
+    final navigation = tester.widget<SizedBox>(
       find.byKey(const ValueKey('mobile-bottom-navigation')),
     );
-    final navigationDecoration = navigation.decoration! as BoxDecoration;
-    expect(navigationDecoration.borderRadius, isNull);
-    expect(navigationDecoration.boxShadow, isNull);
+    expect(navigation.height, 82);
+    final glassFinder =
+        find.byKey(const ValueKey('mobile-bottom-navigation-glass'));
+    final glass = tester.widget<AppGlassSurface>(glassFinder);
+    expect(glass.borderRadius, 22);
+    expect(glass.blurSigma, 16);
+    expect(
+      tester.getSize(glassFinder).width,
+      lessThan(tester
+          .getSize(find.byKey(
+            const ValueKey('mobile-bottom-navigation'),
+          ))
+          .width),
+    );
+    expect(
+      find.descendant(
+        of: glassFinder,
+        matching: find.byType(BackdropFilter),
+      ),
+      findsOneWidget,
+    );
     expect(find.byType(NavigationView), findsNothing);
     for (final section in <AppSection>[
       AppSection.library,

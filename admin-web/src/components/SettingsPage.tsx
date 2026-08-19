@@ -145,6 +145,7 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps) {
                 <Form.Item
                   label="API 根地址"
                   name="translationBaseUrl"
+                  extra="默认仅允许解析到公网的 HTTPS；局域网模型需由服务器运维方白名单授权。"
                   rules={[{ required: translationEnabled, message: "请输入 API 根地址" }, { type: "url", message: "请输入有效的 URL" }]}
                 >
                   <Input disabled={!translationEnabled} placeholder="https://api.openai.com/v1" />
@@ -161,7 +162,7 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps) {
                 <Form.Item
                   label="API 密钥"
                   name="translationApiKey"
-                  extra={settings.translationModel.apiKeyConfigured ? "已保存密钥；留空可保持不变。" : "尚未保存密钥。"}
+                  extra={settings.translationModel.apiKeyConfigured ? "已保存密钥；留空仅在 API 地址同 Origin 时保持，换源会自动清除。" : "尚未保存密钥。"}
                 >
                   <Input.Password disabled={!translationEnabled} autoComplete="new-password" placeholder="留空保持现有密钥" />
                 </Form.Item>
@@ -193,6 +194,7 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps) {
                 <Form.Item
                   label="OCR API 地址"
                   name="mangaOcrBaseUrl"
+                  extra="与翻译模型共用同一出站安全策略。"
                   rules={[{ required: mangaOcrEnabled, message: "请输入 OCR API 地址" }, { type: "url", message: "请输入有效的 URL" }]}
                 >
                   <Input disabled={!mangaOcrEnabled} placeholder="https://example.com/ocr" />
@@ -202,7 +204,7 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps) {
                 <Form.Item
                   label="OCR API 密钥"
                   name="mangaOcrApiKey"
-                  extra={settings.mangaOcr.apiKeyConfigured ? "已保存；留空保持不变。" : "可选。"}
+                  extra={settings.mangaOcr.apiKeyConfigured ? "已保存；换 Origin 时留空会自动清除。" : "可选。"}
                 >
                   <Input.Password disabled={!mangaOcrEnabled} autoComplete="new-password" placeholder="留空保持现有密钥" />
                 </Form.Item>

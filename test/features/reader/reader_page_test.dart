@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:fluent_ui/fluent_ui.dart';
@@ -103,6 +104,8 @@ void main() {
   testWidgets('prefetches the next chapter and switches without a loading page',
       (tester) async {
     final requestedChapters = <int>[];
+    final prefetchRequests = <int>[];
+    final releaseFirstChapter = Completer<void>();
     final harness = await _Harness.create(
       MockClient((request) async {
         if (request.method == 'PUT') {
@@ -110,6 +113,10 @@ void main() {
         }
         final chapterIndex = int.parse(request.url.pathSegments.last);
         requestedChapters.add(chapterIndex);
+        if (request.url.queryParameters['prefetch'] == 'true') {
+          prefetchRequests.add(chapterIndex);
+        }
+        if (chapterIndex == 1) await releaseFirstChapter.future;
         return http.Response(
           jsonEncode(_chapterPayloadFor(chapterIndex)),
           200,
@@ -121,13 +128,22 @@ void main() {
       detail: _threeChapterDetail,
     );
     addTearDown(harness.dispose);
+    addTearDown(() {
+      if (!releaseFirstChapter.isCompleted) releaseFirstChapter.complete();
+    });
 
     await tester.pumpWidget(harness.widget);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+
+    expect(requestedChapters, containsAll(<int>[1, 2]));
+    expect(prefetchRequests, contains(2));
+    expect(prefetchRequests, isNot(contains(1)));
+
+    releaseFirstChapter.complete();
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pump();
 
     expect(find.text('第一章正文。'), findsOneWidget);
-    expect(requestedChapters, containsAll(<int>[1, 2]));
 
     await tester.tap(find.byKey(const ValueKey('reader-next-button')));
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));

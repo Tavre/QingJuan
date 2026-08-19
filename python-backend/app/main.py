@@ -40,7 +40,7 @@ from PIL import Image, UnidentifiedImageError
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 try:
-    from .admin_auth import validate_admin_auth_configuration
+    from .admin_auth import require_admin_session, validate_admin_auth_configuration
     from .api.routers import (
         API_ROUTERS,
         PUBLIC_ROUTERS,
@@ -53,6 +53,7 @@ try:
         tasks_router,
     )
     from .application import create_application
+    from .chapter_cache import ChapterCacheCoordinator
     from .db import (
         DATA_DIR,
         append_task_log,
@@ -87,6 +88,12 @@ try:
         LocalImportError,
         inspect_local_document,
         write_local_document,
+    )
+    from .model_endpoint_security import (
+        ModelEndpointSecurityError,
+        configured_model_endpoint_allowlist,
+        model_endpoint_origin,
+        validate_model_endpoint_url_policy,
     )
     from .models import (
         AddBookPayload,
@@ -138,9 +145,11 @@ try:
         _fetch_with_edge_cdp,
         _normalize_search_text,
         _normalize_source_url,
+        apply_downloaded_chapter_payload,
         build_translated_filename,
         create_book_manifest_only,
         download_book,
+        download_chapter_payload,
         download_selected_chapters,
         load_manga_translation_page_payloads,
         load_manifest,
@@ -164,8 +173,9 @@ try:
     from .site_plugins.import_jobs import SitePluginImportJobStore
     from .site_plugins.qidian_client import canonical_book_url, qidian_book_id_from_url
     from .site_plugins.qidian_runtime import QIDIAN_RUNTIME
+    from .translation_model_health import reset_translation_model_check_cache
 except ImportError:
-    from app.admin_auth import validate_admin_auth_configuration
+    from app.admin_auth import require_admin_session, validate_admin_auth_configuration
     from app.api.routers import (
         API_ROUTERS,
         PUBLIC_ROUTERS,
@@ -178,6 +188,7 @@ except ImportError:
         tasks_router,
     )
     from app.application import create_application
+    from app.chapter_cache import ChapterCacheCoordinator
     from app.db import (
         DATA_DIR,
         append_task_log,
@@ -212,6 +223,12 @@ except ImportError:
         LocalImportError,
         inspect_local_document,
         write_local_document,
+    )
+    from app.model_endpoint_security import (
+        ModelEndpointSecurityError,
+        configured_model_endpoint_allowlist,
+        model_endpoint_origin,
+        validate_model_endpoint_url_policy,
     )
     from app.models import (
         AddBookPayload,
@@ -263,9 +280,11 @@ except ImportError:
         _fetch_with_edge_cdp,
         _normalize_search_text,
         _normalize_source_url,
+        apply_downloaded_chapter_payload,
         build_translated_filename,
         create_book_manifest_only,
         download_book,
+        download_chapter_payload,
         download_selected_chapters,
         load_manga_translation_page_payloads,
         load_manifest,
@@ -289,6 +308,7 @@ except ImportError:
     from app.site_plugins.import_jobs import SitePluginImportJobStore
     from app.site_plugins.qidian_client import canonical_book_url, qidian_book_id_from_url
     from app.site_plugins.qidian_runtime import QIDIAN_RUNTIME
+    from app.translation_model_health import reset_translation_model_check_cache
 
 LIBRARY_ROOT = DATA_DIR / "library"
 EXPORT_ROOT = DATA_DIR / "exports"
@@ -322,6 +342,7 @@ LEGADO_SEARCH_RESULT_SETTLE_TIMEOUT = 4.0
 
 async def _run_startup(app_instance: FastAPI) -> None:
     validate_admin_auth_configuration()
+    configured_model_endpoint_allowlist()
     init_db()
     _migrate_book_storage_keys()
     await asyncio.to_thread(_cleanup_expired_exports)
@@ -329,9 +350,8 @@ async def _run_startup(app_instance: FastAPI) -> None:
     EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
     app_instance.state.deleted_book_ids = set()
     app_instance.state.export_cleanup_worker = asyncio.create_task(_export_cleanup_loop())
-    app_instance.state.reader_cache_tasks = set()
-    app_instance.state.reader_cache_keys = set()
-    app_instance.state.reader_cache_locks = {}
+    app_instance.state.chapter_manifest_locks = {}
+    app_instance.state.chapter_cache_coordinator = _create_chapter_cache_coordinator()
     app_instance.state.link_job_tasks = set()
     app_instance.state.site_plugin_import_tasks = set()
     app_instance.state.task_queue = TASK_QUEUE
@@ -343,6 +363,7 @@ async def _run_startup(app_instance: FastAPI) -> None:
         save_task(task)
         TASK_QUEUE.put_nowait(task.id)
     app_instance.state.queue_worker = asyncio.create_task(_task_worker())
+    _resume_server_managed_source_caches()
 
 
 async def _run_shutdown(app_instance: FastAPI) -> None:
@@ -370,12 +391,12 @@ async def _run_shutdown(app_instance: FastAPI) -> None:
     QIDIAN_RUNTIME.logout()
     SITE_PLUGIN_IMPORT_JOB_STORE.clear()
 
-    reader_cache_tasks = getattr(app_instance.state, "reader_cache_tasks", set())
-    if isinstance(reader_cache_tasks, set):
-        for task in list(reader_cache_tasks):
-            task.cancel()
-        await asyncio.gather(*reader_cache_tasks, return_exceptions=True)
-        reader_cache_tasks.clear()
+    chapter_cache_coordinator = getattr(app_instance.state, "chapter_cache_coordinator", None)
+    if isinstance(chapter_cache_coordinator, ChapterCacheCoordinator):
+        await chapter_cache_coordinator.shutdown()
+    chapter_manifest_locks = getattr(app_instance.state, "chapter_manifest_locks", None)
+    if isinstance(chapter_manifest_locks, dict):
+        chapter_manifest_locks.clear()
 
     worker = getattr(app_instance.state, "queue_worker", None)
     if worker is not None:
@@ -993,6 +1014,10 @@ async def get_book_detail(book_id: str) -> BookDetailResponse:
 async def delete_book_route(book_id: str) -> dict[str, str]:
     book = _get_book_or_404(book_id)
     book_dir = _resolve_book_dir(book)
+    chapter_cache_coordinator = getattr(app.state, "chapter_cache_coordinator", None)
+    if isinstance(chapter_cache_coordinator, ChapterCacheCoordinator):
+        await chapter_cache_coordinator.cancel_book(book.id)
+    _get_chapter_manifest_locks().pop(book.id, None)
     deleted_book_ids: set[str] = getattr(app.state, "deleted_book_ids", set())
     deleted_book_ids.add(book.id)
     app.state.deleted_book_ids = deleted_book_ids
@@ -1007,12 +1032,19 @@ async def get_chapter_content(
     book_id: str,
     chapter_index: int,
     mode: str = Query(default="translated"),
+    prefetch: bool = Query(default=False),
 ) -> ChapterContentResponse:
     book = _get_book_or_404(book_id)
     book_dir = _resolve_book_dir(book)
     manifest = _load_or_initialize_manifest(book, book_dir)
     try:
-        manifest = await _ensure_source_chapter_cached(book, book_dir, manifest, chapter_index)
+        manifest = await _ensure_source_chapter_cached(
+            book,
+            book_dir,
+            manifest,
+            chapter_index,
+            prepare_next=not prefetch,
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -1404,6 +1436,8 @@ async def _create_imported_book(payload: AddBookPayload, preview: PreviewRespons
         cover=result.cover,
     )
     save_book(record)
+    if lightweight_import:
+        _schedule_server_managed_source_cache(record)
     return _hydrate_book_record(record)
 
 
@@ -1460,9 +1494,14 @@ async def _run_link_job(job_id: str) -> None:
             return
 
         manifest_only = _uses_manifest_only_import(payload)
-        import_start_message = (
-            "开始创建章节目录，正文将在阅读时按需下载" if manifest_only else "开始下载全部正文并写入本地书库"
-        )
+        if manifest_only and _server_managed_chapter_cache_enabled():
+            import_start_message = "开始创建章节目录，完成后由 Linux 服务器顺序缓存正文"
+        else:
+            import_start_message = (
+                "开始创建章节目录，正文将在阅读时按需下载"
+                if manifest_only
+                else "开始下载全部正文并写入本地书库"
+            )
         import_wait_message = "正在写入章节目录" if manifest_only else "正在下载全部正文并写入本地书库"
         LINK_JOB_STORE.append_log(job_id, "info", import_start_message, progress=68)
         book = await _run_link_job_stage(
@@ -1472,7 +1511,10 @@ async def _run_link_job(job_id: str) -> None:
             start_progress=68,
             end_progress=98,
         )
-        completion_message = "链接导入完成，已启用边看边下" if manifest_only else "链接导入完成"
+        if manifest_only and _server_managed_chapter_cache_enabled():
+            completion_message = "链接导入完成，Linux 服务器已开始顺序缓存正文"
+        else:
+            completion_message = "链接导入完成，已启用边看边下" if manifest_only else "链接导入完成"
         LINK_JOB_STORE.complete(job_id, completion_message, preview=preview, book=book)
     except asyncio.CancelledError:
         LINK_JOB_STORE.fail(job_id, "应用正在关闭，链接任务已取消")
@@ -1600,16 +1642,22 @@ async def get_settings() -> TranslationSettingsView:
 
 
 @settings_router.put("/settings", response_model=TranslationSettingsView)
-async def put_settings(payload: TranslationSettings) -> TranslationSettingsView:
+async def put_settings(payload: TranslationSettings, request: Request) -> TranslationSettingsView:
+    require_admin_session(request, require_csrf=authentication_enabled())
+    _validate_model_endpoint_settings(payload)
     current = load_settings()
     merged = payload.model_copy(deep=True)
-    merged.translationModel.apiKey = _merge_secret(
+    merged.translationModel.apiKey = _merge_endpoint_secret(
+        current.translationModel.baseUrl,
         current.translationModel.apiKey,
+        payload.translationModel.baseUrl,
         payload.translationModel.apiKey,
         payload.translationModel.apiKeyAction,
     )
-    merged.mangaOcr.apiKey = _merge_secret(
+    merged.mangaOcr.apiKey = _merge_endpoint_secret(
+        current.mangaOcr.baseUrl,
         current.mangaOcr.apiKey,
+        payload.mangaOcr.baseUrl,
         payload.mangaOcr.apiKey,
         payload.mangaOcr.apiKeyAction,
     )
@@ -1620,7 +1668,45 @@ async def put_settings(payload: TranslationSettings) -> TranslationSettingsView:
     )
     if not merged.bika.email.strip():
         merged.bika.email = current.bika.email
-    return _settings_view(save_settings(merged))
+    saved = save_settings(merged)
+    reset_translation_model_check_cache()
+    return _settings_view(saved)
+
+
+def _validate_model_endpoint_settings(settings: TranslationSettings) -> None:
+    endpoints = [str(settings.translationModel.baseUrl or "").strip()]
+    manga_ocr_base_url = str(settings.mangaOcr.baseUrl or "").strip()
+    if "://" in manga_ocr_base_url:
+        endpoints.append(manga_ocr_base_url)
+    try:
+        for endpoint in endpoints:
+            if endpoint:
+                validate_model_endpoint_url_policy(endpoint)
+    except ModelEndpointSecurityError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+def _merge_endpoint_secret(
+    current_base_url: str,
+    current_secret: str,
+    submitted_base_url: str,
+    submitted_secret: str,
+    action: str,
+) -> str:
+    if action == "clear":
+        return ""
+    if action == "replace" or submitted_secret:
+        return submitted_secret.strip()
+    if _same_model_endpoint_origin(current_base_url, submitted_base_url):
+        return current_secret
+    return ""
+
+
+def _same_model_endpoint_origin(left: str, right: str) -> bool:
+    try:
+        return model_endpoint_origin(left) == model_endpoint_origin(right)
+    except ModelEndpointSecurityError:
+        return str(left or "").strip().casefold() == str(right or "").strip().casefold()
 
 
 def _merge_secret(current: str, submitted: str, action: str) -> str:
@@ -3135,28 +3221,44 @@ def _source_chapter_cache_indexes(
     return indexes
 
 
-def _get_reader_cache_locks() -> dict[str, asyncio.Lock]:
-    locks = getattr(app.state, "reader_cache_locks", None)
+def _server_managed_chapter_cache_enabled() -> bool:
+    return sys.platform.startswith("linux")
+
+
+def _create_chapter_cache_coordinator() -> ChapterCacheCoordinator:
+    return ChapterCacheCoordinator(
+        _cache_source_chapter_by_id,
+        on_error=_log_source_chapter_cache_error,
+    )
+
+
+def _get_chapter_cache_coordinator() -> ChapterCacheCoordinator:
+    coordinator = getattr(app.state, "chapter_cache_coordinator", None)
+    if not isinstance(coordinator, ChapterCacheCoordinator):
+        coordinator = _create_chapter_cache_coordinator()
+        app.state.chapter_cache_coordinator = coordinator
+    return coordinator
+
+
+def _log_source_chapter_cache_error(book_id: str, chapter_index: int, error: Exception) -> None:
+    _RUNTIME_LOGGER.warning(
+        "后台章节缓存失败：book=%s chapter=%s error=%s",
+        book_id,
+        chapter_index,
+        error,
+    )
+
+
+def _get_chapter_manifest_locks() -> dict[str, asyncio.Lock]:
+    locks = getattr(app.state, "chapter_manifest_locks", None)
     if not isinstance(locks, dict):
         locks = {}
-        app.state.reader_cache_locks = locks
+        app.state.chapter_manifest_locks = locks
     return locks
 
 
-def _get_reader_cache_keys() -> set[str]:
-    keys = getattr(app.state, "reader_cache_keys", None)
-    if not isinstance(keys, set):
-        keys = set()
-        app.state.reader_cache_keys = keys
-    return keys
-
-
-def _reader_cache_key(book_id: str, chapter_index: int) -> str:
-    return f"{book_id}:{chapter_index}"
-
-
-def _reader_cache_lock_for_book(book_id: str) -> asyncio.Lock:
-    locks = _get_reader_cache_locks()
+def _chapter_manifest_lock_for(book_id: str) -> asyncio.Lock:
+    locks = _get_chapter_manifest_locks()
     lock = locks.get(book_id)
     if lock is None:
         lock = asyncio.Lock()
@@ -3164,23 +3266,44 @@ def _reader_cache_lock_for_book(book_id: str) -> asyncio.Lock:
     return lock
 
 
-async def _cache_one_source_chapter(book: BookRecord, book_dir: Path, chapter_index: int) -> dict:
-    lock = _reader_cache_lock_for_book(book.id)
-    async with lock:
-        if _is_book_deleted(book.id):
-            raise HTTPException(status_code=404, detail="书籍已被删除")
+async def _cache_source_chapter_by_id(book_id: str, chapter_index: int) -> None:
+    if _is_book_deleted(book_id):
+        raise HTTPException(status_code=404, detail="书籍已被删除")
+    book = _get_book_or_404(book_id)
+    book_dir = _resolve_book_dir(book)
+    manifest_lock = _chapter_manifest_lock_for(book_id)
+    async with manifest_lock:
         manifest = _load_or_initialize_manifest(book, book_dir)
         lookup = _build_manifest_lookup(manifest)
         if not _chapter_needs_source_cache(book_dir, lookup.get(chapter_index)):
-            return manifest
-        await download_selected_chapters(
-            book_dir=book_dir,
-            manifest=manifest,
-            chapter_indexes=[chapter_index],
-            concurrency=1,
-        )
-        _refresh_book_state(book)
-        return _load_or_initialize_manifest(book, book_dir)
+            return
+        manifest_snapshot = copy.deepcopy(manifest)
+
+    payload = await download_chapter_payload(book_dir, manifest_snapshot, chapter_index)
+    commit_task = asyncio.create_task(
+        _commit_source_chapter_payload(book, book_dir, payload, manifest_lock)
+    )
+    try:
+        await asyncio.shield(commit_task)
+    except asyncio.CancelledError:
+        await asyncio.gather(commit_task, return_exceptions=True)
+        raise
+
+
+async def _commit_source_chapter_payload(
+    book: BookRecord,
+    book_dir: Path,
+    payload: dict,
+    manifest_lock: asyncio.Lock,
+) -> None:
+    async with manifest_lock:
+        if _is_book_deleted(book.id):
+            return
+        current_manifest = _load_or_initialize_manifest(book, book_dir)
+        if not apply_downloaded_chapter_payload(current_manifest, payload):
+            return
+        save_manifest(book_dir, current_manifest)
+    _refresh_book_state(book)
 
 
 async def _ensure_source_chapter_cached(
@@ -3188,39 +3311,66 @@ async def _ensure_source_chapter_cached(
     book_dir: Path,
     manifest: dict,
     chapter_index: int,
+    *,
+    prepare_next: bool = True,
 ) -> dict:
     lookup = _build_manifest_lookup(manifest)
-    if not _chapter_needs_source_cache(book_dir, lookup.get(chapter_index)):
+    current_needs_cache = _chapter_needs_source_cache(book_dir, lookup.get(chapter_index))
+    next_index = chapter_index + 1
+    read_ahead_indexes = (
+        [next_index]
+        if prepare_next and _chapter_needs_source_cache(book_dir, lookup.get(next_index))
+        else []
+    )
+    if not current_needs_cache:
+        if read_ahead_indexes:
+            _get_chapter_cache_coordinator().prefetch(book.id, read_ahead_indexes)
         return manifest
-    return await _cache_one_source_chapter(book, book_dir, chapter_index)
+    await _get_chapter_cache_coordinator().ensure(
+        book.id,
+        chapter_index,
+        read_ahead_indexes=read_ahead_indexes,
+    )
+    return _load_or_initialize_manifest(book, book_dir)
 
 
-async def _cache_source_chapters_ahead(book: BookRecord, book_dir: Path, chapter_indexes: list[int]) -> None:
-    keys = _get_reader_cache_keys()
-    try:
-        for chapter_index in chapter_indexes:
-            if _is_book_deleted(book.id):
-                return
-            try:
-                await _cache_one_source_chapter(book, book_dir, chapter_index)
-            except Exception:
-                _RUNTIME_LOGGER.exception(
-                    "阅读缓存失败：book=%s chapter=%s",
-                    book.id,
-                    chapter_index,
-                )
-    finally:
-        for chapter_index in chapter_indexes:
-            keys.discard(_reader_cache_key(book.id, chapter_index))
+def _all_source_chapter_cache_indexes(book_dir: Path, manifest: dict) -> list[int]:
+    lookup = _build_manifest_lookup(manifest)
+    return [
+        chapter_index
+        for chapter_index in sorted(lookup)
+        if _chapter_needs_source_cache(book_dir, lookup.get(chapter_index))
+    ]
 
 
-def _track_reader_cache_task(task: asyncio.Task[None]) -> None:
-    tasks = getattr(app.state, "reader_cache_tasks", None)
-    if not isinstance(tasks, set):
-        tasks = set()
-        app.state.reader_cache_tasks = tasks
-    tasks.add(task)
-    task.add_done_callback(tasks.discard)
+def _schedule_server_managed_source_cache(
+    book: BookRecord,
+    book_dir: Path | None = None,
+    manifest: dict | None = None,
+) -> None:
+    if not _server_managed_chapter_cache_enabled():
+        return
+    resolved_book_dir = book_dir or _resolve_book_dir(book)
+    current_manifest = manifest or _load_or_initialize_manifest(book, resolved_book_dir)
+    if current_manifest.get("download_mode") != "on_demand":
+        return
+    chapter_indexes = _all_source_chapter_cache_indexes(resolved_book_dir, current_manifest)
+    if chapter_indexes:
+        _get_chapter_cache_coordinator().schedule(book.id, chapter_indexes)
+
+
+def _resume_server_managed_source_caches() -> None:
+    if not _server_managed_chapter_cache_enabled():
+        return
+    for book in list_books():
+        try:
+            _schedule_server_managed_source_cache(book)
+        except Exception as error:
+            _RUNTIME_LOGGER.warning(
+                "恢复服务器章节缓存失败：book=%s error=%s",
+                book.id,
+                error,
+            )
 
 
 def _schedule_source_chapter_cache_ahead(
@@ -3229,24 +3379,14 @@ def _schedule_source_chapter_cache_ahead(
     manifest: dict,
     chapter_index: int,
 ) -> None:
+    if _server_managed_chapter_cache_enabled() and manifest.get("download_mode") == "on_demand":
+        _schedule_server_managed_source_cache(book, book_dir, manifest)
+        return
+
     candidate_indexes = _source_chapter_cache_indexes(book_dir, manifest, chapter_index)
     if not candidate_indexes:
         return
-
-    keys = _get_reader_cache_keys()
-    chapter_indexes: list[int] = []
-    for index in candidate_indexes:
-        key = _reader_cache_key(book.id, index)
-        if key in keys:
-            continue
-        keys.add(key)
-        chapter_indexes.append(index)
-
-    if not chapter_indexes:
-        return
-
-    task = asyncio.create_task(_cache_source_chapters_ahead(book, book_dir, chapter_indexes))
-    _track_reader_cache_task(task)
+    _get_chapter_cache_coordinator().schedule(book.id, candidate_indexes)
 
 
 def _build_manifest_lookup(manifest: dict) -> dict[int, dict]:

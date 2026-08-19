@@ -203,10 +203,14 @@ class ApiClient {
     String bookId,
     int chapterIndex, {
     String mode = 'translated',
+    bool prefetch = false,
   }) async {
     final payload = _decode(
       await _request('GET', '/books/$bookId/chapters/$chapterIndex',
-          query: <String, dynamic>{'mode': mode}),
+          query: <String, dynamic>{
+            'mode': mode,
+            if (prefetch) 'prefetch': 'true',
+          }),
     );
     final chapter = ChapterContent.fromJson(_map(payload));
     final normalizedImages = chapter.imageSources.map(resolveUrl).toList();

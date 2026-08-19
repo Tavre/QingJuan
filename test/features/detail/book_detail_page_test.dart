@@ -15,6 +15,7 @@ import 'package:qingjuan/features/library/library_controller.dart';
 import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/sources/sources_controller.dart';
 import 'package:qingjuan/features/tasks/tasks_controller.dart';
+import 'package:qingjuan/shared/responsive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -415,6 +416,39 @@ void main() {
 
     expect(find.byType(Checkbox).evaluate().length, lessThan(50));
     expect(find.text('1000. 第1000章'), findsNothing);
+  });
+
+  testWidgets('Android detail header stays below the system status area',
+      (tester) async {
+    final harness = await _Harness.create(
+      MockClient((_) async => http.Response(
+            jsonEncode(_detailPayload),
+            200,
+            headers: const <String, String>{
+              'content-type': 'application/json; charset=utf-8',
+            },
+          )),
+      child: const MediaQuery(
+        data: MediaQueryData(
+          size: Size(390, 844),
+          padding: EdgeInsets.only(top: 44, bottom: 24),
+          viewPadding: EdgeInsets.only(top: 44, bottom: 24),
+        ),
+        child: UiPlatformScope(
+          platform: TargetPlatform.android,
+          child: BookDetailPage(bookId: 'book-1'),
+        ),
+      ),
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.pumpAndSettle();
+
+    final header = find.byKey(const ValueKey('detail-mobile-header'));
+    expect(header, findsOneWidget);
+    expect(tester.getTopLeft(header).dy, greaterThanOrEqualTo(44));
+    expect(tester.takeException(), isNull);
   });
 }
 

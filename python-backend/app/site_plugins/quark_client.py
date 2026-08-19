@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import copy
 import hashlib
 import html
 import json
@@ -21,6 +22,8 @@ QUARK_RENDER_SKEY = "asdiof9ad8f02587djkb895d0q3422"
 QUARK_CONTENT_SKEY = "37e81a9d8f02596e1b895d07c171d5c9"
 QUARK_ANONYMOUS_USER_ID = "8000000"
 QUARK_PAGE_MIN_INTERVAL_SECONDS = 5.0
+QUARK_CATALOG_CACHE_SECONDS = 180.0
+_QUARK_TRANSIENT_PAGE_STATUSES = frozenset({429, 502, 503, 504})
 QUARK_BOOK_PATH = re.compile(r"^/book/(?P<book_id>\d+)(?:\.html)?/?$", re.IGNORECASE)
 _PAGE_DATA_RE = re.compile(
     r'class=["\'][^"\']*\bjs-dataChapters\b[^"\']*["\'][^>]*>(.*?)</i>',
@@ -28,10 +31,33 @@ _PAGE_DATA_RE = re.compile(
 )
 _last_page_request_at = 0.0
 _page_request_lock = asyncio.Lock()
+_catalog_fetch_lock = asyncio.Lock()
+_catalog_cache: dict[
+    str,
+    tuple[float, dict[str, Any], list[dict[str, Any]]],
+] = {}
 
 
 class QuarkBookError(ValueError):
     pass
+
+
+def clear_quark_catalog_cache() -> None:
+    """Clear the public catalog cache; primarily used by deterministic tests."""
+    _catalog_cache.clear()
+
+
+def _cached_quark_catalog(
+    book_id: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    cached = _catalog_cache.get(book_id)
+    if cached is None:
+        return None
+    expires_at, chapters_info, chapters = cached
+    if expires_at <= time.monotonic():
+        _catalog_cache.pop(book_id, None)
+        return None
+    return copy.deepcopy(chapters_info), copy.deepcopy(chapters)
 
 
 def _make_sign_only_value(params: dict[str, Any], skey: str) -> str:
@@ -299,34 +325,55 @@ async def get_quark_catalog(
     normalized_chapter_id = str(chapter_id).strip()
     if not normalized_book_id.isdigit() or not normalized_chapter_id.isdigit():
         raise QuarkBookError("夸克小说作品或章节编号无效")
-    response: httpx.Response | None = None
-    for attempt in range(3):
-        await _throttle_reader_page()
-        try:
-            response = await client.get(
-                f"{QUARK_WEB_ORIGIN}/reader",
-                params={"bid": normalized_book_id, "cid": normalized_chapter_id},
-                follow_redirects=False,
-            )
-        except httpx.HTTPError as exc:
-            raise QuarkBookError("夸克小说目录请求失败") from exc
-        if response.status_code != 429:
-            break
-        if attempt < 2:
-            await asyncio.sleep(8 * (attempt + 1))
-    if response is None or response.status_code == 429:
-        raise QuarkBookError("夸克小说目录请求过于频繁，请稍后重试")
-    if response.status_code >= 400:
-        raise QuarkBookError(f"夸克小说目录请求失败（HTTP {response.status_code}）")
-    if not _is_quark_web_url(str(response.url)):
-        raise QuarkBookError("夸克小说目录请求跳转到了非官方网站")
-    chapters_info = parse_quark_reader_page(response.text)
-    if str(chapters_info.get("bookId") or normalized_book_id) != normalized_book_id:
-        raise QuarkBookError("夸克小说目录返回的作品编号不匹配")
-    chapters = flatten_quark_chapters(chapters_info)
-    if not chapters:
-        raise QuarkBookError("夸克小说作品目录为空")
-    return chapters_info, chapters
+    cached = _cached_quark_catalog(normalized_book_id)
+    if cached is not None:
+        return cached
+
+    async with _catalog_fetch_lock:
+        cached = _cached_quark_catalog(normalized_book_id)
+        if cached is not None:
+            return cached
+
+        response: httpx.Response | None = None
+        for attempt in range(3):
+            await _throttle_reader_page()
+            try:
+                response = await client.get(
+                    f"{QUARK_WEB_ORIGIN}/reader",
+                    # cid only selects the initially visible chapter. cid=0 keeps one
+                    # reusable catalog request for preview, import, and on-demand reads.
+                    params={"bid": normalized_book_id, "cid": "0"},
+                    follow_redirects=False,
+                )
+            except httpx.HTTPError as exc:
+                raise QuarkBookError("夸克小说目录请求失败") from exc
+            if response.status_code not in _QUARK_TRANSIENT_PAGE_STATUSES:
+                break
+            if attempt < 2:
+                delay = (
+                    8 * (attempt + 1)
+                    if response.status_code == 429
+                    else 2 * (attempt + 1)
+                )
+                await asyncio.sleep(delay)
+        if response is None or response.status_code == 429:
+            raise QuarkBookError("夸克小说目录请求过于频繁，请稍后重试")
+        if response.status_code >= 400:
+            raise QuarkBookError(f"夸克小说目录请求失败（HTTP {response.status_code}）")
+        if not _is_quark_web_url(str(response.url)):
+            raise QuarkBookError("夸克小说目录请求跳转到了非官方网站")
+        chapters_info = parse_quark_reader_page(response.text)
+        if str(chapters_info.get("bookId") or normalized_book_id) != normalized_book_id:
+            raise QuarkBookError("夸克小说目录返回的作品编号不匹配")
+        chapters = flatten_quark_chapters(chapters_info)
+        if not chapters:
+            raise QuarkBookError("夸克小说作品目录为空")
+        _catalog_cache[normalized_book_id] = (
+            time.monotonic() + QUARK_CATALOG_CACHE_SECONDS,
+            copy.deepcopy(chapters_info),
+            copy.deepcopy(chapters),
+        )
+        return copy.deepcopy(chapters_info), copy.deepcopy(chapters)
 
 
 def _free_content_url(

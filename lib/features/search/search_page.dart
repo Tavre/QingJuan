@@ -20,6 +20,7 @@ class SearchPage extends StatefulWidget {
 class _SearchPageState extends State<SearchPage> {
   final _controller = TextEditingController();
   BookSearchEngine _engine = BookSearchEngine.bookSources;
+  String? _importingSourceUrl;
 
   String get _engineName => switch (_engine) {
         BookSearchEngine.bookSources => '书源',
@@ -71,9 +72,23 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   Future<void> _import(SourceSearchResult result) async {
+    final mobile = usesMobileUi(context);
+    if (mobile && _importingSourceUrl != null) return;
+    if (mobile) setState(() => _importingSourceUrl = result.sourceUrl);
     try {
-      final book =
-          await AppScope.of(context).library.import(result.toImportPayload());
+      final payload = result.toImportPayload();
+      if (mobile &&
+          const <String>{
+            'source-builtin-quark',
+            'source-builtin-fanqie',
+            'source-builtin-qidian',
+          }.contains(result.sourceId)) {
+        payload['downloadMode'] = 'on_demand';
+      }
+      final library = AppScope.of(context).library;
+      final book = mobile
+          ? await library.importFromSearch(payload)
+          : await library.import(payload);
       if (mounted) {
         await Navigator.of(context).push<void>(
           qjPageRoute<void>(
@@ -93,6 +108,8 @@ class _SearchPageState extends State<SearchPage> {
           ),
         );
       }
+    } finally {
+      if (mobile && mounted) setState(() => _importingSourceUrl = null);
     }
   }
 
@@ -257,7 +274,10 @@ class _SearchPageState extends State<SearchPage> {
                 ...sources.results.map(
                   (result) => _SearchResultTile(
                     result: result,
-                    onImport: () => _import(result),
+                    importing: _importingSourceUrl == result.sourceUrl,
+                    onImport: _importingSourceUrl == null
+                        ? () => _import(result)
+                        : null,
                   ),
                 ),
               ],
@@ -328,6 +348,7 @@ class _SearchPageState extends State<SearchPage> {
             ...sources.results.map(
               (result) => _SearchResultTile(
                 result: result,
+                importing: false,
                 onImport: () => _import(result),
               ),
             ),
@@ -338,10 +359,34 @@ class _SearchPageState extends State<SearchPage> {
 }
 
 class _SearchResultTile extends StatelessWidget {
-  const _SearchResultTile({required this.result, required this.onImport});
+  const _SearchResultTile({
+    required this.result,
+    required this.importing,
+    required this.onImport,
+  });
 
   final SourceSearchResult result;
-  final VoidCallback onImport;
+  final bool importing;
+  final VoidCallback? onImport;
+
+  Widget _importButton({required bool compact}) => FilledButton(
+        key: ValueKey('search-import-${result.sourceUrl}'),
+        onPressed: onImport,
+        child: importing
+            ? Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: ProgressRing(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 7),
+                  Text(compact ? '加入中' : '正在加入'),
+                ],
+              )
+            : Text(compact ? '加入' : '加入书架'),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -400,10 +445,7 @@ class _SearchResultTile extends StatelessWidget {
                 children: <Widget>[
                   details,
                   const SizedBox(height: 14),
-                  FilledButton(
-                    onPressed: onImport,
-                    child: const Text('加入书架'),
-                  ),
+                  _importButton(compact: false),
                 ],
               );
             }
@@ -412,10 +454,7 @@ class _SearchResultTile extends StatelessWidget {
               children: <Widget>[
                 Expanded(child: details),
                 const SizedBox(width: 20),
-                FilledButton(
-                  onPressed: onImport,
-                  child: const Text('加入书架'),
-                ),
+                _importButton(compact: false),
               ],
             );
           },
@@ -479,10 +518,7 @@ class _SearchResultTile extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    FilledButton(
-                      onPressed: onImport,
-                      child: const Text('加入'),
-                    ),
+                    _importButton(compact: true),
                   ],
                 ),
               ],

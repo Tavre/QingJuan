@@ -24,6 +24,27 @@ void main() {
     );
     expect(container.duration, Duration.zero);
   });
+
+  testWidgets('static mobile surface avoids an idle implicit animation',
+      (tester) async {
+    await tester.pumpWidget(
+      FluentApp(
+        theme: buildQingJuanTheme(Brightness.light),
+        home: const AppSurface(
+          key: ValueKey('static-mobile-surface'),
+          child: Text('静态卡片'),
+        ),
+      ),
+    );
+
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('static-mobile-surface')),
+        matching: find.byType(AnimatedContainer),
+      ),
+      findsNothing,
+    );
+  });
 }
 
 void _noop() {}

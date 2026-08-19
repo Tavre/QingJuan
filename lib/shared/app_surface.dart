@@ -40,6 +40,7 @@ class AppSurface extends StatelessWidget {
         borderRadius: borderRadius,
         hovered: false,
         pressed: false,
+        animate: false,
         child: child,
       );
     }
@@ -55,6 +56,7 @@ class AppSurface extends StatelessWidget {
           borderRadius: borderRadius,
           hovered: states.isHovered,
           pressed: states.isPressed,
+          animate: true,
           child: child,
         );
         if (!mobile) return body;
@@ -79,6 +81,7 @@ class _SurfaceBody extends StatelessWidget {
     required this.borderRadius,
     required this.hovered,
     required this.pressed,
+    required this.animate,
   });
 
   final Widget child;
@@ -89,6 +92,7 @@ class _SurfaceBody extends StatelessWidget {
   final double? borderRadius;
   final bool hovered;
   final bool pressed;
+  final bool animate;
 
   @override
   Widget build(BuildContext context) {
@@ -139,32 +143,40 @@ class _SurfaceBody extends StatelessWidget {
                 : dark
                     ? const Color(0xFF303640)
                     : const Color(0xFFE8ECF2);
+    final decoration = BoxDecoration(
+      color: pressed
+          ? theme.resources.subtleFillColorTertiary
+          : hovered
+              ? Color.lerp(fill, theme.resources.subtleFillColorSecondary, .2)
+              : fill,
+      border: Border.all(color: borderColor),
+      borderRadius: BorderRadius.circular(borderRadius ?? 16),
+      boxShadow: tone == AppSurfaceTone.elevated
+          ? <BoxShadow>[
+              BoxShadow(
+                color: const Color(0xFF101828).withAlpha(dark ? 22 : 9),
+                blurRadius: 12,
+                offset: const Offset(0, 3),
+              ),
+            ]
+          : null,
+    );
+    if (!animate) {
+      return Container(
+        width: double.infinity,
+        margin: margin,
+        padding: padding,
+        decoration: decoration,
+        child: child,
+      );
+    }
     return AnimatedContainer(
       duration: QjMotion.duration(context, QjMotionSpeed.faster),
       curve: QjMotion.enterCurve,
       width: double.infinity,
       margin: margin,
       padding: padding,
-      decoration: BoxDecoration(
-        color: pressed
-            ? theme.resources.subtleFillColorTertiary
-            : hovered
-                ? Color.lerp(fill, theme.resources.subtleFillColorSecondary, .2)
-                : fill,
-        border: Border.all(color: borderColor),
-        borderRadius: BorderRadius.circular(
-          borderRadius ?? (compact ? 16 : 14),
-        ),
-        boxShadow: tone == AppSurfaceTone.elevated
-            ? <BoxShadow>[
-                BoxShadow(
-                  color: const Color(0xFF101828).withAlpha(dark ? 22 : 9),
-                  blurRadius: 12,
-                  offset: const Offset(0, 3),
-                ),
-              ]
-            : null,
-      ),
+      decoration: decoration,
       child: child,
     );
   }

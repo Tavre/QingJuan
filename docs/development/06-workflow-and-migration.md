@@ -83,8 +83,8 @@ Dependabot 只维护当前技术栈：
 - 日常调试和重复构建不得修改版本号；只有准备形成新的发布更新时才执行递增。
 - 修改版本后必须验证 Android `versionName` / `versionCode`、FastAPI 元数据与 Windows 文件属性均来自同一版本源，禁止在
   Dart、Python、Kotlin、C++ 或发布脚本中新增独立硬编码版本。
-- 当前已发布基线为 `1.6.0+20`；后续正式发布的 build 必须大于 `20`，不得回退版本或复用已发布 build。
-- 本次 Android 阅读产品界面、移动端面板与公开站点搜索和解析更新使用 `1.7.0+21`，对外标签为 `v1.7.0`。
+- 当前已发布基线为 `1.7.0+21`；后续正式发布的 build 必须大于 `21`，不得回退版本或复用已发布 build。
+- 本次 Android 安全区、夸克目录导入与阅读器流畅度修复使用 `1.7.1+22`，对外标签为 `v1.7.1`。
 
 发布前：
 
@@ -101,8 +101,8 @@ Dependabot 只维护当前技术栈：
 `.github/workflows/release.yml`：
 
 ```powershell
-git tag v1.7.0
-git push origin v1.7.0
+git tag v1.7.1
+git push origin v1.7.1
 ```
 
 发布工作流重新执行 Flutter 格式化、分析、测试，执行 `python -m ruff check app tests` 与

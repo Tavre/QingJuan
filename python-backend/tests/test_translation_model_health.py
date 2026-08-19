@@ -1,4 +1,5 @@
 import hashlib
+import ipaddress
 import json
 from pathlib import Path
 
@@ -6,7 +7,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db
+from app import db, model_endpoint_security
 from app.admin_auth import (
     ADMIN_CSRF_HEADER,
     ADMIN_PASSWORD_HASH_ENV,
@@ -21,6 +22,7 @@ from app.security import API_PREFIX
 from app.translation_model_health import (
     TranslationModelCheckResponse,
     check_translation_model,
+    get_translation_model_check_snapshot,
     probe_translation_model,
     reset_translation_model_check_cache,
 )
@@ -31,11 +33,12 @@ def _settings(
     enabled: bool = True,
     api_key: str = "provider-secret-key",
     model: str = "translation-model",
+    base_url: str = "https://models.example.test/v1/chat/completions",
 ) -> TranslationSettings:
     return TranslationSettings(
         translationModel=OpenAICompatibleConfig(
             enabled=enabled,
-            baseUrl="https://models.example.test/v1/chat/completions",
+            baseUrl=base_url,
             apiKey=api_key,
             model=model,
             supportsVision=False,
@@ -108,6 +111,40 @@ async def test_model_probe_maps_provider_auth_error_without_response_leak() -> N
 
 
 @pytest.mark.asyncio
+async def test_model_probe_blocks_loopback_before_sending_authorization(monkeypatch) -> None:
+    monkeypatch.delenv("QINGJUAN_MODEL_ENDPOINT_ALLOWLIST", raising=False)
+
+    result = await probe_translation_model(
+        _settings(base_url="https://127.0.0.1:443/v1"),
+    )
+
+    assert result.status == "failed"
+    assert result.available is False
+    assert "出站安全策略" in result.message
+    assert "provider-secret-key" not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_model_probe_blocks_hostname_that_resolves_to_private_ip(monkeypatch) -> None:
+    monkeypatch.delenv("QINGJUAN_MODEL_ENDPOINT_ALLOWLIST", raising=False)
+
+    async def private_resolver(host: str, port: int):
+        assert (host, port) == ("models.example.test", 443)
+        return (ipaddress.ip_address("10.0.0.8"),)
+
+    monkeypatch.setattr(
+        model_endpoint_security,
+        "resolve_model_endpoint_addresses",
+        private_resolver,
+    )
+
+    result = await probe_translation_model(_settings())
+
+    assert result.status == "failed"
+    assert "出站安全策略" in result.message
+
+
+@pytest.mark.asyncio
 async def test_model_check_caches_same_configuration_and_supports_force(monkeypatch) -> None:
     reset_translation_model_check_cache()
     calls = 0
@@ -143,6 +180,19 @@ async def test_model_check_caches_same_configuration_and_supports_force(monkeypa
     assert forced.cached is False
 
 
+def test_model_check_snapshot_never_probes_and_hides_uncached_provider() -> None:
+    reset_translation_model_check_cache()
+
+    result = get_translation_model_check_snapshot(_settings())
+
+    assert result.status == "failed"
+    assert result.available is False
+    assert result.configured is True
+    assert result.cached is False
+    assert "管理员" in result.message
+    assert "models.example.test" not in result.model_dump_json()
+
+
 def test_model_check_endpoint_requires_backend_auth_and_returns_safe_dto(
     monkeypatch,
     tmp_path: Path,
@@ -167,6 +217,7 @@ def test_model_check_endpoint_requires_backend_auth_and_returns_safe_dto(
     db.init_db()
 
     force_values: list[bool] = []
+    snapshot_calls = 0
 
     async def fake_check(
         settings: TranslationSettings,
@@ -188,6 +239,28 @@ def test_model_check_endpoint_requires_backend_auth_and_returns_safe_dto(
         )
 
     monkeypatch.setattr(translation_model_api, "check_translation_model", fake_check)
+
+    def fake_snapshot(settings: TranslationSettings) -> TranslationModelCheckResponse:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return TranslationModelCheckResponse(
+            enabled=True,
+            configured=True,
+            available=True,
+            status="ready",
+            model="translation-model",
+            supportsVision=False,
+            checkedAt="2030-01-01T00:00:00Z",
+            latencyMs=18,
+            message="Linux 服务端翻译模型已缓存",
+            cached=True,
+        )
+
+    monkeypatch.setattr(
+        translation_model_api,
+        "get_translation_model_check_snapshot",
+        fake_snapshot,
+    )
     application = create_application(
         routers=[translation_model_api.router],
         public_routers=[admin_router],
@@ -218,7 +291,8 @@ def test_model_check_endpoint_requires_backend_auth_and_returns_safe_dto(
     assert accepted.status_code == 200
     assert forced_bearer.status_code == 401
     assert forced_admin.status_code == 200
-    assert force_values == [False, True]
+    assert force_values == [True]
+    assert snapshot_calls == 1
     assert accepted.json()["available"] is True
     assert "provider-secret-key" not in accepted.text
     assert "models.example.test" not in accepted.text

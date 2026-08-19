@@ -75,6 +75,7 @@ lib/
 python-backend/
 ├─ app/api/             # 路由声明
 ├─ app/application.py   # FastAPI 组装
+├─ app/chapter_cache.py # Linux 顺序缓存、阅读抢占/相邻章预取与应用级任务生命周期
 ├─ app/models.py        # 请求、响应与领域数据模型
 ├─ app/db.py            # SQLite 与持久化
 ├─ app/site_plugins/    # 每个内置站点一个模块，声明匹配、能力与运行处理器

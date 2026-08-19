@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../app/app_scope.dart';
 import '../../app/app_state.dart';
+import '../../shared/app_surface.dart';
 import '../../shared/desktop_title_bar.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/motion.dart';
@@ -288,103 +289,101 @@ class _MobileNavigationBar extends StatelessWidget {
     final textScaler = TextScaler.linear(
       MediaQuery.textScalerOf(context).scale(1).clamp(1.0, 1.2),
     );
-    return Container(
+    return SizedBox(
       key: const ValueKey('mobile-bottom-navigation'),
-      height: 68,
-      decoration: BoxDecoration(
-        color: theme.cardColor,
-        border: Border(
-          top: BorderSide(
-            color: dark ? const Color(0xFF2B3038) : const Color(0xFFE8ECF2),
-          ),
-        ),
-      ),
+      height: 82,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(8, 3, 8, 5),
-        child: MediaQuery(
-          data: MediaQuery.of(context).copyWith(textScaler: textScaler),
-          child: Row(
-            children: <Widget>[
-              for (final item in sections)
-                Expanded(
-                  child: Semantics(
-                    selected: item == section,
-                    button: true,
-                    label: labelFor(item),
-                    child: Button(
-                      key: ValueKey<String>(
-                        'mobile-navigation-${item.name}',
-                      ),
-                      style: ButtonStyle(
-                        padding: const WidgetStatePropertyAll(
-                          EdgeInsets.zero,
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+        child: AppGlassSurface(
+          key: const ValueKey('mobile-bottom-navigation-glass'),
+          borderRadius: 22,
+          blurSigma: 16,
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+          child: MediaQuery(
+            data: MediaQuery.of(context).copyWith(textScaler: textScaler),
+            child: Row(
+              children: <Widget>[
+                for (final item in sections)
+                  Expanded(
+                    child: Semantics(
+                      selected: item == section,
+                      button: true,
+                      label: labelFor(item),
+                      child: Button(
+                        key: ValueKey<String>(
+                          'mobile-navigation-${item.name}',
                         ),
-                        shape: WidgetStatePropertyAll(
-                          RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(16),
+                        style: ButtonStyle(
+                          padding: const WidgetStatePropertyAll(
+                            EdgeInsets.zero,
+                          ),
+                          shape: WidgetStatePropertyAll(
+                            RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                          ),
+                          backgroundColor: const WidgetStatePropertyAll(
+                            Color(0x00000000),
                           ),
                         ),
-                        backgroundColor: const WidgetStatePropertyAll(
-                          Color(0x00000000),
-                        ),
-                      ),
-                      onPressed: () => onSelected(item),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: <Widget>[
-                          AnimatedScale(
-                            duration: QjMotion.duration(
-                              context,
-                              QjMotionSpeed.fast,
-                            ),
-                            curve: QjMotion.enterCurve,
-                            scale: item == section ? 1.06 : 1,
-                            child: AnimatedContainer(
+                        onPressed: () => onSelected(item),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: <Widget>[
+                            AnimatedScale(
                               duration: QjMotion.duration(
                                 context,
                                 QjMotionSpeed.fast,
                               ),
                               curve: QjMotion.enterCurve,
-                              width: 40,
-                              height: 25,
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                color: item == section
-                                    ? theme.accentColor.withAlpha(
-                                        dark ? 56 : 24,
-                                      )
-                                    : const Color(0x00000000),
-                                borderRadius: BorderRadius.circular(10),
+                              scale: item == section ? 1.06 : 1,
+                              child: AnimatedContainer(
+                                duration: QjMotion.duration(
+                                  context,
+                                  QjMotionSpeed.fast,
+                                ),
+                                curve: QjMotion.enterCurve,
+                                width: 42,
+                                height: 27,
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  color: item == section
+                                      ? theme.accentColor.withAlpha(
+                                          dark ? 62 : 28,
+                                        )
+                                      : const Color(0x00000000),
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                child: Icon(
+                                  iconFor(item),
+                                  size: 19,
+                                  color: item == section
+                                      ? theme.accentColor
+                                      : theme.resources.textFillColorSecondary,
+                                ),
                               ),
-                              child: Icon(
-                                iconFor(item),
-                                size: 19,
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              labelFor(item),
+                              maxLines: 1,
+                              style: theme.typography.caption?.copyWith(
+                                fontSize: 10.5,
+                                fontWeight: item == section
+                                    ? FontWeight.w700
+                                    : FontWeight.w400,
                                 color: item == section
                                     ? theme.accentColor
                                     : theme.resources.textFillColorSecondary,
                               ),
                             ),
-                          ),
-                          const SizedBox(height: 3),
-                          Text(
-                            labelFor(item),
-                            maxLines: 1,
-                            style: theme.typography.caption?.copyWith(
-                              fontSize: 10.5,
-                              fontWeight: item == section
-                                  ? FontWeight.w700
-                                  : FontWeight.w400,
-                              color: item == section
-                                  ? theme.accentColor
-                                  : theme.resources.textFillColorSecondary,
-                            ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

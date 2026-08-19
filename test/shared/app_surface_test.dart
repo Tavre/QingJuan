@@ -45,6 +45,69 @@ void main() {
       findsNothing,
     );
   });
+
+  testWidgets('glass surface clips and bounds its backdrop blur',
+      (tester) async {
+    await tester.pumpWidget(_glassHarness());
+
+    final glassFinder = find.byKey(const ValueKey('test-glass-surface'));
+    expect(
+      find.descendant(
+        of: glassFinder,
+        matching: find.byType(RepaintBoundary),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: glassFinder,
+        matching: find.byType(BackdropFilter),
+      ),
+      findsOneWidget,
+    );
+    final clip = tester.widget<ClipRRect>(
+      find.descendant(
+        of: glassFinder,
+        matching: find.byType(ClipRRect),
+      ),
+    );
+    expect(clip.borderRadius, BorderRadius.circular(22));
+  });
+
+  testWidgets('glass surface falls back to opaque in high contrast mode',
+      (tester) async {
+    await tester.pumpWidget(_glassHarness(highContrast: true));
+
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('test-glass-surface')),
+        matching: find.byType(BackdropFilter),
+      ),
+      findsNothing,
+    );
+  });
+}
+
+Widget _glassHarness({bool highContrast = false}) {
+  return FluentApp(
+    theme: buildQingJuanTheme(
+      Brightness.light,
+      platform: TargetPlatform.android,
+    ),
+    home: MediaQuery(
+      data: MediaQueryData(highContrast: highContrast),
+      child: const Center(
+        child: SizedBox(
+          width: 300,
+          height: 68,
+          child: AppGlassSurface(
+            key: ValueKey('test-glass-surface'),
+            child: Text('玻璃表面'),
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 void _noop() {}

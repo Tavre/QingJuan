@@ -2,6 +2,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:fluent_ui/fluent_ui.dart';
 
 import '../../app/app_scope.dart';
+import '../../app/app_state.dart';
 import '../../core/models/book.dart';
 import '../../core/models/link_job.dart';
 import '../../shared/app_surface.dart';
@@ -19,25 +20,38 @@ const _localMangaFiles = XTypeGroup(
 );
 
 Future<Book?> showImportBookDialog(BuildContext context) {
-  final controller = AppScope.of(context).library;
+  final scope = AppScope.of(context);
+  final controller = scope.library;
+  final usesLinuxBackend =
+      scope.appState.connectionMode == BackendConnectionMode.remote;
   if (usesMobileUi(context)) {
     return showMobileSheet<Book>(
       context: context,
       barrierDismissible: false,
-      builder: (context) => _ImportBookDialog(controller: controller),
+      builder: (context) => _ImportBookDialog(
+        controller: controller,
+        usesLinuxBackend: usesLinuxBackend,
+      ),
     );
   }
   return showDialog<Book>(
     context: context,
     barrierDismissible: false,
-    builder: (context) => _ImportBookDialog(controller: controller),
+    builder: (context) => _ImportBookDialog(
+      controller: controller,
+      usesLinuxBackend: usesLinuxBackend,
+    ),
   );
 }
 
 class _ImportBookDialog extends StatefulWidget {
-  const _ImportBookDialog({required this.controller});
+  const _ImportBookDialog({
+    required this.controller,
+    required this.usesLinuxBackend,
+  });
 
   final LibraryController controller;
+  final bool usesLinuxBackend;
 
   @override
   State<_ImportBookDialog> createState() => _ImportBookDialogState();
@@ -269,7 +283,9 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
                 const SizedBox(height: 6),
                 Text(
                   _downloadMode == 'on_demand'
-                      ? '快速加入书架；打开章节时下载当前章，并在后台预取后续 20 章。'
+                      ? widget.usesLinuxBackend
+                          ? '快速加入书架；所选章节会立即优先获取并准备下一章，Linux 服务器退出客户端后仍会继续缓存全书。'
+                          : '快速加入书架；打开章节时下载当前章，并在后台预取后续 20 章。'
                       : '导入时下载全部正文；长篇小说耗时较久，但完成后可完整离线阅读。',
                   style: FluentTheme.of(context).typography.caption,
                 ),

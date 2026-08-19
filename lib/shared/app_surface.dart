@@ -1,9 +1,84 @@
+import 'dart:ui' as ui;
+
 import 'package:fluent_ui/fluent_ui.dart';
 
 import 'motion.dart';
 import 'responsive.dart';
 
 enum AppSurfaceTone { standard, muted, accent, elevated, danger }
+
+/// 用于导航栏和阅读浮层的受控液态玻璃表面。
+///
+/// 模糊始终被圆角裁剪和重绘边界限制；高对比度模式下关闭模糊并使用不透明
+/// 表面，避免透明效果削弱文字和图标的可读性。
+class AppGlassSurface extends StatelessWidget {
+  const AppGlassSurface({
+    required this.child,
+    this.borderRadius = 22,
+    this.blurSigma = 16,
+    this.padding = EdgeInsets.zero,
+    super.key,
+  });
+
+  final Widget child;
+  final double borderRadius;
+  final double blurSigma;
+  final EdgeInsetsGeometry padding;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = FluentTheme.of(context);
+    final dark = theme.brightness == Brightness.dark;
+    final highContrast = MediaQuery.highContrastOf(context);
+    final radius = BorderRadius.circular(borderRadius);
+    final fill = highContrast
+        ? theme.cardColor
+        : dark
+            ? const Color(0xDC1D222B)
+            : const Color(0xDCFFFFFF);
+    final borderColor = highContrast
+        ? theme.resources.controlStrokeColorDefault
+        : dark
+            ? const Color(0x4DFFFFFF)
+            : const Color(0xBFE3EAF3);
+    final surface = DecoratedBox(
+      decoration: BoxDecoration(
+        color: fill,
+        border: Border.all(color: borderColor),
+        borderRadius: radius,
+      ),
+      child: Padding(padding: padding, child: child),
+    );
+
+    return RepaintBoundary(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: radius,
+          boxShadow: <BoxShadow>[
+            BoxShadow(
+              color: const Color(0xFF101828).withAlpha(dark ? 64 : 22),
+              blurRadius: 20,
+              spreadRadius: -3,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: radius,
+          child: highContrast || blurSigma <= 0
+              ? surface
+              : BackdropFilter(
+                  filter: ui.ImageFilter.blur(
+                    sigmaX: blurSigma,
+                    sigmaY: blurSigma,
+                  ),
+                  child: surface,
+                ),
+        ),
+      ),
+    );
+  }
+}
 
 /// 青卷中承载同层级内容的标准表面。
 ///

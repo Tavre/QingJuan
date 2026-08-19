@@ -36,7 +36,10 @@ void main() {
       }
       return http.Response('{}', 404);
     });
-    final harness = await _Harness.create(client);
+    final harness = await _Harness.create(
+      client,
+      connectionMode: BackendConnectionMode.remote,
+    );
 
     await tester.pumpWidget(harness.widget);
     await tester.tap(find.text('添加书籍'));
@@ -49,7 +52,7 @@ void main() {
 
     expect(find.text('番茄正文获取方式'), findsOneWidget);
     expect(find.text('边看边下（默认）'), findsOneWidget);
-    expect(find.textContaining('后台预取后续 20 章'), findsOneWidget);
+    expect(find.textContaining('退出客户端后仍会继续'), findsOneWidget);
 
     await tester.tap(find.text('导入'));
     await tester.pump(const Duration(milliseconds: 200));
@@ -73,6 +76,29 @@ void main() {
       (submitted.last['payload'] as Map<String, dynamic>)['downloadMode'],
       'all',
     );
+
+    harness.dispose();
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Windows local on-demand mode keeps bounded reader prefetch',
+      (tester) async {
+    final harness = await _Harness.create(
+      MockClient((_) async => http.Response('{}', 404)),
+      localBackendSupported: true,
+    );
+
+    await tester.pumpWidget(harness.widget);
+    await tester.tap(find.text('添加书籍'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.enterText(
+      find.byKey(const ValueKey('import-book-url')),
+      'https://fanqienovel.com/page/123456',
+    );
+    await tester.pump();
+
+    expect(find.textContaining('后台预取后续 20 章'), findsOneWidget);
+    expect(find.textContaining('退出客户端后仍会继续'), findsNothing);
 
     harness.dispose();
     await tester.pumpWidget(const SizedBox.shrink());
@@ -201,8 +227,16 @@ class _Harness {
   static Future<_Harness> create(
     http.Client client, {
     TargetPlatform targetPlatform = TargetPlatform.windows,
+    BackendConnectionMode? connectionMode,
+    bool localBackendSupported = false,
   }) async {
-    final appState = AppState(await SharedPreferences.getInstance());
+    final appState = AppState(
+      await SharedPreferences.getInstance(),
+      localBackendSupported: localBackendSupported,
+    );
+    if (connectionMode != null) {
+      await appState.selectBackendMode(connectionMode);
+    }
     final api = ApiClient(() => appState.backendUrl, client: client);
     final backend = BackendConnectionManager(api, isConfigured: () => false);
     final library = LibraryController(api);

@@ -55,6 +55,7 @@ try:
         is_valid_image_file,
         write_image_atomic,
     )
+    from .model_endpoint_security import create_model_http_client
     from .models import (
         AddBookPayload,
         BookSourceRecord,
@@ -84,6 +85,7 @@ except ImportError:
         is_valid_image_file,
         write_image_atomic,
     )
+    from app.model_endpoint_security import create_model_http_client
     from app.models import (
         AddBookPayload,
         BookSourceRecord,
@@ -2515,6 +2517,57 @@ async def translate_single_manga_image(
         shutil.rmtree(workspace_dir, ignore_errors=True)
 
 
+def apply_downloaded_chapter_payload(manifest: dict, payload: dict) -> bool:
+    chapter_index = payload.get("index")
+    if not isinstance(chapter_index, int):
+        return False
+    chapter = _chapter_lookup(manifest).get(chapter_index)
+    if chapter is None:
+        return False
+
+    chapter["file_name"] = payload["file_name"]
+    chapter["downloaded"] = payload["downloaded"]
+    chapter["illustration"] = payload["illustration"]
+    chapter["image_urls"] = payload["image_urls"]
+    chapter["image_files"] = payload["image_files"]
+    chapter["translated_image_files"] = [
+        item for item in payload.get("translated_image_files", []) if isinstance(item, str)
+    ]
+    chapter["page_count"] = payload["page_count"]
+    chapter["images_repaired"] = payload.get("images_repaired", chapter.get("images_repaired"))
+    chapter["content_source"] = payload.get("content_source")
+    chapter["authorization_method"] = payload.get("authorization_method")
+    chapter["access_restricted"] = bool(payload.get("access_restricted"))
+    chapter["download_error"] = None
+    chapter["translated_file_name"] = chapter.get("translated_file_name") or build_translated_filename(
+        payload["file_name"]
+    )
+    chapter["translated_meta_file_name"] = chapter.get(
+        "translated_meta_file_name"
+    ) or build_translated_meta_filename(payload["file_name"])
+    return True
+
+
+async def download_chapter_payload(
+    book_dir: Path,
+    manifest: dict,
+    chapter_index: int,
+) -> dict:
+    chapter = _chapter_lookup(manifest).get(chapter_index)
+    if chapter is None:
+        raise ValueError(f"章节不存在：{chapter_index}")
+
+    image_concurrency = _image_download_concurrency(str(manifest.get("source_url") or ""), 1)
+    async with _build_http_client() as client:
+        return await _download_single_chapter(
+            client,
+            book_dir,
+            chapter_index,
+            chapter,
+            image_download_semaphore=asyncio.Semaphore(image_concurrency),
+        )
+
+
 async def download_selected_chapters(
     book_dir: Path,
     manifest: dict,
@@ -2563,27 +2616,7 @@ async def download_selected_chapters(
         try:
             for pending_task in asyncio.as_completed(pending_tasks):
                 payload = await pending_task
-                chapter = chapter_lookup[payload["index"]]
-                chapter["file_name"] = payload["file_name"]
-                chapter["downloaded"] = payload["downloaded"]
-                chapter["illustration"] = payload["illustration"]
-                chapter["image_urls"] = payload["image_urls"]
-                chapter["image_files"] = payload["image_files"]
-                chapter["translated_image_files"] = [
-                    item for item in payload.get("translated_image_files", []) if isinstance(item, str)
-                ]
-                chapter["page_count"] = payload["page_count"]
-                chapter["images_repaired"] = payload.get("images_repaired", chapter.get("images_repaired"))
-                chapter["content_source"] = payload.get("content_source")
-                chapter["authorization_method"] = payload.get("authorization_method")
-                chapter["access_restricted"] = bool(payload.get("access_restricted"))
-                chapter["download_error"] = None
-                chapter["translated_file_name"] = chapter.get(
-                    "translated_file_name"
-                ) or build_translated_filename(payload["file_name"])
-                chapter["translated_meta_file_name"] = chapter.get(
-                    "translated_meta_file_name"
-                ) or build_translated_meta_filename(payload["file_name"])
+                apply_downloaded_chapter_payload(manifest, payload)
                 completed_count += 1
                 updated = True
                 save_manifest(book_dir, manifest)
@@ -2738,7 +2771,7 @@ async def translate_selected_chapters(
     else:
         _resolve_openai_compatible_model_config(settings, feature_name="翻译")
 
-        async with _create_async_http_client(timeout=120.0) as client:
+        async with _create_model_http_client(timeout=120.0) as client:
             for chapter_index in chapter_indexes:
                 chapter = chapter_lookup.get(chapter_index)
                 if not chapter:
@@ -7012,10 +7045,7 @@ async def _request_openai_vision_ocr_regions_payload(
     }
     result: MangaOcrPagePayload | None = None
     attempt_count = 0
-    async with _create_async_http_client(
-        timeout=float(timeout_seconds),
-        follow_redirects=True,
-    ) as client:
+    async with _create_model_http_client(timeout=float(timeout_seconds)) as client:
         for attempt_count in range(1, 3):
             request_payload = json.loads(json.dumps(payload))
             if attempt_count > 1:
@@ -7166,32 +7196,13 @@ async def _request_manga_ocr_regions_payload(
         headers = {"Content-Type": "application/json"}
         if ocr_api_key:
             headers["Authorization"] = f"Bearer {ocr_api_key}"
-        if requests is not None:
-
-            def _submit_external_ocr_request() -> dict[str, Any]:
-                response = requests.post(
-                    f"{ocr_base_url}/ocr",
-                    json=request_payload,
-                    headers=headers,
-                    timeout=timeout_seconds,
-                )
-                response.raise_for_status()
-                payload = response.json()
-                if not isinstance(payload, dict):
-                    raise ValueError("OCR 服务返回的不是有效 JSON 对象")
-                return payload
-
-            response_payload = await asyncio.to_thread(_submit_external_ocr_request)
-        else:
-            async with _create_async_http_client(
-                timeout=float(timeout_seconds), follow_redirects=True
-            ) as client:
-                response_payload = await _post_translation_json(
-                    client,
-                    f"{ocr_base_url}/ocr",
-                    headers=headers,
-                    payload=request_payload,
-                )
+        async with _create_model_http_client(timeout=float(timeout_seconds)) as client:
+            response_payload = await _post_translation_json(
+                client,
+                f"{ocr_base_url}/ocr",
+                headers=headers,
+                payload=request_payload,
+            )
         with Image.open(image_path) as source_image:
             normalized_image = source_image.convert("RGB")
         return _coerce_external_service_ocr_page_payload(
@@ -7386,7 +7397,7 @@ async def _translate_manga_region_batch(
         ],
     }
     raw_payload: dict[str, Any] | None = None
-    async with _create_async_http_client(timeout=float(timeout_seconds), follow_redirects=True) as client:
+    async with _create_model_http_client(timeout=float(timeout_seconds)) as client:
         for attempt in range(2):
             content = await _post_translation_completion_text(
                 client,
@@ -7446,10 +7457,7 @@ async def _translate_manga_region_batch(
         ],
     }
     try:
-        async with _create_async_http_client(
-            timeout=float(timeout_seconds),
-            follow_redirects=True,
-        ) as client:
+        async with _create_model_http_client(timeout=float(timeout_seconds)) as client:
             compact_content = await _post_translation_completion_text(
                 client,
                 f"{base_url}/chat/completions",
@@ -8072,7 +8080,7 @@ async def _request_manga_image_edit_bytes(
     )
     last_error: Exception | None = None
 
-    async with _create_async_http_client(timeout=float(timeout_seconds), follow_redirects=True) as client:
+    async with _create_model_http_client(timeout=float(timeout_seconds)) as client:
         for attempt in range(1, 4):
             try:
                 response = await client.post(
@@ -10982,6 +10990,10 @@ def _create_async_http_client(
         http2=False,
         verify=ssl.create_default_context(),
     )
+
+
+def _create_model_http_client(*, timeout: float) -> httpx.AsyncClient:
+    return create_model_http_client(timeout=timeout)
 
 
 def _build_http_client() -> httpx.AsyncClient:

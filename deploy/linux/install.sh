@@ -328,9 +328,11 @@ print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())
 admin_password_hash=""
 admin_session_secret=""
 initial_admin_password=""
+model_endpoint_allowlist=""
 if [[ -f "$backend_file" ]]; then
   admin_password_hash="$(sed -n 's/^QINGJUAN_ADMIN_PASSWORD_HASH=//p' "$backend_file" | tail -n 1)"
   admin_session_secret="$(sed -n 's/^QINGJUAN_ADMIN_SESSION_SECRET=//p' "$backend_file" | tail -n 1)"
+  model_endpoint_allowlist="$(sed -n 's/^QINGJUAN_MODEL_ENDPOINT_ALLOWLIST=//p' "$backend_file" | tail -n 1)"
 fi
 if [[ -z "$admin_password_hash" ]]; then
   initial_admin_password="$(
@@ -358,6 +360,7 @@ printf '%s\n' \
   "QINGJUAN_PORT=$port" \
   "QINGJUAN_ADMIN_PASSWORD_HASH=$admin_password_hash" \
   "QINGJUAN_ADMIN_SESSION_SECRET=$admin_session_secret" \
+  "QINGJUAN_MODEL_ENDPOINT_ALLOWLIST=$model_endpoint_allowlist" \
   > "$backend_file"
 
 printf '%s\n' \

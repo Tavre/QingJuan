@@ -33,13 +33,13 @@ void main() {
     expect(theme.typography.title?.fontFamily, 'Segoe UI Variable Text');
   });
 
-  test('Android retains the independent warm mobile palette', () {
+  test('Android uses the independent clean blue mobile palette', () {
     final theme = buildQingJuanTheme(
       Brightness.light,
       platform: TargetPlatform.android,
     );
 
-    expect(theme.accentColor.normal, const Color(0xFFD16D50));
+    expect(theme.accentColor.normal, const Color(0xFF3377F6));
     expect(theme.scaffoldBackgroundColor, qingJuanPaper);
     expect(theme.cardColor, qingJuanPaperSurface);
     expect(theme.typography.body?.fontFamily, isNot('Segoe UI Variable Text'));

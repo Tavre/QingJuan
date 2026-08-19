@@ -6,7 +6,7 @@ import re
 import time
 from contextlib import suppress
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import requests
 
@@ -29,6 +29,16 @@ SUB_LOGIN_ENDPOINT = "https://ptlogin.qidian.com/login/sublogin"
 BOOK_INFO_ENDPOINT = "https://wxapp.qidian.com/api/book/info"
 CATALOG_ENDPOINT = "https://wxapp.qidian.com/api/book/categoryV2"
 BOOKSHELF_ENDPOINT = "https://m.qidian.com/webcommon/bookshelf/mlist"
+SEARCH_ENDPOINT = "https://m.qidian.com/so/"
+SEARCH_ORDER_BY = {
+    "default": 0,
+    "popular": 1,
+    "word": 3,
+    "time": 4,
+    "recommend": 9,
+    "favorite": 11,
+    "monthticket": 12,
+}
 
 REQUEST_TIMEOUT_SECONDS = 20
 MAX_LOGIN_REDIRECTS = 8
@@ -395,6 +405,103 @@ def _extract_page_context(value: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def search_books(
+    keyword: str,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+    order_by: str = "default",
+    gender: str | None = None,
+) -> dict[str, Any]:
+    normalized_keyword = keyword.strip()
+    if not normalized_keyword:
+        return {
+            "data": {
+                "keyword": "",
+                "total": 0,
+                "pageNum": 1,
+                "pageSize": 0,
+                "isLast": 1,
+                "orderBy": 0,
+                "books": [],
+            }
+        }
+    resolved_page = max(1, int(page or 1))
+    resolved_page_size = min(20, max(1, int(page_size or 20)))
+    order_by_value = SEARCH_ORDER_BY.get(order_by, 0)
+    params: dict[str, Any] = {
+        "pageNum": resolved_page,
+        "orderBy": order_by_value,
+    }
+    if gender in {"male", "female"}:
+        params["gender"] = gender
+    search_url = f"{SEARCH_ENDPOINT}{quote(normalized_keyword, safe='')}.html"
+    session = requests.Session()
+    try:
+        response = _request_get(
+            session,
+            search_url,
+            stage="作品搜索",
+            headers=_mobile_headers(),
+            params=params,
+        )
+    finally:
+        session.close()
+
+    page_context = _extract_page_context(response.text)
+    try:
+        page_data = page_context["pageContext"]["pageProps"]["pageData"]
+        book_info = page_data["bookInfo"]
+    except (KeyError, TypeError):
+        raise QidianApiError("起点搜索页面缺少作品数据") from None
+    if not isinstance(page_data, dict) or not isinstance(book_info, dict):
+        raise QidianApiError("起点搜索作品数据格式无效")
+
+    raw_records = book_info.get("records")
+    records = raw_records if isinstance(raw_records, list) else []
+    books: list[dict[str, Any]] = []
+    for raw in records[:resolved_page_size]:
+        if not isinstance(raw, dict):
+            continue
+        cover = str(raw.get("imgUrl") or "").strip()
+        if cover.startswith("//"):
+            cover = f"https:{cover}"
+        books.append(
+            {
+                "bookId": raw.get("bid"),
+                "bookName": raw.get("bName"),
+                "cbid": raw.get("cbid"),
+                "authorId": raw.get("cid"),
+                "authorName": raw.get("bAuth"),
+                "desc": raw.get("desc"),
+                "category": raw.get("cat"),
+                "subCategory": raw.get("subCateName"),
+                "state": raw.get("state"),
+                "signStatus": raw.get("signStatus"),
+                "coverUrl": cover,
+                "isVip": raw.get("isVip"),
+                "wordCountText": raw.get("cnt"),
+                "recommendCnt": raw.get("recomendCnt"),
+                "favoriteCnt": raw.get("favoriteCnt"),
+                "lastChapterName": raw.get("lastChapterName"),
+                "lastUpdateTime": raw.get("lastUpdateTime"),
+                "bookType": raw.get("bookType"),
+                "isPub": raw.get("isPub"),
+            }
+        )
+    return {
+        "data": {
+            "keyword": page_data.get("kw") or normalized_keyword,
+            "total": book_info.get("total"),
+            "pageNum": book_info.get("pageNum"),
+            "pageSize": book_info.get("pageSize"),
+            "isLast": book_info.get("isLast"),
+            "orderBy": order_by_value,
+            "books": books,
+        }
+    }
 
 
 def _extract_paragraphs(value: str) -> list[str]:

@@ -5,6 +5,7 @@ import '../../core/files/export_file_service.dart';
 import '../../core/models/book.dart';
 import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
+import '../../shared/mobile_sheet.dart';
 import '../../shared/motion.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
@@ -99,21 +100,49 @@ class _BookDetailPageState extends State<BookDetailPage> {
 
   Future<void> _delete() async {
     if (_actionRunning) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => ContentDialog(
-        title: const Text('删除这本书？'),
-        content: const Text('本地章节、翻译内容和阅读进度都将被删除，此操作无法撤销。'),
-        actions: <Widget>[
-          Button(
+    final Future<bool?> confirmation;
+    if (usesMobileUi(context)) {
+      confirmation = showMobileSheet<bool>(
+        context: context,
+        builder: (dialogContext) => MobileSheet(
+          title: '删除这本书？',
+          onClose: () => Navigator.pop(dialogContext, false),
+          actions: <Widget>[
+            Button(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('删除'),
+            ),
+          ],
+          child: const Padding(
+            padding: EdgeInsets.fromLTRB(18, 18, 18, 22),
+            child: Text('本地章节、翻译内容和阅读进度都将被删除，此操作无法撤销。'),
+          ),
+        ),
+      );
+    } else {
+      confirmation = showDialog<bool>(
+        context: context,
+        builder: (context) => ContentDialog(
+          title: const Text('删除这本书？'),
+          content: const Text('本地章节、翻译内容和阅读进度都将被删除，此操作无法撤销。'),
+          actions: <Widget>[
+            Button(
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消')),
-          FilledButton(
+              child: const Text('取消'),
+            ),
+            FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('删除')),
-        ],
-      ),
-    );
+              child: const Text('删除'),
+            ),
+          ],
+        ),
+      );
+    }
+    final confirmed = await confirmation;
     if (confirmed != true || !mounted) return;
 
     setState(() {
@@ -378,48 +407,63 @@ class _BookDetailPageState extends State<BookDetailPage> {
     final options = bookKind == '漫画'
         ? _mangaChapterExportOptions
         : _novelChapterExportOptions;
+    Widget content(BuildContext dialogContext) => Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Text('选择保存格式。优先导出已有译文或译图，否则导出原始内容。'),
+            const SizedBox(height: 16),
+            for (final option in options) ...<Widget>[
+              SizedBox(
+                width: double.infinity,
+                child: Button(
+                  onPressed: () => Navigator.pop(dialogContext, option),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(option.label),
+                          const SizedBox(height: 3),
+                          Text(
+                            option.description,
+                            style: FluentTheme.of(dialogContext)
+                                .typography
+                                .caption,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ],
+        );
+    if (usesMobileUi(context)) {
+      return showMobileSheet<_ChapterExportOption>(
+        context: context,
+        builder: (dialogContext) => MobileSheet(
+          title: title,
+          subtitle: '优先导出已有译文或译图',
+          onClose: () => Navigator.pop(dialogContext),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
+            child: content(dialogContext),
+          ),
+        ),
+      );
+    }
     return showDialog<_ChapterExportOption>(
       context: context,
       builder: (dialogContext) => ContentDialog(
         title: Text(title),
         content: ConstrainedBox(
           constraints: const BoxConstraints(minWidth: 360, maxWidth: 460),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              const Text('选择保存格式。优先导出已有译文或译图，否则导出原始内容。'),
-              const SizedBox(height: 16),
-              for (final option in options) ...<Widget>[
-                SizedBox(
-                  width: double.infinity,
-                  child: Button(
-                    onPressed: () => Navigator.pop(dialogContext, option),
-                    child: SizedBox(
-                      width: double.infinity,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: <Widget>[
-                            Text(option.label),
-                            const SizedBox(height: 3),
-                            Text(
-                              option.description,
-                              style: FluentTheme.of(dialogContext)
-                                  .typography
-                                  .caption,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-              ],
-            ],
-          ),
+          child: content(dialogContext),
         ),
         actions: <Widget>[
           Button(
@@ -855,7 +899,7 @@ class _BookHero extends StatelessWidget {
     final theme = FluentTheme.of(context);
     return AppSurface(
       tone: AppSurfaceTone.accent,
-      borderRadius: 24,
+      borderRadius: 18,
       padding: const EdgeInsets.all(18),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,

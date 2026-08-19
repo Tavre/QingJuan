@@ -414,6 +414,35 @@ class ApiClient {
     return _list(payload).map(SourceSearchResult.fromJson).toList();
   }
 
+  Future<List<SourceSearchResult>> searchBuiltinSite(
+    String keyword, {
+    required String sourceId,
+    required String sourceName,
+    required String sourceLanguage,
+    int limit = 20,
+  }) async {
+    final payload = _decode(
+      await _request(
+        'POST',
+        '/builtin-sites/search',
+        body: <String, dynamic>{
+          'sourceId': sourceId,
+          'keyword': keyword,
+          'limit': limit,
+        },
+      ),
+    );
+    return _list(payload).map((item) {
+      final result = _map(item);
+      return SourceSearchResult.fromJson(<String, dynamic>{
+        ...result,
+        'sourceId': sourceId,
+        'sourceName': sourceName,
+        'sourceLanguage': sourceLanguage,
+      });
+    }).toList();
+  }
+
   Future<SourceImportResult> importSourcesFromUrl(String url) async {
     final payload = _decode(await _request('POST', '/sources/import-url',
         body: <String, dynamic>{'url': url}));

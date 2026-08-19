@@ -171,6 +171,9 @@ except ImportError:
 
 try:
     from .site_plugins.qidian_client import (
+        canonical_book_url as canonical_qidian_book_url,
+    )
+    from .site_plugins.qidian_client import (
         canonical_chapter_url as canonical_qidian_chapter_url,
     )
     from .site_plugins.qidian_client import (
@@ -186,9 +189,13 @@ try:
         qidian_book_id_from_url,
         qidian_chapter_ids_from_url,
     )
+    from .site_plugins.qidian_client import search_books as search_qidian_books
     from .site_plugins.qidian_runtime import QIDIAN_RUNTIME
 except ImportError:
     from app.site_plugins.qidian_client import (
+        canonical_book_url as canonical_qidian_book_url,
+    )
+    from app.site_plugins.qidian_client import (
         canonical_chapter_url as canonical_qidian_chapter_url,
     )
     from app.site_plugins.qidian_client import (
@@ -204,14 +211,83 @@ except ImportError:
         qidian_book_id_from_url,
         qidian_chapter_ids_from_url,
     )
+    from app.site_plugins.qidian_client import search_books as search_qidian_books
     from app.site_plugins.qidian_runtime import QIDIAN_RUNTIME
 
 try:
     from .site_plugins.fanqie_client import search_books as search_fanqie_books
-    from .site_plugins.fanqie_runtime import FANQIE_RUNTIME
 except ImportError:
     from app.site_plugins.fanqie_client import search_books as search_fanqie_books
-    from app.site_plugins.fanqie_runtime import FANQIE_RUNTIME
+
+try:
+    from .site_plugins.quark_client import (
+        canonical_quark_book_url,
+        canonical_quark_chapter_url,
+        get_quark_book_info,
+        get_quark_catalog,
+        get_quark_chapter_content,
+        quark_book_id_from_url,
+        quark_chapter_ids_from_url,
+        quark_chapter_is_public,
+        search_quark_books,
+    )
+except ImportError:
+    from app.site_plugins.quark_client import (
+        canonical_quark_book_url,
+        canonical_quark_chapter_url,
+        get_quark_book_info,
+        get_quark_catalog,
+        get_quark_chapter_content,
+        quark_book_id_from_url,
+        quark_chapter_ids_from_url,
+        quark_chapter_is_public,
+        search_quark_books,
+    )
+
+try:
+    from .site_plugins.comicores_client import (
+        canonical_comicores_book_url,
+        comicores_authors,
+        comicores_book_key_from_url,
+        comicores_cover,
+        comicores_synopsis,
+        comicores_title,
+        get_comicores_book,
+        search_comicores,
+    )
+    from .site_plugins.copymanga_client import (
+        canonical_mangacopy_book_url,
+        canonical_mangacopy_chapter_url,
+        get_mangacopy_chapter,
+        get_mangacopy_chapters,
+        get_mangacopy_detail,
+        is_allowed_mangacopy_image_url,
+        mangacopy_chapter_ids_from_url,
+        mangacopy_path_word_from_url,
+        search_mangacopy,
+    )
+except ImportError:
+    from app.site_plugins.comicores_client import (
+        canonical_comicores_book_url,
+        comicores_authors,
+        comicores_book_key_from_url,
+        comicores_cover,
+        comicores_synopsis,
+        comicores_title,
+        get_comicores_book,
+        search_comicores,
+    )
+    from app.site_plugins.copymanga_client import (
+        canonical_mangacopy_book_url,
+        canonical_mangacopy_chapter_url,
+        get_mangacopy_chapter,
+        get_mangacopy_chapters,
+        get_mangacopy_detail,
+        is_allowed_mangacopy_image_url,
+        mangacopy_chapter_ids_from_url,
+        mangacopy_path_word_from_url,
+        search_mangacopy,
+    )
 
 try:
     from .fanqie_app import FanqieAppClient
@@ -429,6 +505,10 @@ def _is_qidian_url(url: str) -> bool:
     return site_plugin_matches("qidian", url)
 
 
+def _is_quark_url(url: str) -> bool:
+    return site_plugin_matches("quark", url)
+
+
 def _is_syosetu_url(url: str) -> bool:
     return site_plugin_matches("syosetu", url)
 
@@ -459,6 +539,14 @@ def _is_18comic_url(url: str) -> bool:
 
 def _is_bikawebapp_url(url: str) -> bool:
     return site_plugin_matches("bika", url)
+
+
+def _is_copymanga_url(url: str) -> bool:
+    return site_plugin_matches("copymanga", url)
+
+
+def _is_comicores_url(url: str) -> bool:
+    return site_plugin_matches("comicores", url)
 
 
 def _is_pixiv_manga_url(url: str) -> bool:
@@ -546,6 +634,10 @@ def _normalize_source_url(url: str) -> str:
         book_id = fanqie_book_id_from_url(url)
         return canonical_fanqie_book_url(book_id) if book_id else url
 
+    if _is_quark_url(url):
+        book_id = quark_book_id_from_url(url)
+        return canonical_quark_book_url(book_id) if book_id else url
+
     if _is_linovelib_url(url):
         match = LINOVELIB_BOOK_PATH_PATTERN.match(parsed.path)
         if not match:
@@ -606,6 +698,14 @@ def _normalize_source_url(url: str) -> str:
             return f"{parsed.scheme}://{parsed.netloc}/comic/{comic_match.group('comic_id')}"
         return url
 
+    if _is_copymanga_url(url):
+        path_word = mangacopy_path_word_from_url(url)
+        return canonical_mangacopy_book_url(path_word) if path_word else url
+
+    if _is_comicores_url(url):
+        book_key = comicores_book_key_from_url(url)
+        return canonical_comicores_book_url(book_key) if book_key else url
+
     return url
 
 
@@ -622,14 +722,14 @@ async def _search_fanqie_works(
         search_fanqie_books,
         keyword,
         limit,
-        cookies=FANQIE_RUNTIME.cookies(),
     )
     results: list[BuiltinSiteSearchResult] = []
     seen: set[str] = set()
     for item in values:
         book_id = str(item.get("book_id") or item.get("bookId") or "").strip()
         title = str(
-            item.get("book_name")
+            item.get("title")
+            or item.get("book_name")
             or item.get("original_book_name")
             or item.get("bookName")
             or ""
@@ -644,9 +744,12 @@ async def _search_fanqie_works(
             BuiltinSiteSearchResult(
                 title=title,
                 author=str(item.get("author") or item.get("author_name") or "").strip() or None,
-                synopsis=_normalize_search_text(item.get("abstract") or item.get("description") or ""),
+                synopsis=_normalize_search_text(
+                    item.get("summary") or item.get("abstract") or item.get("description") or ""
+                ),
                 cover=str(
-                    item.get("thumb_url")
+                    item.get("cover_url")
+                    or item.get("thumb_url")
                     or item.get("thumbUri")
                     or item.get("audio_thumb_url_hd")
                     or ""
@@ -659,6 +762,70 @@ async def _search_fanqie_works(
         if len(results) >= limit:
             break
     return results
+
+
+async def _search_qidian_works(
+    source: BookSourceRecord,
+    keyword: str,
+    limit: int,
+) -> list[BuiltinSiteSearchResult]:
+    payload = await asyncio.to_thread(
+        search_qidian_books,
+        keyword,
+        page_size=min(20, max(1, limit)),
+    )
+    data = payload.get("data") if isinstance(payload, dict) else None
+    values = data.get("books") if isinstance(data, dict) else None
+    if not isinstance(values, list):
+        raise ValueError("起点搜索响应缺少作品列表")
+
+    results: list[BuiltinSiteSearchResult] = []
+    seen: set[str] = set()
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        book_id = str(item.get("bookId") or item.get("bid") or "").strip()
+        title = str(item.get("bookName") or item.get("bName") or "").strip()
+        if not book_id.isdigit() or not title:
+            continue
+        source_url = canonical_qidian_book_url(book_id)
+        if source_url in seen:
+            continue
+        seen.add(source_url)
+        results.append(
+            BuiltinSiteSearchResult(
+                title=title,
+                author=str(item.get("authorName") or item.get("bAuth") or "").strip() or None,
+                synopsis=_normalize_search_text(item.get("desc") or item.get("description") or ""),
+                cover=str(item.get("coverUrl") or item.get("imgUrl") or "").strip() or None,
+                sourceUrl=source_url,
+                bookKind=source.bookKind,
+            )
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
+async def _search_quark_works(
+    source: BookSourceRecord,
+    keyword: str,
+    limit: int,
+) -> list[BuiltinSiteSearchResult]:
+    async with _build_http_client() as client:
+        values = await search_quark_books(client, keyword, limit)
+    return [
+        BuiltinSiteSearchResult(
+            title=str(item.get("title") or "未命名作品"),
+            author=str(item.get("author") or "").strip() or None,
+            synopsis=_normalize_search_text(item.get("synopsis")),
+            cover=str(item.get("cover") or "").strip() or None,
+            sourceUrl=str(item["sourceUrl"]),
+            bookKind=source.bookKind,
+        )
+        for item in values
+        if str(item.get("sourceUrl") or "").strip()
+    ]
 
 
 async def _search_kakuyomu_works(
@@ -857,6 +1024,84 @@ async def _search_bika_works(
     return results
 
 
+async def _search_copymanga_works(
+    source: BookSourceRecord,
+    keyword: str,
+    limit: int,
+) -> list[BuiltinSiteSearchResult]:
+    async with _build_http_client() as client:
+        items = await search_mangacopy(client, keyword, limit)
+
+    results: list[BuiltinSiteSearchResult] = []
+    seen: set[str] = set()
+    for item in items:
+        path_word = str(item.get("path_word") or "").strip()
+        title = str(item.get("name") or "").strip()
+        if not path_word or not title:
+            continue
+        source_url = canonical_mangacopy_book_url(path_word)
+        if source_url in seen:
+            continue
+        seen.add(source_url)
+        raw_authors = item.get("author")
+        authors = (
+            [
+                str(author.get("name") or "").strip()
+                for author in raw_authors
+                if isinstance(author, dict) and str(author.get("name") or "").strip()
+            ]
+            if isinstance(raw_authors, list)
+            else []
+        )
+        results.append(
+            BuiltinSiteSearchResult(
+                title=title,
+                author="、".join(authors) or None,
+                synopsis=_normalize_search_text(item.get("alias") or ""),
+                cover=str(item.get("cover") or "").strip() or None,
+                sourceUrl=source_url,
+                bookKind="漫画",
+            )
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
+async def _search_comicores_works(
+    source: BookSourceRecord,
+    keyword: str,
+    limit: int,
+) -> list[BuiltinSiteSearchResult]:
+    async with _build_http_client() as client:
+        items = await search_comicores(client, keyword, limit)
+
+    results: list[BuiltinSiteSearchResult] = []
+    seen: set[str] = set()
+    for item in items:
+        slug = str(item.get("slug") or "").strip()
+        title = comicores_title(item)
+        if not slug or not title:
+            continue
+        source_url = canonical_comicores_book_url(slug)
+        if source_url in seen:
+            continue
+        seen.add(source_url)
+        results.append(
+            BuiltinSiteSearchResult(
+                title=title,
+                author="、".join(comicores_authors(item)) or None,
+                synopsis=_normalize_search_text(comicores_synopsis(item)),
+                cover=comicores_cover(item),
+                sourceUrl=source_url,
+                bookKind="漫画",
+            )
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
 async def search_builtin_site_books(
     source: BookSourceRecord,
     keyword: str,
@@ -867,14 +1112,22 @@ async def search_builtin_site_books(
         return []
 
     plugin = _require_enabled_site_plugin(source.baseUrl)
+    if plugin.search_handler == "qidian":
+        return await _search_qidian_works(source, normalized_keyword, limit)
     if plugin.search_handler == "fanqie":
         return await _search_fanqie_works(source, normalized_keyword, limit)
+    if plugin.search_handler == "quark":
+        return await _search_quark_works(source, normalized_keyword, limit)
     if plugin.search_handler == "kakuyomu":
         return await _search_kakuyomu_works(source, normalized_keyword, limit)
     if plugin.search_handler == "18comic":
         return await _search_18comic_works(source, normalized_keyword, limit)
     if plugin.search_handler == "bika":
         return await _search_bika_works(source, normalized_keyword, limit)
+    if plugin.search_handler == "copymanga":
+        return await _search_copymanga_works(source, normalized_keyword, limit)
+    if plugin.search_handler == "comicores":
+        return await _search_comicores_works(source, normalized_keyword, limit)
 
     raise ValueError("当前内置站点暂未实现作品搜索，请在书架页粘贴作品链接")
 
@@ -9152,10 +9405,7 @@ async def _preview_yanmaga(source_url: str, payload: AddBookPayload) -> PreviewR
     if not unique_episodes:
         raise ValueError("Yanmaga 当前没有可供匿名访问的公开章节")
 
-    chapters = [
-        ChapterPreview(title=episode.title, url=episode.url)
-        for episode in unique_episodes
-    ]
+    chapters = [ChapterPreview(title=episode.title, url=episode.url) for episode in unique_episodes]
     return PreviewResponse(
         title=book.title or payload.title or "未命名漫画",
         author=book.author,
@@ -9562,6 +9812,117 @@ async def _preview_qidian(source_url: str, payload: AddBookPayload) -> PreviewRe
     )
 
 
+async def _preview_quark(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    book_id = quark_book_id_from_url(source_url)
+    if not book_id:
+        raise ValueError("夸克小说链接缺少有效作品 ID，请使用书旗作品页或阅读页链接")
+    async with _build_http_client() as client:
+        book_info, catalog_result = await asyncio.gather(
+            get_quark_book_info(client, book_id),
+            get_quark_catalog(client, book_id),
+        )
+    chapters_info, chapter_items = catalog_result
+    if book_info.get("hide") is True or book_info.get("readIsOpen") is False:
+        raise ValueError("该夸克小说作品当前未公开阅读")
+    chapters = [
+        ChapterPreview(
+            title=str(chapter.get("chapterName") or "未命名章节").strip(),
+            url=canonical_quark_chapter_url(book_id, str(chapter["chapterId"])),
+            accessRestricted=not quark_chapter_is_public(chapter),
+        )
+        for chapter in chapter_items
+    ]
+    cover = str(book_info.get("imgUrl") or "").strip() or None
+    if cover and cover.startswith("http://"):
+        cover = f"https://{cover.removeprefix('http://')}"
+    return PreviewResponse(
+        title=str(
+            book_info.get("bookName") or chapters_info.get("bookName") or payload.title or "未命名作品"
+        ).strip(),
+        author=str(book_info.get("authorName") or chapters_info.get("authorName") or "").strip() or None,
+        synopsis=str(book_info.get("desc") or "").strip(),
+        cover=cover,
+        chapterCount=len(chapters),
+        chapters=chapters,
+        bookKind="长小说",
+    )
+
+
+async def _preview_copymanga(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    path_word = mangacopy_path_word_from_url(source_url)
+    if not path_word:
+        raise ValueError("无法识别拷贝漫画作品路径，请提交 /comic/{作品标识} 链接")
+    async with _build_http_client() as client:
+        detail = await get_mangacopy_detail(client, path_word)
+        if any(bool(detail.get(key)) for key in ("is_lock", "is_login", "is_vip")):
+            raise ValueError("拷贝漫画作品当前不是匿名公开内容")
+        comic = detail.get("comic")
+        if not isinstance(comic, dict):
+            raise ValueError("拷贝漫画作品详情缺少 comic 数据")
+        chapter_items = await get_mangacopy_chapters(client, path_word, detail.get("groups"))
+
+    chapters: list[ChapterPreview] = []
+    for item in chapter_items:
+        chapter_id = str(item.get("uuid") or "").strip()
+        title = str(item.get("name") or "未命名章节").strip()
+        group_name = str(item.get("_group_name") or "").strip()
+        if group_name and group_name not in {"默认", "默認", "default"}:
+            title = f"{group_name} - {title}"
+        try:
+            page_count = max(0, int(item.get("size") or 0))
+        except (TypeError, ValueError):
+            page_count = 0
+        chapters.append(
+            ChapterPreview(
+                title=title,
+                url=canonical_mangacopy_chapter_url(path_word, chapter_id),
+                pageCount=page_count,
+            )
+        )
+    if not chapters:
+        raise ValueError("拷贝漫画作品目录为空")
+
+    raw_authors = comic.get("author")
+    authors = (
+        [
+            str(author.get("name") or "").strip()
+            for author in raw_authors
+            if isinstance(author, dict) and str(author.get("name") or "").strip()
+        ]
+        if isinstance(raw_authors, list)
+        else []
+    )
+    return PreviewResponse(
+        title=str(comic.get("name") or payload.title or path_word).strip(),
+        author="、".join(authors) or None,
+        synopsis=str(comic.get("brief") or "").strip(),
+        cover=str(comic.get("cover") or "").strip() or None,
+        chapterCount=len(chapters),
+        chapters=chapters,
+        bookKind="漫画",
+    )
+
+
+async def _preview_comicores(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    book_key = comicores_book_key_from_url(source_url)
+    if not book_key:
+        raise ValueError("无法识别 COMICORES 作品链接")
+    async with _build_http_client() as client:
+        post = await get_comicores_book(client, book_key)
+    title = comicores_title(post) or payload.title or book_key
+    synopsis = comicores_synopsis(post)
+    boundary = "访问说明：该站章节区是登录后可见的网盘或付费下载资源，青卷仅展示公开作品元数据。"
+    return PreviewResponse(
+        title=title,
+        author="、".join(comicores_authors(post)) or None,
+        synopsis=f"{synopsis}\n\n{boundary}" if synopsis else boundary,
+        cover=comicores_cover(post),
+        chapterCount=0,
+        chapters=[],
+        bookKind="漫画",
+    )
+
+
 async def preview_from_url(payload: AddBookPayload) -> PreviewResponse:
     source_url = _normalize_source_url(str(payload.sourceUrl))
     plugin = _require_enabled_site_plugin(source_url)
@@ -9573,12 +9934,19 @@ async def preview_from_url(payload: AddBookPayload) -> PreviewResponse:
     if plugin.preview_handler == "qidian":
         result = await _preview_qidian(source_url, payload)
         return _apply_payload_metadata_to_preview(result, payload)
+    if plugin.preview_handler == "quark":
+        result = await _preview_quark(source_url, payload)
+        return _apply_payload_metadata_to_preview(result, payload)
     if plugin.preview_handler == "18comic":
         result = await _preview_18comic(source_url, payload)
         return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
     if plugin.preview_handler == "bika":
         result = await _preview_bika(source_url, payload)
         return result.model_copy(update={"bookKind": _resolved_preview_book_kind(source_url, payload)})
+    if plugin.preview_handler == "copymanga":
+        return await _preview_copymanga(source_url, payload)
+    if plugin.preview_handler == "comicores":
+        return await _preview_comicores(source_url, payload)
     if plugin.preview_handler == "pixiv_comic":
         if not _is_pixiv_comic_work_url(source_url):
             raise ValueError("Pixiv Comic 章节链接不是作品页，请提交作品链接")
@@ -10444,19 +10812,85 @@ async def _fetch_qidian_chapter_data(
     )
 
 
+async def _fetch_quark_chapter_data(
+    client: httpx.AsyncClient,
+    chapter_url: str,
+) -> ChapterFetchResult:
+    ids = quark_chapter_ids_from_url(chapter_url)
+    if ids is None:
+        raise ValueError("夸克小说章节链接缺少作品或章节 ID")
+    book_id, chapter_id = ids
+    result = await get_quark_chapter_content(client, book_id, chapter_id)
+    return ChapterFetchResult(
+        text=str(result.get("text") or ""),
+        image_urls=[],
+        content_source="shuqi-public-web",
+        authorization_method="anonymous-public",
+        access_restricted=False,
+    )
+
+
+async def _fetch_copymanga_chapter_data(
+    client: httpx.AsyncClient,
+    chapter_url: str,
+    chapter_title: str = "",
+) -> ChapterFetchResult:
+    ids = mangacopy_chapter_ids_from_url(chapter_url)
+    if ids is None:
+        raise ValueError("拷贝漫画章节链接缺少作品标识或章节 ID")
+    path_word, chapter_id = ids
+    result = await get_mangacopy_chapter(client, path_word, chapter_id)
+    if any(bool(result.get(key)) for key in ("is_lock", "is_login", "is_vip")):
+        raise ValueError("拷贝漫画章节当前需要登录、会员或其他访问权限")
+    chapter = result.get("chapter")
+    if not isinstance(chapter, dict):
+        raise ValueError("拷贝漫画章节响应缺少 chapter 数据")
+    contents = chapter.get("contents")
+    image_urls: list[str] = []
+    seen: set[str] = set()
+    if isinstance(contents, list):
+        for item in contents:
+            value = str(item.get("url") or "").strip() if isinstance(item, dict) else ""
+            if not value or value in seen:
+                continue
+            if not is_allowed_mangacopy_image_url(value):
+                raise ValueError("拷贝漫画章节返回了非 HTTPS 或非官方图片域名")
+            seen.add(value)
+            image_urls.append(value)
+    if not image_urls:
+        raise ValueError(f"拷贝漫画章节“{chapter_title or chapter_id}”没有公开图片")
+    return ChapterFetchResult(
+        text="",
+        image_urls=image_urls,
+        illustration=False,
+        content_source="mangacopy-public-api",
+        authorization_method="public-api",
+        access_restricted=False,
+    )
+
+
 async def _fetch_chapter_data(
     client: httpx.AsyncClient, chapter_url: str, chapter_title: str = ""
 ) -> ChapterFetchResult:
     plugin = _require_enabled_site_plugin(chapter_url)
+    if plugin.chapter_handler is None:
+        raise ValueError(
+            f"站点插件“{plugin.name}”只支持作品预览和搜索，不提供章节抓取；"
+            "该站章节区包含登录后可见的网盘或付费下载资源"
+        )
     try:
         if plugin.chapter_handler == "fanqie":
             return await _fetch_fanqie_chapter_data(client, chapter_url, chapter_title)
         if plugin.chapter_handler == "qidian":
             return await _fetch_qidian_chapter_data(chapter_url)
+        if plugin.chapter_handler == "quark":
+            return await _fetch_quark_chapter_data(client, chapter_url)
         if plugin.chapter_handler == "18comic":
             return await _fetch_18comic_chapter_data(client, chapter_url, chapter_title)
         if plugin.chapter_handler == "bika":
             return await _fetch_bika_chapter_data(client, chapter_url, chapter_title)
+        if plugin.chapter_handler == "copymanga":
+            return await _fetch_copymanga_chapter_data(client, chapter_url, chapter_title)
         if plugin.chapter_handler == "pixiv_comic":
             if _is_pixiv_comic_story_url(chapter_url):
                 return await _fetch_pixiv_comic_chapter_data(client, chapter_url, chapter_title)
@@ -10502,7 +10936,7 @@ async def _fetch_chapter_data(
             text=soup.get_text("\n", strip=True)[:15000], image_urls=[], illustration=False
         )
     except Exception as exc:
-        if _is_manga_source_url(chapter_url) or _is_fanqie_url(chapter_url):
+        if _is_manga_source_url(chapter_url) or _is_fanqie_url(chapter_url) or _is_quark_url(chapter_url):
             raise
         return ChapterFetchResult(
             text=f"章节抓取失败：{exc}\n原始链接：{chapter_url}",

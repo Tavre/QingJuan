@@ -5,6 +5,8 @@ import '../../core/models/site_plugin.dart';
 import '../../core/models/source.dart';
 import '../../core/state/load_state.dart';
 
+enum BookSearchEngine { bookSources, quark, fanqie, qidian }
+
 class SourcesController extends ChangeNotifier {
   SourcesController(this.api);
 
@@ -16,11 +18,13 @@ class SourcesController extends ChangeNotifier {
   final Set<String> _savingPluginIds = <String>{};
   final Set<String> _savingSourceIds = <String>{};
   int _backendGeneration = 0;
+  int _searchGeneration = 0;
   bool searching = false;
   String? error;
 
   void resetForBackendSwitch() {
     _backendGeneration += 1;
+    _searchGeneration += 1;
     sources = const [];
     plugins = const [];
     results = const [];
@@ -143,24 +147,72 @@ class SourcesController extends ChangeNotifier {
     }
   }
 
-  Future<void> search(String keyword) async {
+  void clearSearchResults() {
+    _searchGeneration += 1;
+    results = const [];
+    searching = false;
+    error = null;
+    notifyListeners();
+  }
+
+  Future<void> search(
+    String keyword, {
+    BookSearchEngine engine = BookSearchEngine.bookSources,
+  }) async {
     final normalized = keyword.trim();
     if (normalized.isEmpty) return;
+    final backendGeneration = _backendGeneration;
+    final searchGeneration = ++_searchGeneration;
     searching = true;
     error = null;
     results = const [];
     notifyListeners();
     try {
-      final enabledIds = sources
-          .where((source) => source.enabled)
-          .map((source) => source.id)
-          .toList();
-      results = await api.searchSources(normalized, sourceIds: enabledIds);
+      final loaded = switch (engine) {
+        BookSearchEngine.bookSources => api.searchSources(
+            normalized,
+            sourceIds: sources
+                .where((source) => source.enabled)
+                .map((source) => source.id)
+                .toList(),
+          ),
+        BookSearchEngine.quark => api.searchBuiltinSite(
+            normalized,
+            sourceId: 'source-builtin-quark',
+            sourceName: '夸克小说',
+            sourceLanguage: '中文',
+          ),
+        BookSearchEngine.fanqie => api.searchBuiltinSite(
+            normalized,
+            sourceId: 'source-builtin-fanqie',
+            sourceName: '番茄小说',
+            sourceLanguage: '中文',
+          ),
+        BookSearchEngine.qidian => api.searchBuiltinSite(
+            normalized,
+            sourceId: 'source-builtin-qidian',
+            sourceName: '起点中文网',
+            sourceLanguage: '中文',
+          ),
+      };
+      final searchResults = await loaded;
+      if (backendGeneration != _backendGeneration ||
+          searchGeneration != _searchGeneration) {
+        return;
+      }
+      results = searchResults;
     } catch (exception) {
+      if (backendGeneration != _backendGeneration ||
+          searchGeneration != _searchGeneration) {
+        return;
+      }
       error = '$exception';
     } finally {
-      searching = false;
-      notifyListeners();
+      if (backendGeneration == _backendGeneration &&
+          searchGeneration == _searchGeneration) {
+        searching = false;
+        notifyListeners();
+      }
     }
   }
 

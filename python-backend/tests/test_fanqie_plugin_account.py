@@ -65,6 +65,80 @@ def test_bookshelf_mapping_deduplicates_ids_and_preserves_book_type(monkeypatch)
     assert result["groups"] == [{"group_id": "1", "group_name": "小说"}]
 
 
+def test_signed_search_filters_non_book_cells_and_normalizes_results(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def request_get(session, url, *, stage, params=None, headers=None):
+        captured.update({"url": url, "stage": stage, "params": params, "headers": headers})
+        return _json_response(
+            {
+                "code": 0,
+                "search_tabs": [
+                    {
+                        "tab_type": 1,
+                        "data": [
+                            {"show_type": 112, "book_data": [{"book_id": "999", "book_name": "插入位"}]},
+                            {
+                                "show_type": 110,
+                                "search_high_light": {
+                                    "title": {"rich_text": "<em>测试</em><script>作品</script>"},
+                                    "abstract": {"rich_text": "<em>简介</em>"},
+                                },
+                                "book_data": [
+                                    {
+                                        "book_id": "7080092010052324352",
+                                        "book_name": "测试作品",
+                                        "author": "测试作者",
+                                        "abstract": "作品简介",
+                                        "thumb_url": "https://example.test/cover.jpg",
+                                        "serial_count": 12,
+                                    },
+                                    {
+                                        "book_id": "7080092010052324352",
+                                        "book_name": "重复作品",
+                                    },
+                                    {"book_id": "invalid", "book_name": "无效作品"},
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(fanqie_client, "_request_get", request_get)
+
+    results = fanqie_client.search_books("测试作品", 20)
+
+    assert len(results) == 1
+    assert results[0] == {
+        "book_id": "7080092010052324352",
+        "title": "测试作品",
+        "author": "测试作者",
+        "cover_url": "https://example.test/cover.jpg",
+        "summary": "作品简介",
+        "status": "",
+        "word_count": 0,
+        "sub_info": "12章",
+        "read_count": 0,
+        "score": "",
+        "category": "",
+        "chapter_count": 12,
+        "last_chapter_title": "",
+        "in_bookshelf": False,
+        "highlight_title": "<em>测试</em>作品",
+        "highlight_summary": "<em>简介</em>",
+    }
+    assert str(captured["url"]).startswith(f"{fanqie_client.SEARCH_ENDPOINT}?")
+    assert "query=%E6%B5%8B%E8%AF%95%E4%BD%9C%E5%93%81" in str(captured["url"])
+    assert "tab_type=1" in str(captured["url"])
+    assert captured["stage"] == "作品搜索"
+    assert captured["params"] is None
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert {"x-argus", "x-ladon", "x-khronos", "x-ss-req-ticket"} <= headers.keys()
+
+
 def test_qr_runtime_never_returns_upstream_token_or_cookies(monkeypatch) -> None:
     runtime = FanqieRuntime()
     monkeypatch.setattr(
@@ -121,10 +195,10 @@ async def test_fanqie_builtin_search_maps_results_to_canonical_book_urls(monkeyp
         lambda *args, **kwargs: [
             {
                 "book_id": "7080092010052324352",
-                "book_name": "测试作品",
+                "title": "测试作品",
                 "author": "测试作者",
-                "abstract": "作品简介",
-                "thumb_url": "https://example.test/cover.jpg",
+                "summary": "作品简介",
+                "cover_url": "https://example.test/cover.jpg",
             }
         ],
     )
@@ -141,6 +215,8 @@ async def test_fanqie_builtin_search_maps_results_to_canonical_book_urls(monkeyp
 
     assert len(results) == 1
     assert results[0].title == "测试作品"
+    assert results[0].synopsis == "作品简介"
+    assert results[0].cover == "https://example.test/cover.jpg"
     assert results[0].sourceUrl == "https://fanqienovel.com/page/7080092010052324352"
 
 

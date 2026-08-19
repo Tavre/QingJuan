@@ -17,6 +17,7 @@ class ThemeSettingsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final mobile = usesMobileUi(context);
     final platformLabel = switch (UiPlatformScope.of(context)) {
       TargetPlatform.windows => 'Windows',
       TargetPlatform.android => 'Android',
@@ -40,33 +41,67 @@ class ThemeSettingsCard extends StatelessWidget {
             style: FluentTheme.of(context).typography.caption,
           ),
           const SizedBox(height: 14),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: AppThemeMode.values.map((mode) {
-              final label = switch (mode) {
-                AppThemeMode.system => '跟随系统',
-                AppThemeMode.light => '浅色',
-                AppThemeMode.dark => '深色',
-              };
-              final icon = switch (mode) {
-                AppThemeMode.system => FluentIcons.system,
-                AppThemeMode.light => FluentIcons.brightness,
-                AppThemeMode.dark => FluentIcons.clear_night,
-              };
-              return _ThemeModeChoice(
-                key: ValueKey<String>('theme-mode-${mode.name}'),
-                label: label,
-                icon: icon,
-                selected: themeMode == mode,
-                onPressed: () => onChanged(mode),
-              );
-            }).toList(),
-          ),
+          if (mobile)
+            Row(
+              children: <Widget>[
+                for (var index = 0;
+                    index < AppThemeMode.values.length;
+                    index++) ...<Widget>[
+                  if (index > 0) const SizedBox(width: 8),
+                  Expanded(
+                    child: _ThemeModeChoice(
+                      key: ValueKey<String>(
+                        'theme-mode-${AppThemeMode.values[index].name}',
+                      ),
+                      label: _label(AppThemeMode.values[index]),
+                      icon: _icon(AppThemeMode.values[index]),
+                      selected: themeMode == AppThemeMode.values[index],
+                      onPressed: () => onChanged(AppThemeMode.values[index]),
+                    ),
+                  ),
+                ],
+              ],
+            )
+          else
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: AppThemeMode.values.map((mode) {
+                final label = switch (mode) {
+                  AppThemeMode.system => '跟随系统',
+                  AppThemeMode.light => '浅色',
+                  AppThemeMode.dark => '深色',
+                };
+                final icon = switch (mode) {
+                  AppThemeMode.system => FluentIcons.system,
+                  AppThemeMode.light => FluentIcons.brightness,
+                  AppThemeMode.dark => FluentIcons.clear_night,
+                };
+                return _ThemeModeChoice(
+                  key: ValueKey<String>('theme-mode-${mode.name}'),
+                  label: label,
+                  icon: icon,
+                  selected: themeMode == mode,
+                  onPressed: () => onChanged(mode),
+                );
+              }).toList(),
+            ),
         ],
       ),
     );
   }
+
+  String _label(AppThemeMode mode) => switch (mode) {
+        AppThemeMode.system => '跟随系统',
+        AppThemeMode.light => '浅色',
+        AppThemeMode.dark => '深色',
+      };
+
+  IconData _icon(AppThemeMode mode) => switch (mode) {
+        AppThemeMode.system => FluentIcons.system,
+        AppThemeMode.light => FluentIcons.brightness,
+        AppThemeMode.dark => FluentIcons.clear_night,
+      };
 }
 
 class _ThemeModeChoice extends StatelessWidget {
@@ -88,7 +123,7 @@ class _ThemeModeChoice extends StatelessWidget {
     final theme = FluentTheme.of(context);
     final accent = theme.accentColor.defaultBrushFor(theme.brightness);
     return SizedBox(
-      width: 92,
+      width: usesMobileUi(context) ? double.infinity : 92,
       child: AppSurface(
         onPressed: onPressed,
         selected: selected,

@@ -32,7 +32,7 @@ class SitePlugin:
     book_kinds: tuple[str, ...]
     tags: tuple[str, ...]
     preview_handler: str
-    chapter_handler: str
+    chapter_handler: str | None
     search_handler: str | None = None
     supports_on_demand: bool = False
     supports_account_login: bool = False
@@ -44,7 +44,9 @@ class SitePlugin:
 
     @property
     def capabilities(self) -> tuple[str, ...]:
-        values = ["preview", "chapter"]
+        values = ["preview"]
+        if self.chapter_handler:
+            values.append("chapter")
         if self.search_handler:
             values.append("search")
         if self.supports_on_demand:

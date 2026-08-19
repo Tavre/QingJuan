@@ -27,6 +27,19 @@ class ReaderPalette {
   final Color accent;
   final bool isDark;
 
+  ReaderPalette withAccent(Color value) => ReaderPalette(
+        mode: mode,
+        name: name,
+        background: background,
+        surface: surface,
+        text: text,
+        secondaryText: secondaryText,
+        divider: divider,
+        controlFill: controlFill,
+        accent: value,
+        isDark: isDark,
+      );
+
   Color get overlay =>
       isDark ? const Color(0xA6000000) : const Color(0x520F0D09);
 

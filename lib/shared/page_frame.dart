@@ -27,7 +27,7 @@ class PageFrame extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final compact = usesMobileUi(context);
-    final horizontalPadding = compact ? 16.0 : desktopHorizontalPadding ?? 32.0;
+    final horizontalPadding = compact ? 18.0 : desktopHorizontalPadding ?? 32.0;
     final body = Align(
       alignment: Alignment.topCenter,
       child: ConstrainedBox(
@@ -37,9 +37,9 @@ class PageFrame extends StatelessWidget {
         child: Padding(
           padding: EdgeInsets.fromLTRB(
             horizontalPadding,
-            compact ? 18 : 28,
+            compact ? 12 : 28,
             horizontalPadding,
-            compact ? 30 : 32,
+            compact ? 24 : 32,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -57,7 +57,7 @@ class PageFrame extends StatelessWidget {
                   subtitle: subtitle,
                   command: command,
                 ),
-              SizedBox(height: compact ? 20 : 24),
+              SizedBox(height: compact ? 18 : 24),
               child,
             ],
           ),
@@ -146,10 +146,10 @@ class _MobilePageHeader extends StatelessWidget {
           title,
           textScaler: textScaler,
           style: theme.typography.title?.copyWith(
-            fontSize: 27,
+            fontSize: 28,
             height: 1.16,
-            fontWeight: FontWeight.w800,
-            letterSpacing: -0.25,
+            fontWeight: FontWeight.w700,
+            letterSpacing: -0.2,
           ),
         ),
         const SizedBox(height: 7),
@@ -206,10 +206,10 @@ class ReadingPageHeader extends StatelessWidget {
                 title,
                 textScaler: textScaler,
                 style: theme.typography.title?.copyWith(
-                  fontSize: 27,
+                  fontSize: 28,
                   height: 1.16,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: -0.25,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.2,
                 ),
               ),
               const SizedBox(height: 6),
@@ -255,8 +255,8 @@ class SectionTitle extends StatelessWidget {
             child: Text(
               title,
               style: FluentTheme.of(context).typography.subtitle?.copyWith(
-                    fontSize: compact ? 18 : null,
-                    fontWeight: compact ? FontWeight.w800 : null,
+                    fontSize: compact ? 17 : null,
+                    fontWeight: compact ? FontWeight.w700 : null,
                   ),
             ),
           ),

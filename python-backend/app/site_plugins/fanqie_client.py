@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import base64
 import re
+from collections.abc import Mapping
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import requests
+
+from ..fanqie_crypto import sign_app_request
 
 WEB_ORIGIN = "https://fanqienovel.com"
 PASSPORT_ORIGIN = "https://passport.fanqienovel.com"
@@ -22,7 +25,26 @@ USER_INFO_ENDPOINTS = (
     f"{WEB_ORIGIN}/api/user/info",
 )
 BOOKSHELF_ENDPOINT = f"{WEB_ORIGIN}/reading/bookapi/bookshelf/info/v:version/"
-SEARCH_ENDPOINT = f"{WEB_ORIGIN}/api/author/search/search_book/v1"
+SEARCH_ENDPOINT = f"{WEB_ORIGIN}/reading/bookapi/search/tab/v"
+SEARCH_TAB_TYPE = 1
+SEARCH_RESULT_SHOW_TYPE = 110
+SEARCH_DEVICE_PARAMS = {
+    "aid": "1967",
+    "app_name": "novelapp",
+    "iid": "2187355326270644",
+    "device_id": "2187355326004404",
+    "ac": "wifi",
+    "channel": "43536163a",
+    "device_platform": "android",
+    "os": "android",
+    "device_type": "P30",
+    "version_code": "70132",
+    "version_name": "7.0.1.32",
+    "os_version": "10",
+    "ssmix": "a",
+    "manifest_version_code": "70132",
+    "update_version_code": "70132",
+}
 
 DESKTOP_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -54,9 +76,15 @@ def _request_get(
     *,
     stage: str,
     params: dict[str, Any] | None = None,
+    headers: Mapping[str, str] | None = None,
 ) -> requests.Response:
     try:
-        response = session.get(url, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
+        response = session.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
     except requests.RequestException as exc:
         raise FanqieApiError(f"番茄{stage}请求失败") from exc
     if response.status_code < 200 or response.status_code >= 300:
@@ -95,9 +123,7 @@ def _qr_image_base64(session: requests.Session, value: str) -> str:
 
     parsed = urlparse(image)
     host = (parsed.hostname or "").lower().rstrip(".")
-    if parsed.scheme != "https" or not (
-        host == "fanqienovel.com" or host.endswith(".fanqienovel.com")
-    ):
+    if parsed.scheme != "https" or not (host == "fanqienovel.com" or host.endswith(".fanqienovel.com")):
         raise FanqieApiError("番茄登录二维码地址不受信任")
     response = _request_get(session, image, stage="登录二维码图片")
     if len(response.content) > MAX_QR_IMAGE_BYTES:
@@ -253,29 +279,131 @@ def get_bookshelf(cookies: dict[str, str]) -> dict[str, Any]:
                     "groupName": str(item.get("group_name") or item.get("groupName") or ""),
                 },
             )
-    groups = [dict(item) for item in raw_groups if isinstance(item, dict)] if isinstance(raw_groups, list) else []
+    groups = (
+        [dict(item) for item in raw_groups if isinstance(item, dict)] if isinstance(raw_groups, list) else []
+    )
     return {"books": list(books_by_id.values()), "groups": groups}
 
 
-def search_books(query: str, limit: int = 20, *, cookies: dict[str, str] | None = None) -> list[dict[str, Any]]:
+def _search_integer(value: Any) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _search_boolean(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false"}
+    return bool(value)
+
+
+def _sanitize_search_highlight(value: Any) -> str:
+    if not value:
+        return ""
+    return re.sub(r"<(?!\/?em\s*\/?>)[^>]*>", "", str(value))
+
+
+def _normalize_search_book(raw: dict[str, Any], cell: dict[str, Any]) -> dict[str, Any] | None:
+    book_id = str(raw.get("book_id") or "").strip()
+    if not book_id.isdigit() or book_id == "0":
+        return None
+    highlight = cell.get("search_high_light")
+    highlight = highlight if isinstance(highlight, dict) else {}
+    title_highlight = highlight.get("title")
+    summary_highlight = highlight.get("abstract")
+    title_highlight = title_highlight if isinstance(title_highlight, dict) else {}
+    summary_highlight = summary_highlight if isinstance(summary_highlight, dict) else {}
+    return {
+        "book_id": book_id,
+        "title": str(raw.get("book_name") or raw.get("original_book_name") or "").strip(),
+        "author": str(raw.get("author") or "").strip(),
+        "cover_url": str(raw.get("thumb_url") or raw.get("audio_thumb_url_hd") or "").strip(),
+        "summary": str(raw.get("abstract") or "").strip(),
+        "status": str(raw.get("creation_status") or ""),
+        "word_count": _search_integer(raw.get("word_number")),
+        "sub_info": str(raw.get("sub_info") or f"{_search_integer(raw.get('serial_count'))}章"),
+        "read_count": _search_integer(raw.get("read_count")),
+        "score": str(raw.get("score") or "") if _search_integer(raw.get("score")) > 0 else "",
+        "category": str(raw.get("category") or ""),
+        "chapter_count": _search_integer(raw.get("serial_count")),
+        "last_chapter_title": str(raw.get("last_chapter_title") or ""),
+        "in_bookshelf": _search_boolean(raw.get("in_bookshelf")),
+        "highlight_title": _sanitize_search_highlight(title_highlight.get("rich_text")),
+        "highlight_summary": _sanitize_search_highlight(summary_highlight.get("rich_text")),
+    }
+
+
+def _collect_search_books(tab: dict[str, Any]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    values = tab.get("data")
+    if not isinstance(values, list):
+        return results
+    for cell in values:
+        if not isinstance(cell, dict) or _search_integer(cell.get("show_type")) != SEARCH_RESULT_SHOW_TYPE:
+            continue
+        raw_books = cell.get("book_data")
+        if not isinstance(raw_books, list):
+            continue
+        for raw in raw_books:
+            if not isinstance(raw, dict):
+                continue
+            book = _normalize_search_book(raw, cell)
+            if book is None or book["book_id"] in seen:
+                continue
+            seen.add(book["book_id"])
+            results.append(book)
+    return results
+
+
+def search_books(
+    query: str,
+    limit: int = 20,
+    *,
+    cookies: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     keyword = query.strip()
     if not keyword:
         return []
+    resolved_limit = max(1, min(limit, 60))
+    params = {
+        **SEARCH_DEVICE_PARAMS,
+        "query": keyword,
+        "passback": "0",
+        "selected_items": "",
+        "tab_type": str(SEARCH_TAB_TYPE),
+    }
+    encoded_query = urlencode(params)
+    request_url = f"{SEARCH_ENDPOINT}?{encoded_query}"
+    headers = {
+        "Referer": f"{WEB_ORIGIN}/search/{quote(keyword, safe='')}",
+        **sign_app_request(encoded_query),
+    }
     session = session_from_cookies(cookies or {})
     try:
         response = _request_get(
             session,
-            SEARCH_ENDPOINT,
+            request_url,
             stage="作品搜索",
-            params={"query_word": keyword, "limit": max(1, min(limit, 60))},
+            headers=headers,
         )
         payload = _json_payload(response, "作品搜索")
     finally:
         session.close()
     if payload.get("code") != 0:
+        raise FanqieApiError("番茄作品搜索失败")
+    tabs = payload.get("search_tabs")
+    if not isinstance(tabs, list):
         return []
-    data = payload.get("data")
-    if not isinstance(data, dict):
-        return []
-    values = data.get("search_book_data_list") or []
-    return [dict(item) for item in values if isinstance(item, dict)] if isinstance(values, list) else []
+    current = next(
+        (
+            tab
+            for tab in tabs
+            if isinstance(tab, dict) and _search_integer(tab.get("tab_type")) == SEARCH_TAB_TYPE
+        ),
+        None,
+    )
+    if current is None:
+        current = next((tab for tab in tabs if isinstance(tab, dict)), {})
+    return _collect_search_books(current)[:resolved_limit]

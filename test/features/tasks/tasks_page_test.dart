@@ -62,7 +62,7 @@ void main() {
     await tester.pumpWidget(harness.widget);
     await tester.pumpAndSettle();
 
-    expect(find.text('任务中心'), findsOneWidget);
+    expect(find.text('任务'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 

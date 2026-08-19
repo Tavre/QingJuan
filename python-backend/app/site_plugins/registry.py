@@ -4,6 +4,7 @@ from .alphapolis import PLUGIN as ALPHAPOLIS_PLUGIN
 from .base import SitePlugin
 from .bika import PLUGIN as BIKA_PLUGIN
 from .comic18 import PLUGIN as COMIC18_PLUGIN
+from .comicores import PLUGIN as COMICORES_PLUGIN
 from .copymanga import PLUGIN as COPYMANGA_PLUGIN
 from .dmzj import PLUGIN as DMZJ_PLUGIN
 from .fanqie import PLUGIN as FANQIE_PLUGIN
@@ -18,6 +19,7 @@ from .novelup import PLUGIN as NOVELUP_PLUGIN
 from .pixiv import PLUGIN as PIXIV_PLUGIN
 from .pixiv_comic import PLUGIN as PIXIV_COMIC_PLUGIN
 from .qidian import PLUGIN as QIDIAN_PLUGIN
+from .quark import PLUGIN as QUARK_PLUGIN
 from .syosetu import PLUGIN as SYOSETU_PLUGIN
 from .webtoons import PLUGIN as WEBTOONS_PLUGIN
 from .yanmaga import PLUGIN as YANMAGA_PLUGIN
@@ -26,6 +28,7 @@ from .yanmaga import PLUGIN as YANMAGA_PLUGIN
 SITE_PLUGINS: tuple[SitePlugin, ...] = (
     FANQIE_PLUGIN,
     QIDIAN_PLUGIN,
+    QUARK_PLUGIN,
     COMIC18_PLUGIN,
     BIKA_PLUGIN,
     PIXIV_COMIC_PLUGIN,
@@ -42,6 +45,7 @@ SITE_PLUGINS: tuple[SitePlugin, ...] = (
     MANGABZ_PLUGIN,
     MANHUAGUI_PLUGIN,
     COPYMANGA_PLUGIN,
+    COMICORES_PLUGIN,
     DMZJ_PLUGIN,
     GENERIC_WEB_PLUGIN,
 )

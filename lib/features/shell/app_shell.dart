@@ -89,6 +89,16 @@ class AppShell extends StatelessWidget {
         AppSection.about => '关于',
       };
 
+  String _mobileLabel(AppSection section) => switch (section) {
+        AppSection.library => '书架',
+        AppSection.search => '搜索',
+        AppSection.sources => '书源',
+        AppSection.plugins => '插件',
+        AppSection.tasks => '任务',
+        AppSection.settings => '我的',
+        AppSection.about => '关于',
+      };
+
   IconData _icon(AppSection section) => switch (section) {
         AppSection.library => FluentIcons.library,
         AppSection.search => FluentIcons.search,
@@ -97,6 +107,11 @@ class AppShell extends StatelessWidget {
         AppSection.tasks => FluentIcons.history,
         AppSection.settings => FluentIcons.settings,
         AppSection.about => FluentIcons.info,
+      };
+
+  IconData _mobileIcon(AppSection section) => switch (section) {
+        AppSection.settings => FluentIcons.contact,
+        _ => _icon(section),
       };
 
   void _selectSection(AppState app, AppSection section) {
@@ -121,8 +136,8 @@ class AppShell extends StatelessWidget {
                 section: app.section,
                 page: _page(app, app.section),
                 primarySections: _mobileSections,
-                labelFor: _label,
-                iconFor: _icon,
+                labelFor: _mobileLabel,
+                iconFor: _mobileIcon,
                 onSelected: (section) => _selectSection(app, section),
               )
             : _DesktopShell(
@@ -173,9 +188,17 @@ class _BackendRequiredPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final visibleLabel = usesMobileUi(context)
+        ? switch (section) {
+            AppSection.sources => '书源',
+            AppSection.plugins => '站点插件',
+            AppSection.settings => '我的',
+            _ => label,
+          }
+        : label;
     return PageFrame(
       key: ValueKey<String>('backend-required-${section.name}'),
-      title: label,
+      title: visibleLabel,
       subtitle: '此区域的数据由 Linux 后端提供。',
       child: EmptyView(
         icon: icon,
@@ -262,111 +285,106 @@ class _MobileNavigationBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
     final dark = theme.brightness == Brightness.dark;
-    return SizedBox(
+    final textScaler = TextScaler.linear(
+      MediaQuery.textScalerOf(context).scale(1).clamp(1.0, 1.2),
+    );
+    return Container(
       key: const ValueKey('mobile-bottom-navigation'),
-      height: 78,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 5, 10, 9),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: dark ? const Color(0xE821201D) : const Color(0xEFFFFBF4),
-            borderRadius: BorderRadius.circular(21),
-            border: Border.all(
-              color: dark ? const Color(0x2AFFFFFF) : const Color(0xB3FFFFFF),
-            ),
-            boxShadow: <BoxShadow>[
-              BoxShadow(
-                color: const Color(0xFF4B3529).withAlpha(dark ? 42 : 18),
-                blurRadius: 22,
-                offset: const Offset(0, 7),
-              ),
-            ],
+      height: 68,
+      decoration: BoxDecoration(
+        color: theme.cardColor,
+        border: Border(
+          top: BorderSide(
+            color: dark ? const Color(0xFF2B3038) : const Color(0xFFE8ECF2),
           ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6),
-            child: Row(
-              children: <Widget>[
-                for (final item in sections)
-                  Expanded(
-                    child: Semantics(
-                      selected: item == section,
-                      button: true,
-                      label: labelFor(item),
-                      child: Button(
-                        key: ValueKey<String>(
-                          'mobile-navigation-${item.name}',
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 3, 8, 5),
+        child: MediaQuery(
+          data: MediaQuery.of(context).copyWith(textScaler: textScaler),
+          child: Row(
+            children: <Widget>[
+              for (final item in sections)
+                Expanded(
+                  child: Semantics(
+                    selected: item == section,
+                    button: true,
+                    label: labelFor(item),
+                    child: Button(
+                      key: ValueKey<String>(
+                        'mobile-navigation-${item.name}',
+                      ),
+                      style: ButtonStyle(
+                        padding: const WidgetStatePropertyAll(
+                          EdgeInsets.zero,
                         ),
-                        style: ButtonStyle(
-                          padding: const WidgetStatePropertyAll(
-                            EdgeInsets.zero,
+                        shape: WidgetStatePropertyAll(
+                          RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
                           ),
-                          shape: WidgetStatePropertyAll(
-                            RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(16),
+                        ),
+                        backgroundColor: const WidgetStatePropertyAll(
+                          Color(0x00000000),
+                        ),
+                      ),
+                      onPressed: () => onSelected(item),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: <Widget>[
+                          AnimatedScale(
+                            duration: QjMotion.duration(
+                              context,
+                              QjMotionSpeed.fast,
                             ),
-                          ),
-                          backgroundColor: const WidgetStatePropertyAll(
-                            Color(0x00000000),
-                          ),
-                        ),
-                        onPressed: () => onSelected(item),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: <Widget>[
-                            AnimatedScale(
+                            curve: QjMotion.enterCurve,
+                            scale: item == section ? 1.06 : 1,
+                            child: AnimatedContainer(
                               duration: QjMotion.duration(
                                 context,
                                 QjMotionSpeed.fast,
                               ),
                               curve: QjMotion.enterCurve,
-                              scale: item == section ? 1.06 : 1,
-                              child: AnimatedContainer(
-                                duration: QjMotion.duration(
-                                  context,
-                                  QjMotionSpeed.fast,
-                                ),
-                                curve: QjMotion.enterCurve,
-                                width: 42,
-                                height: 27,
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(
-                                  color: item == section
-                                      ? theme.accentColor.withAlpha(
-                                          dark ? 52 : 26,
-                                        )
-                                      : const Color(0x00000000),
-                                  borderRadius: BorderRadius.circular(99),
-                                ),
-                                child: Icon(
-                                  iconFor(item),
-                                  size: 20,
-                                  color: item == section
-                                      ? theme.accentColor
-                                      : theme.resources.textFillColorSecondary,
-                                ),
+                              width: 40,
+                              height: 25,
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: item == section
+                                    ? theme.accentColor.withAlpha(
+                                        dark ? 56 : 24,
+                                      )
+                                    : const Color(0x00000000),
+                                borderRadius: BorderRadius.circular(10),
                               ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              labelFor(item),
-                              maxLines: 1,
-                              style: theme.typography.caption?.copyWith(
-                                fontSize: 11,
-                                fontWeight: item == section
-                                    ? FontWeight.w700
-                                    : FontWeight.w400,
+                              child: Icon(
+                                iconFor(item),
+                                size: 19,
                                 color: item == section
                                     ? theme.accentColor
                                     : theme.resources.textFillColorSecondary,
                               ),
                             ),
-                          ],
-                        ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            labelFor(item),
+                            maxLines: 1,
+                            style: theme.typography.caption?.copyWith(
+                              fontSize: 10.5,
+                              fontWeight: item == section
+                                  ? FontWeight.w700
+                                  : FontWeight.w400,
+                              color: item == section
+                                  ? theme.accentColor
+                                  : theme.resources.textFillColorSecondary,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
-              ],
-            ),
+                ),
+            ],
           ),
         ),
       ),

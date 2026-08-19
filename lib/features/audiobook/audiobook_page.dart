@@ -64,19 +64,9 @@ class _AudiobookPageState extends State<AudiobookPage> {
       builder: (context, _) {
         final theme = FluentTheme.of(context);
         if (!usesMobileUi(context)) return _buildDesktopPage(context, theme);
-        final dark = theme.brightness == Brightness.dark;
         return NavigationView(
-          content: DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: dark
-                    ? const <Color>[Color(0xFF18352F), Color(0xFF111715)]
-                    : const <Color>[Color(0xFFE0F1EA), Color(0xFFF7F7F4)],
-                stops: const <double>[0, .58],
-              ),
-            ),
+          content: ColoredBox(
+            color: theme.scaffoldBackgroundColor,
             child: SafeArea(
               child: Center(
                 child: ConstrainedBox(
@@ -151,7 +141,7 @@ class _AudiobookPageState extends State<AudiobookPage> {
                         const SizedBox(height: 22),
                         AppSurface(
                           tone: AppSurfaceTone.elevated,
-                          borderRadius: 24,
+                          borderRadius: 18,
                           padding: const EdgeInsets.all(18),
                           child: _SpeechSettings(
                             controller: _controller,
@@ -164,7 +154,7 @@ class _AudiobookPageState extends State<AudiobookPage> {
                         const SizedBox(height: 16),
                         AppSurface(
                           tone: AppSurfaceTone.muted,
-                          borderRadius: 22,
+                          borderRadius: 18,
                           padding: const EdgeInsets.all(18),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -324,19 +314,13 @@ class _AudiobookArtwork extends StatelessWidget {
       height: 184,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: dark
-              ? const <Color>[Color(0xFF236D63), Color(0xFF18251F)]
-              : const <Color>[Color(0xFF4BAA9E), Color(0xFFB9D9C9)],
-        ),
-        borderRadius: BorderRadius.circular(22),
+        color: dark ? const Color(0xFF2457B7) : const Color(0xFF3377F6),
+        borderRadius: BorderRadius.circular(18),
         boxShadow: <BoxShadow>[
           BoxShadow(
-            color: const Color(0xFF102A26).withAlpha(dark ? 76 : 42),
-            blurRadius: 24,
-            offset: const Offset(0, 12),
+            color: const Color(0xFF101828).withAlpha(dark ? 58 : 28),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
           ),
         ],
       ),

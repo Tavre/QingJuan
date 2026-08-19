@@ -4,6 +4,7 @@ import '../../app/app_scope.dart';
 import '../../app/app_theme.dart';
 import '../../core/models/book.dart';
 import '../../core/state/load_state.dart';
+import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/motion.dart';
 import '../../shared/page_frame.dart';
@@ -25,11 +26,11 @@ class LibraryPage extends StatelessWidget {
         final compact = usesMobileUi(context);
         if (!compact) return _buildDesktopPage(context, controller);
         return PageFrame(
-          title: '我的书架',
-          subtitle: '继续上次的故事，或从书架挑选一本。',
+          title: '书架',
+          subtitle: '继续阅读或管理已添加的作品。',
           scrollable: false,
           compactHeader: ReadingPageHeader(
-            title: '我的书架',
+            title: '书架',
             subtitle: _librarySubtitle(controller.books.length),
             actions: <Widget>[
               Tooltip(
@@ -372,7 +373,6 @@ class _ContinueReadingCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
-    final dark = theme.brightness == Brightness.dark;
     final progress = book.chapterCount <= 0
         ? 0.0
         : (book.lastReadChapterIndex / book.chapterCount * 100)
@@ -381,81 +381,74 @@ class _ContinueReadingCard extends StatelessWidget {
     final textScaler = TextScaler.linear(
       MediaQuery.textScalerOf(context).scale(1).clamp(1.0, 1.3),
     );
-    return Container(
+    return SizedBox(
       key: const ValueKey('continue-reading-card'),
       height: 154,
-      padding: const EdgeInsets.all(16),
-      clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: dark
-              ? const <Color>[Color(0xFF153C37), Color(0xFF1F2C28)]
-              : const <Color>[Color(0xFFDDF3ED), Color(0xFFF2F5E9)],
-        ),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: MediaQuery(
-        data: MediaQuery.of(context).copyWith(textScaler: textScaler),
-        child: Row(
-          children: <Widget>[
-            SizedBox(
-              width: 78,
-              height: 116,
-              child: BookCover(
-                book: book,
-                borderRadius: 10,
-                showShadow: true,
+      child: AppSurface(
+        tone: AppSurfaceTone.accent,
+        borderRadius: 18,
+        padding: const EdgeInsets.all(14),
+        child: MediaQuery(
+          data: MediaQuery.of(context).copyWith(textScaler: textScaler),
+          child: Row(
+            children: <Widget>[
+              SizedBox(
+                width: 76,
+                height: 112,
+                child: BookCover(
+                  book: book,
+                  borderRadius: 10,
+                  showShadow: true,
+                ),
               ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(
-                    '继续阅读',
-                    style: theme.typography.caption?.copyWith(
-                      color: theme.accentColor,
-                      fontWeight: FontWeight.w700,
+              const SizedBox(width: 15),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      '继续阅读',
+                      style: theme.typography.caption?.copyWith(
+                        color: theme.accentColor,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
-                    book.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.typography.bodyLarge?.copyWith(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
+                    const SizedBox(height: 4),
+                    Text(
+                      book.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.typography.bodyLarge?.copyWith(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
-                    '上次读到第 ${book.lastReadChapterIndex} 章',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.typography.caption,
-                  ),
-                  const Spacer(),
-                  ProgressBar(
-                    value: progress,
-                    strokeWidth: 4,
-                    activeColor: qingJuanCoral,
-                  ),
-                  const SizedBox(height: 10),
-                  Align(
-                    alignment: AlignmentDirectional.centerEnd,
-                    child: FilledButton(
-                      onPressed: onPressed,
-                      child: const Text('继续阅读'),
+                    const SizedBox(height: 4),
+                    Text(
+                      '读到第 ${book.lastReadChapterIndex} 章',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.typography.caption,
                     ),
-                  ),
-                ],
+                    const Spacer(),
+                    ProgressBar(
+                      value: progress,
+                      strokeWidth: 4,
+                      activeColor: qingJuanMobileBlue,
+                    ),
+                    const SizedBox(height: 9),
+                    Align(
+                      alignment: AlignmentDirectional.centerEnd,
+                      child: FilledButton(
+                        onPressed: onPressed,
+                        child: const Text('继续'),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

@@ -19,6 +19,50 @@ class SearchPage extends StatefulWidget {
 
 class _SearchPageState extends State<SearchPage> {
   final _controller = TextEditingController();
+  BookSearchEngine _engine = BookSearchEngine.bookSources;
+
+  String get _engineName => switch (_engine) {
+        BookSearchEngine.bookSources => '书源',
+        BookSearchEngine.quark => '夸克',
+        BookSearchEngine.fanqie => '番茄',
+        BookSearchEngine.qidian => '起点',
+      };
+
+  String get _loadingLabel => switch (_engine) {
+        BookSearchEngine.bookSources => '正在查询书源',
+        BookSearchEngine.quark => '正在查询夸克小说',
+        BookSearchEngine.fanqie => '正在查询番茄小说',
+        BookSearchEngine.qidian => '正在查询起点中文网',
+      };
+
+  String get _emptyMessage => switch (_engine) {
+        BookSearchEngine.bookSources => '搜索结果会按书源返回，可在导入前核对作者和简介。',
+        BookSearchEngine.quark => '夸克结果来自书旗网页内核，可在加入书架前核对作者和简介。',
+        BookSearchEngine.fanqie => '番茄结果来自匿名公开搜索，可在加入书架前核对作者和简介。',
+        BookSearchEngine.qidian => '起点结果来自移动站公开搜索，可在加入书架前核对作者和简介。',
+      };
+
+  String get _heroMessage => switch (_engine) {
+        BookSearchEngine.bookSources => '输入书名或作者，同时查询已启用且兼容搜索的书源。',
+        BookSearchEngine.quark => '输入书名或作者，通过夸克小说的书旗网页内核查找作品。',
+        BookSearchEngine.fanqie => '输入书名或作者，通过番茄小说的匿名公开搜索查找作品。',
+        BookSearchEngine.qidian => '输入书名或作者，通过起点中文网移动站的公开搜索查找作品。',
+      };
+
+  String _availabilityLabel(SourcesController sources) => switch (_engine) {
+        BookSearchEngine.bookSources =>
+          '${sources.sources.where((source) => source.enabled).length} 个书源可用',
+        BookSearchEngine.quark => '夸克小说',
+        BookSearchEngine.fanqie => '番茄小说',
+        BookSearchEngine.qidian => '起点中文网',
+      };
+
+  String get _resultOriginLabel => switch (_engine) {
+        BookSearchEngine.bookSources => '结果来自已启用书源',
+        BookSearchEngine.quark => '结果来自书旗网页内核',
+        BookSearchEngine.fanqie => '结果来自番茄公开搜索',
+        BookSearchEngine.qidian => '结果来自起点移动站',
+      };
 
   @override
   void dispose() {
@@ -52,6 +96,74 @@ class _SearchPageState extends State<SearchPage> {
     }
   }
 
+  Future<void> _search(SourcesController sources) =>
+      sources.search(_controller.text, engine: _engine);
+
+  void _setEngine(
+    SourcesController sources,
+    BookSearchEngine engine,
+  ) {
+    if (_engine == engine) return;
+    setState(() => _engine = engine);
+    sources.clearSearchResults();
+  }
+
+  Widget _engineSelector(SourcesController sources) {
+    return ComboBox<BookSearchEngine>(
+      key: const ValueKey('search-engine-selector'),
+      value: _engine,
+      isExpanded: true,
+      items: const <ComboBoxItem<BookSearchEngine>>[
+        ComboBoxItem<BookSearchEngine>(
+          value: BookSearchEngine.bookSources,
+          child: Text('书源'),
+        ),
+        ComboBoxItem<BookSearchEngine>(
+          value: BookSearchEngine.quark,
+          child: Text('夸克'),
+        ),
+        ComboBoxItem<BookSearchEngine>(
+          value: BookSearchEngine.fanqie,
+          child: Text('番茄'),
+        ),
+        ComboBoxItem<BookSearchEngine>(
+          value: BookSearchEngine.qidian,
+          child: Text('起点'),
+        ),
+      ],
+      onChanged: sources.searching
+          ? null
+          : (value) {
+              if (value != null) _setEngine(sources, value);
+            },
+    );
+  }
+
+  Widget _searchInput(SourcesController sources) {
+    return Row(
+      children: <Widget>[
+        Expanded(
+          child: TextBox(
+            key: const ValueKey('search-query-input'),
+            controller: _controller,
+            placeholder: '输入书名或作者',
+            onSubmitted: (_) => _search(sources),
+            prefix: const Padding(
+              padding: EdgeInsets.only(left: 10),
+              child: Icon(FluentIcons.search, size: 18),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        FilledButton(
+          key: const ValueKey('search-submit-button'),
+          onPressed: sources.searching ? null : () => _search(sources),
+          child: const Text('搜索'),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final sources = AppScope.of(context).sources;
@@ -61,11 +173,10 @@ class _SearchPageState extends State<SearchPage> {
         if (!usesMobileUi(context)) return _buildDesktopPage(sources);
         return PageFrame(
           title: '搜索',
-          subtitle: '从已启用书源发现作品，找到后直接加入书架。',
+          subtitle: '选择夸克、番茄、起点或已启用书源发现作品，找到后直接加入书架。',
           compactHeader: ReadingPageHeader(
             title: '搜索',
-            subtitle:
-                '${sources.sources.where((source) => source.enabled).length} 个书源已启用',
+            subtitle: '当前使用$_engineName搜索',
             actions: const <Widget>[],
           ),
           child: Column(
@@ -73,47 +184,28 @@ class _SearchPageState extends State<SearchPage> {
             children: <Widget>[
               FeatureHero(
                 icon: FluentIcons.search,
-                title: '发现下一本想读的书',
-                message: '输入书名或作者，青卷会同时查询所有已启用且兼容搜索的书源。',
+                title: '搜索书籍',
+                message: _heroMessage,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    Row(
-                      children: <Widget>[
-                        Expanded(
-                          child: TextBox(
-                            controller: _controller,
-                            placeholder: '输入书名或作者',
-                            onSubmitted: sources.search,
-                            prefix: const Padding(
-                              padding: EdgeInsets.only(left: 10),
-                              child: Icon(FluentIcons.search, size: 18),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        FilledButton(
-                          onPressed: sources.searching
-                              ? null
-                              : () => sources.search(_controller.text),
-                          child: const Text('搜索'),
-                        ),
-                      ],
+                    InfoLabel(
+                      label: '搜索引擎',
+                      child: _engineSelector(sources),
                     ),
+                    const SizedBox(height: 10),
+                    _searchInput(sources),
                     const SizedBox(height: 12),
                     Wrap(
                       spacing: 8,
                       runSpacing: 8,
                       children: <Widget>[
                         StatusPill(
-                          '${sources.sources.where((source) => source.enabled).length} 个书源可用',
+                          _availabilityLabel(sources),
                           accented: true,
                           icon: FluentIcons.database,
                         ),
-                        const StatusPill(
-                          '小说 · 漫画 · 本地书',
-                          icon: FluentIcons.book_answers,
-                        ),
+                        StatusPill(_resultOriginLabel),
                       ],
                     ),
                   ],
@@ -121,11 +213,11 @@ class _SearchPageState extends State<SearchPage> {
               ),
               const SizedBox(height: 24),
               if (sources.searching)
-                const LoadingView(label: '正在查询书源')
+                LoadingView(label: _loadingLabel)
               else if (sources.error != null)
                 ErrorView(
                   message: sources.error!,
-                  onRetry: () => sources.search(_controller.text),
+                  onRetry: () => _search(sources),
                 )
               else if (sources.results.isEmpty)
                 const AppSurface(
@@ -180,45 +272,57 @@ class _SearchPageState extends State<SearchPage> {
     return PageFrame(
       key: const ValueKey('desktop-search-page'),
       title: '全网搜索',
-      subtitle: '通过已启用书源查找作品，并直接加入书架。',
+      subtitle: '选择夸克、番茄、起点或已启用书源查找作品，并直接加入书架。',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: <Widget>[
+              SizedBox(
+                width: 148,
+                child: InfoLabel(
+                  label: '搜索引擎',
+                  child: _engineSelector(sources),
+                ),
+              ),
+              const SizedBox(width: 10),
               Expanded(
-                child: TextBox(
-                  controller: _controller,
-                  placeholder: '输入书名或作者',
-                  onSubmitted: sources.search,
-                  prefix: const Padding(
-                    padding: EdgeInsets.only(left: 10),
-                    child: Icon(FluentIcons.search),
+                child: InfoLabel(
+                  label: '书名或作者',
+                  child: TextBox(
+                    key: const ValueKey('search-query-input'),
+                    controller: _controller,
+                    placeholder: '输入书名或作者',
+                    onSubmitted: (_) => _search(sources),
+                    prefix: const Padding(
+                      padding: EdgeInsets.only(left: 10),
+                      child: Icon(FluentIcons.search),
+                    ),
                   ),
                 ),
               ),
               const SizedBox(width: 10),
               FilledButton(
-                onPressed: sources.searching
-                    ? null
-                    : () => sources.search(_controller.text),
+                key: const ValueKey('search-submit-button'),
+                onPressed: sources.searching ? null : () => _search(sources),
                 child: const Text('搜索'),
               ),
             ],
           ),
           const SizedBox(height: 22),
           if (sources.searching)
-            const LoadingView(label: '正在查询书源')
+            LoadingView(label: _loadingLabel)
           else if (sources.error != null)
             ErrorView(
               message: sources.error!,
-              onRetry: () => sources.search(_controller.text),
+              onRetry: () => _search(sources),
             )
           else if (sources.results.isEmpty)
-            const EmptyView(
+            EmptyView(
               icon: FluentIcons.search_issue,
               title: '输入关键词开始搜索',
-              message: '搜索结果会按书源返回，可在导入前核对作者和简介。',
+              message: _emptyMessage,
             )
           else
             ...sources.results.map(

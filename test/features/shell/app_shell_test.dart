@@ -31,6 +31,13 @@ void main() {
       find.byKey(const ValueKey('mobile-bottom-navigation')),
       findsOneWidget,
     );
+    expect(find.text('我的'), findsOneWidget);
+    final navigation = tester.widget<Container>(
+      find.byKey(const ValueKey('mobile-bottom-navigation')),
+    );
+    final navigationDecoration = navigation.decoration! as BoxDecoration;
+    expect(navigationDecoration.borderRadius, isNull);
+    expect(navigationDecoration.boxShadow, isNull);
     expect(find.byType(NavigationView), findsNothing);
     for (final section in <AppSection>[
       AppSection.library,
@@ -75,7 +82,7 @@ void main() {
       find.byKey(const ValueKey('mobile-navigation-search')),
     );
     await tester.pump(const Duration(milliseconds: 180));
-    expect(find.text('发现下一本想读的书'), findsOneWidget);
+    expect(find.text('搜索书籍'), findsOneWidget);
 
     await tester.tap(
       find.byKey(const ValueKey('mobile-navigation-sources')),
@@ -87,13 +94,13 @@ void main() {
       find.byKey(const ValueKey('mobile-navigation-tasks')),
     );
     await tester.pump(const Duration(milliseconds: 180));
-    expect(find.text('任务队列已就绪'), findsOneWidget);
+    expect(find.text('任务概览'), findsOneWidget);
 
     await tester.tap(
       find.byKey(const ValueKey('mobile-navigation-settings')),
     );
     await tester.pump(const Duration(milliseconds: 180));
-    expect(find.text('让青卷更适合你'), findsOneWidget);
+    expect(find.text('设备与服务'), findsOneWidget);
     expect(find.byKey(const ValueKey('settings-plugins-button')), findsNothing);
     expect(tester.takeException(), isNull);
   });

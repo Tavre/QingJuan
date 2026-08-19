@@ -8,6 +8,7 @@ import '../../core/models/site_plugin.dart';
 import '../../core/state/load_state.dart';
 import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
+import '../../shared/mobile_sheet.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
 import 'sources_controller.dart';
@@ -93,36 +94,52 @@ class _PluginsPageState extends State<PluginsPage> {
     SitePlugin plugin,
   ) async {
     final controller = AppScope.of(context).sources;
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => ContentDialog(
-        title: const Text('插件详情'),
-        content: SizedBox(
-          width: 560,
-          height: 480,
-          child: AnimatedBuilder(
-            animation: controller,
-            builder: (_, __) {
-              final current =
-                  _findPlugin(controller.plugins, plugin.id) ?? plugin;
-              return PluginDetailsPane(
-                plugin: current,
-                saving: controller.isPluginSaving(current.id),
-                dialogMode: true,
-                actions: _pluginActions(context, current, controller),
-                onChanged: (enabled) =>
-                    _setPluginEnabled(context, current, enabled),
-              );
-            },
+    Widget details(BuildContext routeContext) {
+      final content = AnimatedBuilder(
+        animation: controller,
+        builder: (_, __) {
+          final current = _findPlugin(controller.plugins, plugin.id) ?? plugin;
+          return PluginDetailsPane(
+            plugin: current,
+            saving: controller.isPluginSaving(current.id),
+            dialogMode: true,
+            actions: _pluginActions(context, current, controller),
+            onChanged: (enabled) =>
+                _setPluginEnabled(context, current, enabled),
+          );
+        },
+      );
+      if (usesMobileUi(routeContext)) {
+        return MobileSheet(
+          title: '插件详情',
+          subtitle: plugin.name,
+          onClose: () => Navigator.of(routeContext).pop(),
+          child: SizedBox(
+            height: (MediaQuery.sizeOf(routeContext).height * 0.66)
+                .clamp(360.0, 600.0),
+            child: content,
           ),
-        ),
+        );
+      }
+      return ContentDialog(
+        title: const Text('插件详情'),
+        content: SizedBox(width: 560, height: 480, child: content),
         actions: <Widget>[
           Button(
-            onPressed: () => Navigator.of(dialogContext).pop(),
+            onPressed: () => Navigator.of(routeContext).pop(),
             child: const Text('关闭'),
           ),
         ],
-      ),
+      );
+    }
+
+    if (usesMobileUi(context)) {
+      await showMobileSheet<void>(context: context, builder: details);
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: details,
     );
   }
 
@@ -150,27 +167,33 @@ class _PluginsPageState extends State<PluginsPage> {
     BuildContext context,
     SitePlugin plugin,
     SourcesController controller,
-  ) =>
-      showDialog<void>(
-        context: context,
-        builder: (_) => _PluginQrLoginDialog(
+  ) {
+    Widget builder(BuildContext _) => _PluginQrLoginDialog(
           plugin: plugin,
           controller: controller,
-        ),
-      );
+        );
+    if (usesMobileUi(context)) {
+      return showMobileSheet<void>(context: context, builder: builder);
+    }
+    return showDialog<void>(
+      context: context,
+      builder: builder,
+    );
+  }
 
   Future<void> _showPluginCookieLogin(
     BuildContext context,
     SitePlugin plugin,
     SourcesController controller,
   ) async {
-    final loggedIn = await showDialog<bool>(
-      context: context,
-      builder: (_) => _PluginCookieLoginDialog(
-        plugin: plugin,
-        controller: controller,
-      ),
-    );
+    Widget builder(BuildContext _) => _PluginCookieLoginDialog(
+          plugin: plugin,
+          controller: controller,
+        );
+    final Future<bool?> result = usesMobileUi(context)
+        ? showMobileSheet<bool>(context: context, builder: builder)
+        : showDialog<bool>(context: context, builder: builder);
+    final loggedIn = await result;
     if (loggedIn != true || !context.mounted) return;
     displayInfoBar(
       context,
@@ -186,16 +209,25 @@ class _PluginsPageState extends State<PluginsPage> {
     BuildContext context,
     SitePlugin plugin,
     SourcesController controller,
-  ) =>
-      showDialog<void>(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => _PluginBookshelfImportDialog(
+  ) {
+    Widget builder(BuildContext _) => _PluginBookshelfImportDialog(
           plugin: plugin,
           controller: controller,
           onCompleted: () => AppScope.of(context).library.load(silent: true),
-        ),
+        );
+    if (usesMobileUi(context)) {
+      return showMobileSheet<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: builder,
       );
+    }
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: builder,
+    );
+  }
 
   Future<void> _logoutPluginAccount(
     BuildContext context,
@@ -350,8 +382,10 @@ class _PluginsPageState extends State<PluginsPage> {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) => PageFrame(
-        title: '插件配置',
-        subtitle: '启用当前后端需要使用的内置站点解析器。',
+        title: usesMobileUi(context) ? '站点插件' : '插件配置',
+        subtitle: usesMobileUi(context)
+            ? '管理搜索、导入和账号书架所使用的解析器。'
+            : '启用当前后端需要使用的内置站点解析器。',
         scrollable: false,
         maxContentWidth: usesMobileUi(context) ? null : _desktopContentMaxWidth,
         desktopHorizontalPadding: 24,
@@ -376,7 +410,7 @@ class _PluginsPageState extends State<PluginsPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   Text(
-                    '插件配置',
+                    '站点插件',
                     style: FluentTheme.of(context).typography.title?.copyWith(
                           fontSize: 28,
                           fontWeight: FontWeight.w800,
@@ -525,55 +559,65 @@ class _PluginQrLoginDialogState extends State<_PluginQrLoginDialog> {
         _terminalStatus == 'cancelled' ||
         _terminalStatus == 'expired' ||
         _terminalStatus == 'error';
+    final body = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        if (_error == null && !success) _qrImage(),
+        if (success)
+          const Icon(
+            FluentIcons.completed_solid,
+            size: 54,
+            color: Color(0xFF107C10),
+          ),
+        const SizedBox(height: 16),
+        Text(
+          _error ?? _message,
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '登录凭据只保存在当前青卷后端进程内，不会显示或写入客户端设置。',
+          textAlign: TextAlign.center,
+          style: FluentTheme.of(context).typography.caption,
+        ),
+        if (widget.plugin.capabilities.contains('cookie_login')) ...<Widget>[
+          const SizedBox(height: 6),
+          Text(
+            '若当前网络无法获取二维码，请关闭此窗口并选择“Cookie 登录”。',
+            textAlign: TextAlign.center,
+            style: FluentTheme.of(context).typography.caption,
+          ),
+        ],
+      ],
+    );
+    final actions = <Widget>[
+      if (canRetry)
+        Button(
+          key: const ValueKey('plugin-login-retry'),
+          onPressed: _start,
+          child: const Text('重新获取'),
+        ),
+      FilledButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: Text(success ? '完成' : '关闭'),
+      ),
+    ];
+    if (usesMobileUi(context)) {
+      return MobileSheet(
+        title: '${widget.plugin.name}扫码登录',
+        subtitle: '使用官方 App 完成账号授权',
+        onClose: () => Navigator.of(context).pop(),
+        actions: actions,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(18, 18, 18, 20),
+          child: body,
+        ),
+      );
+    }
     return ContentDialog(
       title: Text('${widget.plugin.name}扫码登录'),
-      content: SizedBox(
-        width: 420,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            if (_error == null && !success) _qrImage(),
-            if (success)
-              const Icon(
-                FluentIcons.completed_solid,
-                size: 54,
-                color: Color(0xFF107C10),
-              ),
-            const SizedBox(height: 16),
-            Text(
-              _error ?? _message,
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '登录凭据只保存在当前青卷后端进程内，不会显示或写入客户端设置。',
-              textAlign: TextAlign.center,
-              style: FluentTheme.of(context).typography.caption,
-            ),
-            if (widget.plugin.capabilities
-                .contains('cookie_login')) ...<Widget>[
-              const SizedBox(height: 6),
-              Text(
-                '若当前网络无法获取二维码，请关闭此窗口并选择“Cookie 登录”。',
-                textAlign: TextAlign.center,
-                style: FluentTheme.of(context).typography.caption,
-              ),
-            ],
-          ],
-        ),
-      ),
-      actions: <Widget>[
-        if (canRetry)
-          Button(
-            key: const ValueKey('plugin-login-retry'),
-            onPressed: _start,
-            child: const Text('重新获取'),
-          ),
-        FilledButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: Text(success ? '完成' : '关闭'),
-        ),
-      ],
+      content: SizedBox(width: 420, child: body),
+      actions: actions,
     );
   }
 }
@@ -631,58 +675,70 @@ class _PluginCookieLoginDialogState extends State<_PluginCookieLoginDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => ContentDialog(
-        title: Text('${widget.plugin.name} Cookie 登录'),
-        content: SizedBox(
-          width: 480,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Text(
-                '在浏览器登录${widget.plugin.name}后，从开发者工具的网络请求中复制完整 Cookie 请求头。'
-                '该内容只提交给当前青卷后端并保存在进程内存中。',
-              ),
-              const SizedBox(height: 14),
-              PasswordBox(
-                key: const ValueKey('plugin-cookie-login-input'),
-                controller: _cookieController,
-                enabled: !_submitting,
-                autofocus: true,
-                revealMode: PasswordRevealMode.peekAlways,
-                placeholder: 'Cookie 请求头',
-                onSubmitted: (_) => _submit(),
-              ),
-              if (_error != null) ...<Widget>[
-                const SizedBox(height: 10),
-                InfoBar(
-                  title: const Text('登录失败'),
-                  content: Text(_error!),
-                  severity: InfoBarSeverity.error,
-                ),
-              ],
-            ],
-          ),
+  Widget build(BuildContext context) {
+    final body = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Text(
+          '在浏览器登录${widget.plugin.name}后，从开发者工具的网络请求中复制完整 Cookie 请求头。'
+          '该内容只提交给当前青卷后端并保存在进程内存中。',
         ),
-        actions: <Widget>[
-          Button(
-            onPressed:
-                _submitting ? null : () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            key: const ValueKey('plugin-cookie-login-submit'),
-            onPressed: _submitting ? null : _submit,
-            child: _submitting
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: ProgressRing(strokeWidth: 2.4),
-                  )
-                : const Text('验证并登录'),
+        const SizedBox(height: 14),
+        PasswordBox(
+          key: const ValueKey('plugin-cookie-login-input'),
+          controller: _cookieController,
+          enabled: !_submitting,
+          autofocus: true,
+          revealMode: PasswordRevealMode.peekAlways,
+          placeholder: 'Cookie 请求头',
+          onSubmitted: (_) => _submit(),
+        ),
+        if (_error != null) ...<Widget>[
+          const SizedBox(height: 10),
+          InfoBar(
+            title: const Text('登录失败'),
+            content: Text(_error!),
+            severity: InfoBarSeverity.error,
           ),
         ],
+      ],
+    );
+    final actions = <Widget>[
+      Button(
+        onPressed: _submitting ? null : () => Navigator.of(context).pop(false),
+        child: const Text('取消'),
+      ),
+      FilledButton(
+        key: const ValueKey('plugin-cookie-login-submit'),
+        onPressed: _submitting ? null : _submit,
+        child: _submitting
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: ProgressRing(strokeWidth: 2.4),
+              )
+            : const Text('验证并登录'),
+      ),
+    ];
+    if (usesMobileUi(context)) {
+      return MobileSheet(
+        title: '${widget.plugin.name} Cookie 登录',
+        subtitle: '登录信息只发送至当前后端',
+        onClose: _submitting ? null : () => Navigator.of(context).pop(false),
+        actions: actions,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(18, 18, 18, 20),
+          child: body,
+        ),
       );
+    }
+    return ContentDialog(
+      title: Text('${widget.plugin.name} Cookie 登录'),
+      content: SizedBox(width: 480, child: body),
+      actions: actions,
+    );
+  }
 }
 
 class _PluginBookshelfImportDialog extends StatefulWidget {
@@ -814,58 +870,72 @@ class _PluginBookshelfImportDialogState
   Widget build(BuildContext context) {
     final job = _job;
     final active = _error == null && (job?.isActive ?? true);
+    final body = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        if (_error != null)
+          InfoBar(
+            title: const Text('书架导入失败'),
+            content: Text(_error!),
+            severity: InfoBarSeverity.error,
+          )
+        else if (job == null)
+          const Expanded(
+            child: Center(child: ProgressRing()),
+          )
+        else ...<Widget>[
+          ProgressBar(value: job.progress.clamp(0, 100)),
+          const SizedBox(height: 10),
+          Text(job.message),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: <Widget>[
+              StatusPill('发现 ${job.discoveredCount} 本'),
+              StatusPill('新增 ${job.importedCount} 本'),
+              StatusPill('跳过 ${job.skippedCount} 本'),
+              StatusPill('暂不支持 ${job.unsupportedCount} 本'),
+              StatusPill('失败 ${job.failedCount} 本'),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Expanded(child: _resultList(job)),
+        ],
+      ],
+    );
+    final actions = <Widget>[
+      if (_error != null)
+        Button(
+          key: const ValueKey('plugin-bookshelf-import-retry'),
+          onPressed: _start,
+          child: const Text('重试'),
+        ),
+      FilledButton(
+        onPressed: active ? null : () => Navigator.of(context).pop(),
+        child: const Text('完成'),
+      ),
+    ];
+    if (usesMobileUi(context)) {
+      return MobileSheet(
+        title: '添加${widget.plugin.name}账号书架',
+        subtitle: '逐本去重并显示处理结果',
+        onClose: active ? null : () => Navigator.of(context).pop(),
+        actions: actions,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
+          child: SizedBox(
+            height:
+                (MediaQuery.sizeOf(context).height * 0.52).clamp(330.0, 520.0),
+            child: body,
+          ),
+        ),
+      );
+    }
     return ContentDialog(
       title: Text('添加${widget.plugin.name}账号书架'),
-      content: SizedBox(
-        width: 560,
-        height: 430,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            if (_error != null)
-              InfoBar(
-                title: const Text('书架导入失败'),
-                content: Text(_error!),
-                severity: InfoBarSeverity.error,
-              )
-            else if (job == null)
-              const Expanded(
-                child: Center(child: ProgressRing()),
-              )
-            else ...<Widget>[
-              ProgressBar(value: job.progress.clamp(0, 100)),
-              const SizedBox(height: 10),
-              Text(job.message),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: <Widget>[
-                  StatusPill('发现 ${job.discoveredCount} 本'),
-                  StatusPill('新增 ${job.importedCount} 本'),
-                  StatusPill('跳过 ${job.skippedCount} 本'),
-                  StatusPill('暂不支持 ${job.unsupportedCount} 本'),
-                  StatusPill('失败 ${job.failedCount} 本'),
-                ],
-              ),
-              const SizedBox(height: 14),
-              Expanded(child: _resultList(job)),
-            ],
-          ],
-        ),
-      ),
-      actions: <Widget>[
-        if (_error != null)
-          Button(
-            key: const ValueKey('plugin-bookshelf-import-retry'),
-            onPressed: _start,
-            child: const Text('重试'),
-          ),
-        FilledButton(
-          onPressed: active ? null : () => Navigator.of(context).pop(),
-          child: const Text('完成'),
-        ),
-      ],
+      content: SizedBox(width: 560, height: 430, child: body),
+      actions: actions,
     );
   }
 }

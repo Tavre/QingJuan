@@ -14,6 +14,7 @@ import 'package:qingjuan/features/library/library_page.dart';
 import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/sources/sources_controller.dart';
 import 'package:qingjuan/features/tasks/tasks_controller.dart';
+import 'package:qingjuan/shared/mobile_sheet.dart';
 import 'package:qingjuan/shared/responsive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -47,7 +48,7 @@ void main() {
     await tester.pump();
 
     expect(find.text('番茄正文获取方式'), findsOneWidget);
-    expect(find.text('边看边下（推荐）'), findsOneWidget);
+    expect(find.text('边看边下（默认）'), findsOneWidget);
     expect(find.textContaining('后台预取后续 20 章'), findsOneWidget);
 
     await tester.tap(find.text('导入'));
@@ -141,6 +142,26 @@ void main() {
     harness.dispose();
     await tester.pumpWidget(const SizedBox.shrink());
   });
+
+  testWidgets('Android add-book flow uses the shared bottom sheet',
+      (tester) async {
+    final harness = await _Harness.create(
+      MockClient((_) async => http.Response('{}', 404)),
+      targetPlatform: TargetPlatform.android,
+    );
+
+    await tester.pumpWidget(harness.widget);
+    await tester.tap(find.text('添加书籍'));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byType(MobileSheet), findsOneWidget);
+    expect(find.byType(ContentDialog), findsNothing);
+    expect(find.text('网页地址或本地文件'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    harness.dispose();
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 }
 
 Map<String, dynamic> _jobPayload({
@@ -177,7 +198,10 @@ class _Harness {
     required this.settings,
   });
 
-  static Future<_Harness> create(http.Client client) async {
+  static Future<_Harness> create(
+    http.Client client, {
+    TargetPlatform targetPlatform = TargetPlatform.windows,
+  }) async {
     final appState = AppState(await SharedPreferences.getInstance());
     final api = ApiClient(() => appState.backendUrl, client: client);
     final backend = BackendConnectionManager(api, isConfigured: () => false);
@@ -186,9 +210,12 @@ class _Harness {
     final tasks = TasksController(api);
     final settings = SettingsController(api);
     final widget = FluentApp(
-      theme: buildQingJuanTheme(Brightness.light),
+      theme: buildQingJuanTheme(
+        Brightness.light,
+        platform: targetPlatform,
+      ),
       home: UiPlatformScope(
-        platform: TargetPlatform.windows,
+        platform: targetPlatform,
         child: AppScope(
           appState: appState,
           api: api,

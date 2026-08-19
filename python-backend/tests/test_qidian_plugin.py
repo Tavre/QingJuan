@@ -6,11 +6,11 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main
+from app import main, scraper
 from app.api.routers import plugins_router
 from app.application import create_application
-from app.models import BookRecord, ChapterPreview, PreviewResponse
-from app.site_plugins import qidian_client, qidian_runtime
+from app.models import BookRecord, BookSourceRecord, ChapterPreview, PreviewResponse
+from app.site_plugins import get_site_plugin, qidian_client, qidian_runtime
 from app.site_plugins.qidian_client import QidianApiError
 from app.site_plugins.qidian_runtime import QidianRuntime
 
@@ -51,6 +51,124 @@ def test_qidian_login_redirects_reject_untrusted_hosts() -> None:
         qidian_client._follow_login_redirects(session, "https://www.qidian.com/loginSuccess")
 
     assert session.calls == ["https://www.qidian.com/loginSuccess"]
+
+
+def test_qidian_search_maps_mobile_ssr_results_without_account_state(monkeypatch) -> None:
+    page_context = {
+        "pageContext": {
+            "pageProps": {
+                "pageData": {
+                    "kw": "斗破苍穹",
+                    "bookInfo": {
+                        "total": 1000,
+                        "pageNum": 1,
+                        "pageSize": 20,
+                        "isLast": 0,
+                        "records": [
+                            {
+                                "bid": 1209977,
+                                "bName": "斗破苍穹",
+                                "cid": 1019021,
+                                "bAuth": "天蚕土豆",
+                                "desc": "这里是属于斗气的世界",
+                                "cat": "玄幻",
+                                "subCateName": "异世大陆",
+                                "imgUrl": "//bookcover.yuewen.com/qdbimg/349573/1209977/180",
+                                "cnt": "533.23万字",
+                            },
+                            {"bid": 2, "bName": "超出限制"},
+                        ],
+                    },
+                }
+            }
+        }
+    }
+    captured: dict[str, object] = {}
+
+    def request_get(session, url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return _FakeResponse(
+            text=f'<script id="vite-plugin-ssr_pageContext">{json.dumps(page_context)}</script>'
+        )
+
+    monkeypatch.setattr(qidian_client, "_request_get", request_get)
+
+    result = qidian_client.search_books("斗破 苍穹", page_size=1)
+
+    assert result["data"]["keyword"] == "斗破苍穹"
+    assert result["data"]["books"] == [
+        {
+            "bookId": 1209977,
+            "bookName": "斗破苍穹",
+            "cbid": None,
+            "authorId": 1019021,
+            "authorName": "天蚕土豆",
+            "desc": "这里是属于斗气的世界",
+            "category": "玄幻",
+            "subCategory": "异世大陆",
+            "state": None,
+            "signStatus": None,
+            "coverUrl": "https://bookcover.yuewen.com/qdbimg/349573/1209977/180",
+            "isVip": None,
+            "wordCountText": "533.23万字",
+            "recommendCnt": None,
+            "favoriteCnt": None,
+            "lastChapterName": None,
+            "lastUpdateTime": None,
+            "bookType": None,
+            "isPub": None,
+        }
+    ]
+    assert captured["url"] == ("https://m.qidian.com/so/%E6%96%97%E7%A0%B4%20%E8%8B%8D%E7%A9%B9.html")
+    assert captured["params"] == {"pageNum": 1, "orderBy": 0}
+    assert "cookies" not in captured
+
+
+@pytest.mark.asyncio
+async def test_qidian_builtin_search_maps_to_canonical_book_urls(monkeypatch) -> None:
+    monkeypatch.setattr(
+        scraper,
+        "search_qidian_books",
+        lambda *args, **kwargs: {
+            "data": {
+                "books": [
+                    {
+                        "bookId": 1209977,
+                        "bookName": "斗破苍穹",
+                        "authorName": "天蚕土豆",
+                        "desc": "这里是属于斗气的世界",
+                        "coverUrl": "https://example.test/cover.jpg",
+                    },
+                    {"bookId": 1209977, "bookName": "重复作品"},
+                    {"bookId": "invalid", "bookName": "无效作品"},
+                ]
+            }
+        },
+    )
+    source = BookSourceRecord(
+        id="source-builtin-qidian",
+        name="起点中文网",
+        baseUrl="https://www.qidian.com",
+        bookKind="长小说",
+        language="中文",
+        origin="builtin",
+    )
+
+    results = await scraper._search_qidian_works(source, "斗破苍穹", 8)
+
+    assert len(results) == 1
+    assert results[0].title == "斗破苍穹"
+    assert results[0].author == "天蚕土豆"
+    assert results[0].synopsis == "这里是属于斗气的世界"
+    assert results[0].sourceUrl == "https://www.qidian.com/book/1209977/"
+
+
+def test_qidian_plugin_declares_search_capability() -> None:
+    plugin = get_site_plugin("qidian")
+
+    assert plugin is not None
+    assert plugin.search_handler == "qidian"
+    assert "search" in plugin.capabilities
 
 
 def test_qidian_catalog_maps_volumes_and_access_state(monkeypatch) -> None:

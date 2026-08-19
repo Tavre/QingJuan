@@ -88,6 +88,11 @@ Controller 表达一个功能域的用例和可观察状态：
 - 文件路径和 Android 文档 URI 通过平台适配层处理，不手工拼接斜杠或假设共享文件系统。
 - API 字段变化必须同步更新后端模型、客户端模型和契约测试。
 
+搜索页的“书源 / 夸克 / 番茄 / 起点”引擎选择属于页面临时状态，不写入 `AppState` 或客户端偏好。`SourcesController` 继续统一承载搜索中的
+加载、结果和错误状态：书源引擎调用 `/api/v1/sources/search`，夸克、番茄与起点引擎分别通过稳定内置源 ID 调用
+`/api/v1/builtin-sites/search`，再补齐来源名称、语言与导入所需字段并映射为同一个 `SourceSearchResult`。切换引擎必须清空旧结果，
+避免界面标签与实际结果来源不一致；加入书架仍复用现有 URL 导入链路。
+
 ## 5. 依赖注入与应用启动
 
 `QingJuanApp` 是组合根，按顺序：
@@ -235,7 +240,7 @@ Windows 支持本机与远程两种显式模式，Android 强制远程：
 - Feature 可以为封面、章节和任务等领域内容提供专用条目，但必须复用共享间距、状态和交互动效。
 - `lib/shared/motion.dart` 是客户端动效时长、曲线、页面切换和路由动画的统一入口。所有共享动效通过 `MediaQuery.disableAnimationsOf` 决定时长；不得在页面中散落固定长动画或创建无法释放的 Controller。
 - 页面与路由动画只包裹呈现层，使用稳定 key 与 `RepaintBoundary` 隔离复杂内容；长列表条目、网络图片解码和 `BackdropFilter` 不参与逐项入场动画。背后只有固定纯色的导航表面不得使用无效背景模糊。
-- 手机端对话层优先使用接近全宽的圆角底部面板；需要键盘输入、破坏性确认或平板布局时才保留 `ContentDialog`。
+- 手机端对话层统一通过 `lib/shared/mobile_sheet.dart` 的 `showMobileSheet` / `MobileSheet` 使用接近全宽的圆角底部面板，并处理键盘、安全区、关闭语义和减少动态效果；Windows 继续使用 `ContentDialog`。Feature 不得按屏宽把桌面弹窗伪装成手机面板。
 
 页面改造必须至少补充一个手机宽度 Widget 测试；共享组件需要覆盖亮暗主题、长文本或 200% 字体缩放中的一项高风险场景。
 

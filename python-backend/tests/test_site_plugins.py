@@ -31,6 +31,8 @@ def test_site_plugin_registry_has_unique_ids_and_generic_fallback_last() -> None
         "18comic",
         "alphapolis",
         "bika",
+        "comicores",
+        "copymanga",
         "fanqie",
         "generic",
         "hameln",
@@ -39,13 +41,16 @@ def test_site_plugin_registry_has_unique_ids_and_generic_fallback_last() -> None
         "pixiv",
         "pixiv_comic",
         "qidian",
+        "quark",
         "syosetu",
         "yanmaga",
     }
-    assert {plugin.chapter_handler for plugin in plugins} <= {
+    assert {plugin.chapter_handler for plugin in plugins if plugin.chapter_handler} <= {
         "18comic",
         "alphapolis",
         "bika",
+        "comicores",
+        "copymanga",
         "fanqie",
         "generic",
         "generic_manga",
@@ -56,16 +61,21 @@ def test_site_plugin_registry_has_unique_ids_and_generic_fallback_last() -> None
         "pixiv",
         "pixiv_comic",
         "qidian",
+        "quark",
         "syosetu",
         "yanmaga",
     }
     assert resolve_site_plugin("https://fanqienovel.com/page/123").id == "fanqie"
     assert resolve_site_plugin("https://www.qidian.com/book/1004608738/").id == "qidian"
+    assert resolve_site_plugin("https://www.shuqi.com/book/46543.html").id == "quark"
     assert resolve_site_plugin("https://comic.pixiv.net/works/123").id == "pixiv-comic"
     assert resolve_site_plugin("https://www.pixiv.net/artworks/123").id == "pixiv"
     assert resolve_site_plugin("https://yanmaga.jp/comics/10DANCE").id == "yanmaga"
     assert resolve_site_plugin("https://novel18.syosetu.com/n123/").id == "novel18"
     assert resolve_site_plugin("https://www.copymanga.site/comic/example").id == "copymanga"
+    assert resolve_site_plugin("https://www.mangacopy.com/comic/example").id == "copymanga"
+    assert resolve_site_plugin("https://www.comicores.cc/example/.html").id == "comicores"
+    assert "chapter" not in resolve_site_plugin("https://www.comicores.cc/example/.html").capabilities
     assert resolve_site_plugin("https://example.test/book").id == "generic-web"
 
 
@@ -86,6 +96,8 @@ def test_site_plugin_settings_are_seeded_and_preserve_user_choice(monkeypatch, t
 
     db.init_db()
     assert db.is_site_plugin_enabled("fanqie") is True
+    assert db.get_book_source("source-builtin-quark").name == "夸克小说"
+    assert db.get_book_source("source-builtin-qidian").name == "起点中文网"
 
     db.save_site_plugin_enabled("fanqie", False)
     db.init_db()
@@ -202,6 +214,8 @@ def test_plugin_api_lists_and_updates_backend_state(monkeypatch) -> None:
 
     assert listed.status_code == 200
     assert any(plugin["id"] == "fanqie" for plugin in listed.json())
+    quark = next(plugin for plugin in listed.json() if plugin["id"] == "quark")
+    assert {"search", "preview", "chapter", "on_demand"} <= set(quark["capabilities"])
     qidian = next(plugin for plugin in listed.json() if plugin["id"] == "qidian")
     assert {"account_login", "bookshelf_import", "on_demand"} <= set(qidian["capabilities"])
     assert qidian["accountLoggedIn"] is False

@@ -339,4 +339,51 @@ void main() {
         isNot(contains('cookie')));
     api.close();
   });
+
+  test('builtin search normalizes Quark results for the shared import model',
+      () async {
+    late Map<String, dynamic> requestBody;
+    final api = ApiClient(
+      () => 'https://qingjuan.example.test',
+      client: MockClient((request) async {
+        expect(request.method, 'POST');
+        expect(request.url.path, '/api/v1/builtin-sites/search');
+        requestBody = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response.bytes(
+          utf8.encode(jsonEncode(<Map<String, Object?>>[
+            <String, Object?>{
+              'title': '斗罗大陆',
+              'author': '唐家三少',
+              'synopsis': '公开简介',
+              'cover': 'https://img.example.test/cover.jpg',
+              'sourceUrl': 'https://www.shuqi.com/book/46543.html',
+              'bookKind': '长小说',
+            },
+          ])),
+          200,
+          headers: <String, String>{'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    final results = await api.searchBuiltinSite(
+      '斗罗大陆',
+      sourceId: 'source-builtin-quark',
+      sourceName: '夸克小说',
+      sourceLanguage: '中文',
+    );
+
+    expect(requestBody, <String, Object?>{
+      'sourceId': 'source-builtin-quark',
+      'keyword': '斗罗大陆',
+      'limit': 20,
+    });
+    expect(results.single.sourceId, 'source-builtin-quark');
+    expect(results.single.sourceName, '夸克小说');
+    expect(results.single.language, '中文');
+    expect(results.single.sourceUrl, 'https://www.shuqi.com/book/46543.html');
+    expect(
+        results.single.toImportPayload()['sourceId'], 'source-builtin-quark');
+    api.close();
+  });
 }

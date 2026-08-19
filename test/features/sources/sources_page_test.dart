@@ -155,7 +155,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('插件配置'), findsWidgets);
+    expect(find.text('站点插件'), findsWidgets);
     expect(find.text('番茄小说'), findsOneWidget);
 
     await tester.tap(
@@ -195,12 +195,17 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('插件详情'), findsOneWidget);
+    expect(find.byType(ContentDialog), findsNothing);
+    expect(
+      find.byKey(const ValueKey('mobile-sheet-surface')),
+      findsOneWidget,
+    );
     expect(
       find.byKey(const ValueKey('plugin-details-pane-bika')),
       findsOneWidget,
     );
     expect(find.text('模块标识'), findsOneWidget);
-    await tester.tap(find.widgetWithText(Button, '关闭'));
+    await tester.tap(find.byIcon(FluentIcons.chrome_close));
     await tester.pumpAndSettle();
 
     await tester.enterText(

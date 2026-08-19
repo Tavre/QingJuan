@@ -31,7 +31,7 @@ class _AboutPageState extends State<AboutPage> {
     return PageFrame(
       title: '关于青卷',
       subtitle: usesMobileUi(context)
-          ? '支持 Windows 本机/远程与 Android 远程连接的开源阅读、下载和翻译工具。'
+          ? '项目、平台支持与开源许可。'
           : '开源的 Windows 小说与漫画阅读、下载和翻译工具。',
       compactHeader: Row(
         children: <Widget>[
@@ -59,7 +59,7 @@ class _AboutPageState extends State<AboutPage> {
                       ),
                 ),
                 Text(
-                  '开源、灵活、专注阅读',
+                  '项目与许可信息',
                   style: FluentTheme.of(context).typography.caption,
                 ),
               ],
@@ -71,23 +71,46 @@ class _AboutPageState extends State<AboutPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           if (usesMobileUi(context)) ...<Widget>[
-            const FeatureHero(
-              icon: FluentIcons.reading_mode,
-              title: '青卷 QingJuan',
-              message:
-                  'Windows 可独立使用随包后端，也可和 Android 一起连接 Linux 服务，把轻快、沉浸的阅读体验带到不同设备。',
-              trailing: QingJuanLogo(size: 64),
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
+            AppSurface(
+              tone: AppSurfaceTone.accent,
+              padding: const EdgeInsets.all(18),
+              child: Row(
                 children: <Widget>[
-                  StatusPill('Flutter', accented: true),
-                  StatusPill('FastAPI'),
-                  StatusPill('GPL v3'),
+                  const QingJuanLogo(size: 58),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          '青卷 QingJuan',
+                          style: FluentTheme.of(context)
+                              .typography
+                              .subtitle
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '开源阅读、下载与翻译工具',
+                          style: FluentTheme.of(context).typography.caption,
+                        ),
+                        const SizedBox(height: 10),
+                        const Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: <Widget>[
+                            StatusPill('Android', accented: true),
+                            StatusPill('Windows'),
+                            StatusPill('GPL v3'),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
-            const SizedBox(height: 28),
+            const SizedBox(height: 22),
           ],
           if (_copiedLabel != null) ...<Widget>[
             InfoBar(
@@ -122,7 +145,7 @@ class _AboutPageState extends State<AboutPage> {
               ],
             ),
           ),
-          const SizedBox(height: 32),
+          SizedBox(height: usesMobileUi(context) ? 24 : 32),
           const SectionTitle('开源许可'),
           const AppSurface(
             padding: EdgeInsets.symmetric(horizontal: 16),
@@ -178,13 +201,14 @@ class _InformationRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
+    final mobile = usesMobileUi(context);
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 16),
+      padding: EdgeInsets.symmetric(vertical: mobile ? 14 : 16),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           AccentIcon(icon),
-          const SizedBox(width: 16),
+          SizedBox(width: mobile ? 13 : 16),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -200,7 +224,7 @@ class _InformationRow extends StatelessWidget {
             ),
           ),
           if (onCopy != null) ...<Widget>[
-            const SizedBox(width: 12),
+            SizedBox(width: mobile ? 6 : 12),
             Tooltip(
               message: copyTooltip!,
               child: IconButton(

@@ -232,11 +232,11 @@ class BookCover extends StatelessWidget {
         boxShadow: showShadow
             ? <BoxShadow>[
                 BoxShadow(
-                  color: const Color(0xFF102A26).withAlpha(
-                    theme.brightness == Brightness.dark ? 52 : 30,
+                  color: const Color(0xFF101828).withAlpha(
+                    theme.brightness == Brightness.dark ? 44 : 22,
                   ),
-                  blurRadius: 12,
-                  offset: const Offset(0, 5),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
                 ),
               ]
             : null,

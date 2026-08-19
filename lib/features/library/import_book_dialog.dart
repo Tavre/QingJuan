@@ -3,8 +3,10 @@ import 'package:fluent_ui/fluent_ui.dart';
 
 import '../../app/app_scope.dart';
 import '../../core/models/book.dart';
-import '../../shared/app_surface.dart';
 import '../../core/models/link_job.dart';
+import '../../shared/app_surface.dart';
+import '../../shared/mobile_sheet.dart';
+import '../../shared/responsive.dart';
 import 'library_controller.dart';
 
 const _localNovelFiles = XTypeGroup(
@@ -18,6 +20,13 @@ const _localMangaFiles = XTypeGroup(
 
 Future<Book?> showImportBookDialog(BuildContext context) {
   final controller = AppScope.of(context).library;
+  if (usesMobileUi(context)) {
+    return showMobileSheet<Book>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _ImportBookDialog(controller: controller),
+    );
+  }
   return showDialog<Book>(
     context: context,
     barrierDismissible: false,
@@ -157,6 +166,224 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
         final preview = job?.preview;
         final importedBook = job?.book;
         _scrollLogsAfterBuild(job?.logs.length ?? 0);
+        final content = SingleChildScrollView(
+          padding: usesMobileUi(context)
+              ? const EdgeInsets.fromLTRB(16, 14, 16, 18)
+              : EdgeInsets.zero,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const FeatureHero(
+                icon: FluentIcons.library,
+                title: '把新作品放进书架',
+                message: '支持网页地址、TXT、DOCX、EPUB 小说与 PDF 漫画；远程解析任务收起后仍会继续。',
+              ),
+              if (controller.importProgress case final progress?) ...<Widget>[
+                const SizedBox(height: 12),
+                ProgressBar(value: (progress * 100).clamp(0, 100)),
+                const SizedBox(height: 4),
+                Text(
+                    '正在上传 ${(progress * 100).clamp(0, 100).toStringAsFixed(0)}%'),
+              ],
+              const SizedBox(height: 18),
+              InfoLabel(
+                label: '作品地址',
+                child: TextBox(
+                  key: const ValueKey('import-book-url'),
+                  controller: _urlController,
+                  placeholder: 'https://...',
+                  enabled: !busy,
+                  onChanged: busy ? null : (_) => setState(() {}),
+                ),
+              ),
+              const SizedBox(height: 12),
+              InfoLabel(
+                label: '自定义标题（可选）',
+                child: TextBox(controller: _titleController, enabled: !busy),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: InfoLabel(
+                      label: '类型',
+                      child: ComboBox<String>(
+                        value: _kind,
+                        isExpanded: true,
+                        items: const <ComboBoxItem<String>>[
+                          ComboBoxItem(value: '长小说', child: Text('长小说')),
+                          ComboBoxItem(value: '轻小说', child: Text('轻小说')),
+                          ComboBoxItem(value: '漫画', child: Text('漫画')),
+                        ],
+                        onChanged: busy
+                            ? null
+                            : (value) => setState(() => _kind = value ?? _kind),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: InfoLabel(
+                      label: '语言',
+                      child: ComboBox<String>(
+                        value: _language,
+                        isExpanded: true,
+                        items: const <ComboBoxItem<String>>[
+                          ComboBoxItem(value: '中文', child: Text('中文')),
+                          ComboBoxItem(value: '英文', child: Text('英文')),
+                          ComboBoxItem(value: '日文', child: Text('日文')),
+                        ],
+                        onChanged: busy
+                            ? null
+                            : (value) =>
+                                setState(() => _language = value ?? _language),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              if (_isFanqieNovel) ...<Widget>[
+                const SizedBox(height: 14),
+                InfoLabel(
+                  label: '番茄正文获取方式',
+                  child: ComboBox<String>(
+                    value: _downloadMode,
+                    isExpanded: true,
+                    items: const <ComboBoxItem<String>>[
+                      ComboBoxItem(
+                        value: 'on_demand',
+                        child: Text('边看边下（默认）'),
+                      ),
+                      ComboBoxItem(
+                        value: 'all',
+                        child: Text('立即下载全部正文'),
+                      ),
+                    ],
+                    onChanged: busy
+                        ? null
+                        : (value) => setState(
+                              () => _downloadMode = value ?? _downloadMode,
+                            ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  _downloadMode == 'on_demand'
+                      ? '快速加入书架；打开章节时下载当前章，并在后台预取后续 20 章。'
+                      : '导入时下载全部正文；长篇小说耗时较久，但完成后可完整离线阅读。',
+                  style: FluentTheme.of(context).typography.caption,
+                ),
+              ],
+              const SizedBox(height: 14),
+              ToggleSwitch(
+                checked: _translate,
+                onChanged:
+                    busy ? null : (value) => setState(() => _translate = value),
+                content: const Text('导入后启用翻译'),
+              ),
+              const SizedBox(height: 16),
+              AppSurface(
+                tone: AppSurfaceTone.muted,
+                padding: const EdgeInsets.all(10),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: <Widget>[
+                    Button(
+                      onPressed: busy ? null : _importLocal,
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                          Icon(FluentIcons.folder_open, size: 15),
+                          SizedBox(width: 7),
+                          Text('导入本地文件'),
+                        ],
+                      ),
+                    ),
+                    Button(
+                      onPressed: busy ? null : _previewRemote,
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                          Icon(FluentIcons.view, size: 15),
+                          SizedBox(width: 7),
+                          Text('预览'),
+                        ],
+                      ),
+                    ),
+                    if (job != null && !job.isActive)
+                      Button(
+                        onPressed: controller.clearLinkJob,
+                        child: const Text('新建任务'),
+                      ),
+                  ],
+                ),
+              ),
+              if (job != null) ...<Widget>[
+                const SizedBox(height: 18),
+                _LinkJobProgress(
+                    job: job, scrollController: _logScrollController),
+              ],
+              if (preview != null) ...<Widget>[
+                const SizedBox(height: 14),
+                InfoBar(
+                  title: Text(preview.title),
+                  content:
+                      Text('${preview.author} · ${preview.chapterCount} 章'),
+                  severity: InfoBarSeverity.success,
+                ),
+              ],
+              if (importedBook != null) ...<Widget>[
+                const SizedBox(height: 14),
+                InfoBar(
+                  title: const Text('导入完成'),
+                  content: Text('《${importedBook.title}》已经加入书架。'),
+                  severity: InfoBarSeverity.success,
+                ),
+              ],
+              if (_error != null || controller.linkJobConnectionError != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 14),
+                  child: InfoBar(
+                    title: const Text('操作失败'),
+                    content:
+                        Text(_error ?? controller.linkJobConnectionError ?? ''),
+                    severity: InfoBarSeverity.error,
+                  ),
+                ),
+            ],
+          ),
+        );
+        final actions = <Widget>[
+          Button(
+            onPressed: _loading ? null : _close,
+            child: Text(job?.isActive ?? false ? '收起' : '取消'),
+          ),
+          FilledButton(
+            onPressed: busy
+                ? null
+                : importedBook != null
+                    ? () => _close(importedBook)
+                    : _importRemote,
+            child: Text(importedBook != null ? '打开书籍' : '导入'),
+          ),
+        ];
+        if (usesMobileUi(context)) {
+          return MobileSheet(
+            title: '添加书籍',
+            subtitle: '网页地址或本地文件',
+            trailing: busy
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: ProgressRing(strokeWidth: 2.5),
+                  )
+                : null,
+            onClose: _loading ? null : _close,
+            actions: actions,
+            child: content,
+          );
+        }
         return ContentDialog(
           constraints: const BoxConstraints(maxWidth: 660),
           title: Row(
@@ -169,207 +396,8 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
                 ),
             ],
           ),
-          content: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                const FeatureHero(
-                  icon: FluentIcons.library,
-                  title: '把新作品放进书架',
-                  message: '支持网页地址、TXT、DOCX、EPUB 小说与 PDF 漫画；远程解析任务收起后仍会继续。',
-                ),
-                if (controller.importProgress case final progress?) ...<Widget>[
-                  const SizedBox(height: 12),
-                  ProgressBar(value: (progress * 100).clamp(0, 100)),
-                  const SizedBox(height: 4),
-                  Text(
-                      '正在上传 ${(progress * 100).clamp(0, 100).toStringAsFixed(0)}%'),
-                ],
-                const SizedBox(height: 18),
-                InfoLabel(
-                  label: '作品地址',
-                  child: TextBox(
-                    key: const ValueKey('import-book-url'),
-                    controller: _urlController,
-                    placeholder: 'https://...',
-                    enabled: !busy,
-                    onChanged: busy ? null : (_) => setState(() {}),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                InfoLabel(
-                  label: '自定义标题（可选）',
-                  child: TextBox(controller: _titleController, enabled: !busy),
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: <Widget>[
-                    Expanded(
-                      child: InfoLabel(
-                        label: '类型',
-                        child: ComboBox<String>(
-                          value: _kind,
-                          isExpanded: true,
-                          items: const <ComboBoxItem<String>>[
-                            ComboBoxItem(value: '长小说', child: Text('长小说')),
-                            ComboBoxItem(value: '轻小说', child: Text('轻小说')),
-                            ComboBoxItem(value: '漫画', child: Text('漫画')),
-                          ],
-                          onChanged: busy
-                              ? null
-                              : (value) =>
-                                  setState(() => _kind = value ?? _kind),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: InfoLabel(
-                        label: '语言',
-                        child: ComboBox<String>(
-                          value: _language,
-                          isExpanded: true,
-                          items: const <ComboBoxItem<String>>[
-                            ComboBoxItem(value: '中文', child: Text('中文')),
-                            ComboBoxItem(value: '英文', child: Text('英文')),
-                            ComboBoxItem(value: '日文', child: Text('日文')),
-                          ],
-                          onChanged: busy
-                              ? null
-                              : (value) => setState(
-                                  () => _language = value ?? _language),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                if (_isFanqieNovel) ...<Widget>[
-                  const SizedBox(height: 14),
-                  InfoLabel(
-                    label: '番茄正文获取方式',
-                    child: ComboBox<String>(
-                      value: _downloadMode,
-                      isExpanded: true,
-                      items: const <ComboBoxItem<String>>[
-                        ComboBoxItem(
-                          value: 'on_demand',
-                          child: Text('边看边下（推荐）'),
-                        ),
-                        ComboBoxItem(
-                          value: 'all',
-                          child: Text('立即下载全部正文'),
-                        ),
-                      ],
-                      onChanged: busy
-                          ? null
-                          : (value) => setState(
-                                () => _downloadMode = value ?? _downloadMode,
-                              ),
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    _downloadMode == 'on_demand'
-                        ? '快速加入书架；打开章节时下载当前章，并在后台预取后续 20 章。'
-                        : '导入时下载全部正文；长篇小说耗时较久，但完成后可完整离线阅读。',
-                    style: FluentTheme.of(context).typography.caption,
-                  ),
-                ],
-                const SizedBox(height: 14),
-                ToggleSwitch(
-                  checked: _translate,
-                  onChanged: busy
-                      ? null
-                      : (value) => setState(() => _translate = value),
-                  content: const Text('导入后启用翻译'),
-                ),
-                const SizedBox(height: 16),
-                AppSurface(
-                  tone: AppSurfaceTone.muted,
-                  padding: const EdgeInsets.all(10),
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: <Widget>[
-                      Button(
-                        onPressed: busy ? null : _importLocal,
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: <Widget>[
-                            Icon(FluentIcons.folder_open, size: 15),
-                            SizedBox(width: 7),
-                            Text('导入本地文件'),
-                          ],
-                        ),
-                      ),
-                      Button(
-                        onPressed: busy ? null : _previewRemote,
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: <Widget>[
-                            Icon(FluentIcons.view, size: 15),
-                            SizedBox(width: 7),
-                            Text('预览'),
-                          ],
-                        ),
-                      ),
-                      if (job != null && !job.isActive)
-                        Button(
-                          onPressed: controller.clearLinkJob,
-                          child: const Text('新建任务'),
-                        ),
-                    ],
-                  ),
-                ),
-                if (job != null) ...<Widget>[
-                  const SizedBox(height: 18),
-                  _LinkJobProgress(
-                      job: job, scrollController: _logScrollController),
-                ],
-                if (preview != null) ...<Widget>[
-                  const SizedBox(height: 14),
-                  InfoBar(
-                    title: Text(preview.title),
-                    content:
-                        Text('${preview.author} · ${preview.chapterCount} 章'),
-                    severity: InfoBarSeverity.success,
-                  ),
-                ],
-                if (importedBook != null) ...<Widget>[
-                  const SizedBox(height: 14),
-                  InfoBar(
-                    title: const Text('导入完成'),
-                    content: Text('《${importedBook.title}》已经加入书架。'),
-                    severity: InfoBarSeverity.success,
-                  ),
-                ],
-                if (_error != null || controller.linkJobConnectionError != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 14),
-                    child: InfoBar(
-                      title: const Text('操作失败'),
-                      content: Text(
-                          _error ?? controller.linkJobConnectionError ?? ''),
-                      severity: InfoBarSeverity.error,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          actions: <Widget>[
-            Button(
-              onPressed: _loading ? null : _close,
-              child: Text(job?.isActive ?? false ? '收起' : '取消'),
-            ),
-            FilledButton(
-              onPressed: busy
-                  ? null
-                  : importedBook != null
-                      ? () => _close(importedBook)
-                      : _importRemote,
-              child: Text(importedBook != null ? '打开书籍' : '导入'),
-            ),
-          ],
+          content: content,
+          actions: actions,
         );
       },
     );

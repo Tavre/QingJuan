@@ -110,7 +110,13 @@ class _ReaderPageState extends State<ReaderPage> {
     }
   }
 
-  ReaderPalette get _palette => ReaderPalette.fromMode(_paletteMode);
+  ReaderPalette get _palette {
+    final palette = ReaderPalette.fromMode(_paletteMode);
+    if (!_mobileUi) return palette;
+    return palette.withAccent(
+      palette.isDark ? const Color(0xFF79A8FF) : const Color(0xFF3377F6),
+    );
+  }
 
   String _cacheKey(int chapterIndex, String mode) => '$mode:$chapterIndex';
 
@@ -1241,7 +1247,7 @@ class _ReaderPageState extends State<ReaderPage> {
   Widget _readerGlassSurface({
     required Widget child,
     required BorderRadius borderRadius,
-    double blur = 20,
+    double blur = 14,
   }) {
     final palette = _palette;
     return ClipRRect(
@@ -1251,7 +1257,7 @@ class _ReaderPageState extends State<ReaderPage> {
         child: RepaintBoundary(
           child: DecoratedBox(
             decoration: BoxDecoration(
-              color: palette.surface.withAlpha(palette.isDark ? 218 : 210),
+              color: palette.surface.withAlpha(palette.isDark ? 240 : 242),
               borderRadius: borderRadius,
               border: Border.all(
                 color: palette.isDark
@@ -1262,10 +1268,10 @@ class _ReaderPageState extends State<ReaderPage> {
               boxShadow: <BoxShadow>[
                 BoxShadow(
                   color: const Color(0xFF000000).withAlpha(
-                    palette.isDark ? 42 : 18,
+                    palette.isDark ? 34 : 14,
                   ),
-                  blurRadius: 24,
-                  offset: const Offset(0, 8),
+                  blurRadius: 18,
+                  offset: const Offset(0, 6),
                 ),
               ],
             ),
@@ -1298,7 +1304,7 @@ class _ReaderPageState extends State<ReaderPage> {
               bottom: false,
               minimum: const EdgeInsets.fromLTRB(10, 8, 10, 0),
               child: _readerGlassSurface(
-                borderRadius: BorderRadius.circular(18),
+                borderRadius: BorderRadius.circular(16),
                 child: SizedBox(
                   height: 56,
                   child: Row(
@@ -1405,7 +1411,7 @@ class _ReaderPageState extends State<ReaderPage> {
               top: false,
               minimum: const EdgeInsets.fromLTRB(10, 0, 10, 10),
               child: _readerGlassSurface(
-                borderRadius: BorderRadius.circular(22),
+                borderRadius: BorderRadius.circular(20),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[

@@ -7,7 +7,7 @@ enum AppSurfaceTone { standard, muted, accent, elevated, danger }
 
 /// 青卷中承载同层级内容的标准表面。
 ///
-/// 手机表面使用极轻的描边与抬升感区分背景；可点击表面再通过背景变化提供反馈。
+/// 手机表面使用留白、明度与极轻分隔线区分层级；可点击表面通过背景变化提供反馈。
 class AppSurface extends StatelessWidget {
   const AppSurface({
     required this.child,
@@ -120,24 +120,25 @@ class _SurfaceBody extends StatelessWidget {
     final fill = switch (tone) {
       AppSurfaceTone.standard => theme.cardColor,
       AppSurfaceTone.muted =>
-        dark ? const Color(0xFF211F1C) : const Color(0xFFECE6DA),
-      AppSurfaceTone.accent => theme.accentColor.withAlpha(dark ? 48 : 24),
+        dark ? const Color(0xFF20242B) : const Color(0xFFF0F3F7),
+      AppSurfaceTone.accent =>
+        dark ? const Color(0xFF182740) : const Color(0xFFEDF4FF),
       AppSurfaceTone.elevated =>
-        dark ? const Color(0xFF2C2A25) : const Color(0xFFFFFDF8),
+        dark ? const Color(0xFF20242B) : const Color(0xFFFFFFFF),
       AppSurfaceTone.danger =>
-        dark ? const Color(0xFF352321) : const Color(0xFFFFF0EA),
+        dark ? const Color(0xFF352326) : const Color(0xFFFFF1F2),
     };
     final borderColor = selected
         ? theme.accentColor.withAlpha(
-            dark ? 190 : 150,
+            dark ? 190 : 138,
           )
         : hovered
             ? theme.resources.controlStrokeColorSecondary
             : tone == AppSurfaceTone.muted
-                ? theme.resources.cardStrokeColorDefault.withAlpha(55)
-                : theme.resources.cardStrokeColorDefault.withAlpha(
-                    compact ? 92 : 120,
-                  );
+                ? const Color(0x00000000)
+                : dark
+                    ? const Color(0xFF303640)
+                    : const Color(0xFFE8ECF2);
     return AnimatedContainer(
       duration: QjMotion.duration(context, QjMotionSpeed.faster),
       curve: QjMotion.enterCurve,
@@ -152,17 +153,14 @@ class _SurfaceBody extends StatelessWidget {
                 : fill,
         border: Border.all(color: borderColor),
         borderRadius: BorderRadius.circular(
-          borderRadius ?? (compact ? 19 : 14),
+          borderRadius ?? (compact ? 16 : 14),
         ),
-        boxShadow: tone == AppSurfaceTone.elevated ||
-                (compact && tone == AppSurfaceTone.standard)
+        boxShadow: tone == AppSurfaceTone.elevated
             ? <BoxShadow>[
                 BoxShadow(
-                  color: const Color(0xFF4B3529).withAlpha(
-                    dark ? 28 : 13,
-                  ),
-                  blurRadius: 20,
-                  offset: const Offset(0, 8),
+                  color: const Color(0xFF101828).withAlpha(dark ? 22 : 9),
+                  blurRadius: 12,
+                  offset: const Offset(0, 3),
                 ),
               ]
             : null,
@@ -193,7 +191,7 @@ class AccentIcon extends StatelessWidget {
     final foreground = enabled
         ? color ?? theme.accentColor.defaultBrushFor(theme.brightness)
         : theme.resources.textFillColorSecondary;
-    final extent = size ?? (compact ? 44 : 40);
+    final extent = size ?? (compact ? 42 : 40);
     return Container(
       width: extent,
       height: extent,
@@ -204,7 +202,7 @@ class AccentIcon extends StatelessWidget {
                 theme.brightness == Brightness.dark ? 58 : 26,
               )
             : theme.resources.subtleFillColorSecondary,
-        borderRadius: BorderRadius.circular(compact ? 13 : 8),
+        borderRadius: BorderRadius.circular(compact ? 12 : 8),
       ),
       child: Icon(
         icon,
@@ -332,88 +330,51 @@ class FeatureHero extends StatelessWidget {
         ),
       );
     }
-    final dark = theme.brightness == Brightness.dark;
-    final accent = warm
-        ? (dark ? const Color(0xFFE7A274) : const Color(0xFFBE6947))
-        : theme.accentColor.defaultBrushFor(theme.brightness);
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(24),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: AlignmentDirectional.topStart,
-            end: AlignmentDirectional.bottomEnd,
-            colors: warm
-                ? (dark
-                    ? const <Color>[Color(0xFF382A23), Color(0xFF25211D)]
-                    : const <Color>[Color(0xFFF4DACA), Color(0xFFFFF6E9)])
-                : (dark
-                    ? const <Color>[Color(0xFF2F3028), Color(0xFF23231F)]
-                    : const <Color>[Color(0xFFE7E1C9), Color(0xFFF8F2E7)]),
-          ),
-        ),
-        child: Stack(
-          children: <Widget>[
-            PositionedDirectional(
-              end: -34,
-              top: -46,
-              child: ExcludeSemantics(
-                child: Container(
-                  width: 142,
-                  height: 142,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: accent.withAlpha(dark ? 18 : 16),
-                  ),
+    final accent = theme.accentColor.defaultBrushFor(theme.brightness);
+    return AppSurface(
+      tone: AppSurfaceTone.accent,
+      borderRadius: 18,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              AccentIcon(icon, color: accent, size: 44),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      title,
+                      style: theme.typography.subtitle?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      message,
+                      style: theme.typography.caption?.copyWith(
+                        height: 1.45,
+                        color: theme.resources.textFillColorSecondary,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      AccentIcon(icon, color: accent, size: 48),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: <Widget>[
-                            Text(
-                              title,
-                              style: theme.typography.subtitle?.copyWith(
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              message,
-                              style: theme.typography.caption?.copyWith(
-                                height: 1.45,
-                                color: theme.resources.textFillColorSecondary,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      if (trailing != null) ...<Widget>[
-                        const SizedBox(width: 12),
-                        trailing!,
-                      ],
-                    ],
-                  ),
-                  if (child != null) ...<Widget>[
-                    const SizedBox(height: 16),
-                    child!,
-                  ],
-                ],
-              ),
-            ),
+              if (trailing != null) ...<Widget>[
+                const SizedBox(width: 12),
+                trailing!,
+              ],
+            ],
+          ),
+          if (child != null) ...<Widget>[
+            const SizedBox(height: 14),
+            child!,
           ],
-        ),
+        ],
       ),
     );
   }

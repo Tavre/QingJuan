@@ -12,24 +12,23 @@ final qingJuanAccent = AccentColor.swatch(const <String, Color>{
   'lightest': Color(0xFFD5EFEC),
 });
 
-/// Android 移动端自 v1.4 起使用的书卷暖色强调色。
+/// Android 移动端使用的青卷蓝色强调色。
 final qingJuanMobileAccent = AccentColor.swatch(const <String, Color>{
-  'darkest': Color(0xFF603323),
-  'darker': Color(0xFF83432F),
-  'dark': Color(0xFFA9553D),
-  'normal': Color(0xFFD16D50),
-  'light': Color(0xFFDE886D),
-  'lighter': Color(0xFFEAB09C),
-  'lightest': Color(0xFFF8E5DD),
+  'darkest': Color(0xFF123A8C),
+  'darker': Color(0xFF1850BD),
+  'dark': Color(0xFF2465D8),
+  'normal': Color(0xFF3377F6),
+  'light': Color(0xFF5B93F8),
+  'lighter': Color(0xFFA9C7FF),
+  'lightest': Color(0xFFEAF2FF),
 });
 
-const qingJuanWarmOrange = Color(0xFFD19A64);
-const qingJuanCoral = Color(0xFFD16D50);
-const qingJuanPaper = Color(0xFFF4F0E6);
-const qingJuanPaperSurface = Color(0xFFFFFDF8);
-const qingJuanInk = Color(0xFF1B1A18);
-const qingJuanDarkSurface = Color(0xFF24231F);
-const qingJuanDarkElevated = Color(0xFF2C2A25);
+const qingJuanMobileBlue = Color(0xFF3377F6);
+const qingJuanPaper = Color(0xFFF6F7F9);
+const qingJuanPaperSurface = Color(0xFFFFFFFF);
+const qingJuanInk = Color(0xFF111318);
+const qingJuanDarkSurface = Color(0xFF191C22);
+const qingJuanDarkElevated = Color(0xFF22262E);
 
 FluentThemeData buildQingJuanTheme(
   Brightness brightness, {
@@ -144,17 +143,17 @@ FluentThemeData _buildMobileTheme(Brightness brightness) {
     scaffoldBackgroundColor: isDark ? qingJuanInk : qingJuanPaper,
     micaBackgroundColor: isDark ? qingJuanInk : qingJuanPaper,
     acrylicBackgroundColor:
-        isDark ? qingJuanDarkElevated : const Color(0xFFFCF8EF),
-    menuColor: isDark ? qingJuanDarkElevated : const Color(0xFFFCF8EF),
+        isDark ? qingJuanDarkElevated : qingJuanPaperSurface,
+    menuColor: isDark ? qingJuanDarkElevated : qingJuanPaperSurface,
     inactiveBackgroundColor:
-        isDark ? const Color(0xFF34312B) : const Color(0xFFE8E1D4),
+        isDark ? const Color(0xFF292D35) : const Color(0xFFE9EDF3),
     cardColor: isDark ? qingJuanDarkSurface : qingJuanPaperSurface,
     navigationPaneTheme: NavigationPaneThemeData(
       animationDuration: const Duration(milliseconds: 110),
       animationCurve: Curves.easeOutCubic,
       backgroundColor: isDark ? qingJuanInk : qingJuanPaper,
       overlayBackgroundColor:
-          isDark ? qingJuanDarkElevated : const Color(0xFFFCF8EF),
+          isDark ? qingJuanDarkElevated : qingJuanPaperSurface,
       headerPadding: const EdgeInsetsDirectional.only(
         start: 12,
         top: 14,
@@ -167,35 +166,35 @@ FluentThemeData _buildMobileTheme(Brightness brightness) {
     typography: Typography.raw(
       caption: TextStyle(
         fontSize: 12,
-        color: isDark ? const Color(0xFFBDB6AA) : const Color(0xFF726B62),
+        color: isDark ? const Color(0xFF9FA6B2) : const Color(0xFF727985),
       ),
       body: TextStyle(
         fontSize: 14,
-        color: isDark ? const Color(0xFFF0ECE4) : const Color(0xFF35312C),
+        color: isDark ? const Color(0xFFE8EBF0) : const Color(0xFF252A32),
       ),
       bodyLarge: TextStyle(
         fontSize: 16,
-        color: isDark ? const Color(0xFFF4F0E8) : const Color(0xFF302C27),
+        color: isDark ? const Color(0xFFF1F3F6) : const Color(0xFF1F242C),
       ),
       subtitle: TextStyle(
         fontSize: 18,
         fontWeight: FontWeight.w600,
-        color: isDark ? const Color(0xFFF5F1E9) : const Color(0xFF2D2925),
+        color: isDark ? const Color(0xFFF3F5F8) : const Color(0xFF181C23),
       ),
       title: TextStyle(
         fontSize: 28,
         fontWeight: FontWeight.w700,
-        color: isDark ? const Color(0xFFF8F5EE) : const Color(0xFF292621),
+        color: isDark ? const Color(0xFFF7F8FA) : const Color(0xFF15191F),
       ),
       titleLarge: TextStyle(
         fontSize: 34,
         fontWeight: FontWeight.w700,
-        color: isDark ? const Color(0xFFF8F5EE) : const Color(0xFF292621),
+        color: isDark ? const Color(0xFFF7F8FA) : const Color(0xFF15191F),
       ),
       display: TextStyle(
         fontSize: 42,
         fontWeight: FontWeight.w600,
-        color: isDark ? const Color(0xFFF8F5EE) : const Color(0xFF292621),
+        color: isDark ? const Color(0xFFF7F8FA) : const Color(0xFF15191F),
       ),
     ),
   );

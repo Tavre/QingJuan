@@ -5,6 +5,7 @@ import '../../core/models/source.dart';
 import '../../core/state/load_state.dart';
 import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
+import '../../shared/mobile_sheet.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
 import 'sources_controller.dart';
@@ -40,64 +41,88 @@ class SourcesPage extends StatelessWidget {
     final controller = TextEditingController();
     String? error;
     var loading = false;
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setState) => ContentDialog(
-          title: Text(fromUrl ? '从网址导入书源' : '粘贴书源配置'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              TextBox(
-                controller: controller,
-                maxLines: fromUrl ? 1 : 10,
-                placeholder: fromUrl ? 'https://...' : '粘贴 JSON 或 Legado 书源文本',
-                enabled: !loading,
-              ),
-              if (error != null) ...<Widget>[
-                const SizedBox(height: 12),
-                InfoBar(
-                  title: const Text('导入失败'),
-                  content: Text(error!),
-                  severity: InfoBarSeverity.error,
+    Widget dialogBuilder(BuildContext dialogContext) => StatefulBuilder(
+          builder: (sheetContext, setState) {
+            final content = Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                TextBox(
+                  controller: controller,
+                  maxLines: fromUrl ? 1 : 10,
+                  placeholder:
+                      fromUrl ? 'https://...' : '粘贴 JSON 或 Legado 书源文本',
+                  enabled: !loading,
                 ),
+                if (error != null) ...<Widget>[
+                  const SizedBox(height: 12),
+                  InfoBar(
+                    title: const Text('导入失败'),
+                    content: Text(error!),
+                    severity: InfoBarSeverity.error,
+                  ),
+                ],
               ],
-            ],
-          ),
-          actions: <Widget>[
-            Button(
-              onPressed: loading ? null : () => Navigator.pop(dialogContext),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: loading
-                  ? null
-                  : () async {
-                      setState(() {
-                        loading = true;
-                        error = null;
-                      });
-                      try {
-                        final sources = AppScope.of(context).sources;
-                        if (fromUrl) {
-                          await sources.importUrl(controller.text);
-                        } else {
-                          await sources.importText(controller.text);
-                        }
-                        if (dialogContext.mounted) Navigator.pop(dialogContext);
-                      } catch (exception) {
+            );
+            final actions = <Widget>[
+              Button(
+                onPressed: loading ? null : () => Navigator.pop(dialogContext),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: loading
+                    ? null
+                    : () async {
                         setState(() {
-                          loading = false;
-                          error = '$exception';
+                          loading = true;
+                          error = null;
                         });
-                      }
-                    },
-              child: const Text('导入'),
-            ),
-          ],
-        ),
-      ),
-    );
+                        try {
+                          final sources = AppScope.of(sheetContext).sources;
+                          if (fromUrl) {
+                            await sources.importUrl(controller.text);
+                          } else {
+                            await sources.importText(controller.text);
+                          }
+                          if (dialogContext.mounted) {
+                            Navigator.pop(dialogContext);
+                          }
+                        } catch (exception) {
+                          setState(() {
+                            loading = false;
+                            error = '$exception';
+                          });
+                        }
+                      },
+                child: const Text('导入'),
+              ),
+            ];
+            if (usesMobileUi(sheetContext)) {
+              return MobileSheet(
+                title: fromUrl ? '从网址导入' : '粘贴书源',
+                subtitle: '支持 Legado 兼容书源',
+                onClose: loading ? null : () => Navigator.pop(dialogContext),
+                actions: actions,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+                  child: content,
+                ),
+              );
+            }
+            return ContentDialog(
+              title: Text(fromUrl ? '从网址导入书源' : '粘贴书源配置'),
+              content: content,
+              actions: actions,
+            );
+          },
+        );
+    if (usesMobileUi(context)) {
+      await showMobileSheet<void>(
+        context: context,
+        builder: dialogBuilder,
+      );
+    } else {
+      await showDialog<void>(context: context, builder: dialogBuilder);
+    }
     controller.dispose();
   }
 
@@ -111,7 +136,7 @@ class SourcesPage extends StatelessWidget {
           return _buildDesktopPage(context, controller);
         }
         return PageFrame(
-          title: '书源管理',
+          title: '书源',
           subtitle: '维护内置、手动和 Legado 兼容书源。',
           scrollable: false,
           compactHeader: ReadingPageHeader(
@@ -164,7 +189,7 @@ class SourcesPage extends StatelessWidget {
                   children: <Widget>[
                     FeatureHero(
                       icon: FluentIcons.database,
-                      title: '建立你的内容来源',
+                      title: '添加内容来源',
                       message: '支持直接粘贴 JSON、Legado 书源文本，或从可信网址导入配置。',
                       child: Row(
                         children: <Widget>[

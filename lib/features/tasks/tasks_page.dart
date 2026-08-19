@@ -26,12 +26,12 @@ class _TasksPageState extends State<TasksPage> {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) => PageFrame(
-        title: usesMobileUi(context) ? '任务中心' : '任务',
+        title: '任务',
         subtitle: '查看下载、翻译与失败重试进度。',
         scrollable: false,
         compactHeader: ReadingPageHeader(
-          title: '任务中心',
-          subtitle: '下载与翻译状态集中在这里',
+          title: '任务',
+          subtitle: '下载与翻译进度',
           actions: <Widget>[
             Tooltip(
               message: '刷新任务',
@@ -66,8 +66,8 @@ class _TasksPageState extends State<TasksPage> {
                     children: const <Widget>[
                       FeatureHero(
                         icon: FluentIcons.processing,
-                        title: '任务队列已就绪',
-                        message: '下载、翻译和漫画逐页识别都会在这里持续同步状态。',
+                        title: '任务概览',
+                        message: '下载、翻译和漫画逐页识别状态会自动同步。',
                         child: Row(
                           children: <Widget>[
                             Expanded(

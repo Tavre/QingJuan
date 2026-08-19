@@ -137,11 +137,11 @@ class _SettingsPageState extends State<SettingsPage> {
     return AnimatedBuilder(
       animation: Listenable.merge(<Listenable>[scope.appState, settings]),
       builder: (context, _) => PageFrame(
-        title: '设置',
+        title: compact ? '我的' : '设置',
         subtitle: '管理界面主题、设备听书、后端连接和翻译服务。',
         compactHeader: ReadingPageHeader(
-          title: '设置',
-          subtitle: '偏好、听书与服务器连接',
+          title: '我的',
+          subtitle: '阅读偏好与服务器连接',
           actions: <Widget>[
             if (scope.appState.clientPluginManagementAvailable) ...<Widget>[
               Tooltip(
@@ -204,8 +204,8 @@ class _SettingsPageState extends State<SettingsPage> {
           children: <Widget>[
             if (compact) ...<Widget>[
               FeatureHero(
-                icon: FluentIcons.settings,
-                title: '让青卷更适合你',
+                icon: FluentIcons.contact,
+                title: '设备与服务',
                 message: scope.appState.localBackendSupported
                     ? '界面与设备偏好保存在本机，书架和任务由当前选择的后端管理。'
                     : '界面与设备偏好保存在手机，连接、书架和任务数据由 Linux 后端统一管理。',

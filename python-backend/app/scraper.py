@@ -292,153 +292,6 @@ except ImportError:
     )
 
 try:
-    from .site_plugins.ciweimao_client import (
-        book_id_from_url as ciweimao_book_id_from_url,
-    )
-    from .site_plugins.ciweimao_client import (
-        chapter_id_from_url as ciweimao_chapter_id_from_url,
-    )
-    from .site_plugins.ciweimao_client import (
-        get_book as get_ciweimao_book,
-    )
-    from .site_plugins.ciweimao_client import (
-        get_catalogue as get_ciweimao_catalogue,
-    )
-    from .site_plugins.ciweimao_client import (
-        get_chapter as get_ciweimao_chapter,
-    )
-    from .site_plugins.ciweimao_client import (
-        search_books as search_ciweimao_books,
-    )
-    from .site_plugins.ehentai_client import (
-        gallery_ids_from_url as ehentai_gallery_ids_from_url,
-    )
-    from .site_plugins.ehentai_client import (
-        get_gallery_image_entries as get_ehentai_gallery_image_entries,
-    )
-    from .site_plugins.ehentai_client import (
-        get_gallery_metadata as get_ehentai_gallery_metadata,
-    )
-    from .site_plugins.ehentai_client import (
-        get_gallery_page as get_ehentai_gallery_page,
-    )
-    from .site_plugins.ehentai_client import (
-        search_galleries as search_ehentai_galleries,
-    )
-    from .site_plugins.sfacg_client import (
-        book_id_from_url as sfacg_book_id_from_url,
-    )
-    from .site_plugins.sfacg_client import (
-        chapter_ids_from_url as sfacg_chapter_ids_from_url,
-    )
-    from .site_plugins.sfacg_client import (
-        get_book as get_sfacg_book,
-    )
-    from .site_plugins.sfacg_client import (
-        get_catalogue as get_sfacg_catalogue,
-    )
-    from .site_plugins.sfacg_client import (
-        get_chapter as get_sfacg_chapter,
-    )
-    from .site_plugins.sfacg_client import (
-        normalize_book as normalize_sfacg_book,
-    )
-    from .site_plugins.sfacg_client import (
-        search_books as search_sfacg_books,
-    )
-    from .site_plugins.shaoniandream_client import (
-        book_id_from_url as shaoniandream_book_id_from_url,
-    )
-    from .site_plugins.shaoniandream_client import (
-        chapter_id_from_url as shaoniandream_chapter_id_from_url,
-    )
-    from .site_plugins.shaoniandream_client import (
-        get_book as get_shaoniandream_book,
-    )
-    from .site_plugins.shaoniandream_client import (
-        get_catalogue as get_shaoniandream_catalogue,
-    )
-    from .site_plugins.shaoniandream_client import (
-        get_chapter as get_shaoniandream_chapter,
-    )
-    from .site_plugins.shaoniandream_client import (
-        search_books as search_shaoniandream_books,
-    )
-except ImportError:
-    from app.site_plugins.ciweimao_client import (
-        book_id_from_url as ciweimao_book_id_from_url,
-    )
-    from app.site_plugins.ciweimao_client import (
-        chapter_id_from_url as ciweimao_chapter_id_from_url,
-    )
-    from app.site_plugins.ciweimao_client import (
-        get_book as get_ciweimao_book,
-    )
-    from app.site_plugins.ciweimao_client import (
-        get_catalogue as get_ciweimao_catalogue,
-    )
-    from app.site_plugins.ciweimao_client import (
-        get_chapter as get_ciweimao_chapter,
-    )
-    from app.site_plugins.ciweimao_client import (
-        search_books as search_ciweimao_books,
-    )
-    from app.site_plugins.ehentai_client import (
-        gallery_ids_from_url as ehentai_gallery_ids_from_url,
-    )
-    from app.site_plugins.ehentai_client import (
-        get_gallery_image_entries as get_ehentai_gallery_image_entries,
-    )
-    from app.site_plugins.ehentai_client import (
-        get_gallery_metadata as get_ehentai_gallery_metadata,
-    )
-    from app.site_plugins.ehentai_client import (
-        get_gallery_page as get_ehentai_gallery_page,
-    )
-    from app.site_plugins.ehentai_client import (
-        search_galleries as search_ehentai_galleries,
-    )
-    from app.site_plugins.sfacg_client import (
-        book_id_from_url as sfacg_book_id_from_url,
-    )
-    from app.site_plugins.sfacg_client import (
-        chapter_ids_from_url as sfacg_chapter_ids_from_url,
-    )
-    from app.site_plugins.sfacg_client import (
-        get_book as get_sfacg_book,
-    )
-    from app.site_plugins.sfacg_client import (
-        get_catalogue as get_sfacg_catalogue,
-    )
-    from app.site_plugins.sfacg_client import (
-        get_chapter as get_sfacg_chapter,
-    )
-    from app.site_plugins.sfacg_client import (
-        normalize_book as normalize_sfacg_book,
-    )
-    from app.site_plugins.sfacg_client import (
-        search_books as search_sfacg_books,
-    )
-    from app.site_plugins.shaoniandream_client import (
-        book_id_from_url as shaoniandream_book_id_from_url,
-    )
-    from app.site_plugins.shaoniandream_client import (
-        chapter_id_from_url as shaoniandream_chapter_id_from_url,
-    )
-    from app.site_plugins.shaoniandream_client import (
-        get_book as get_shaoniandream_book,
-    )
-    from app.site_plugins.shaoniandream_client import (
-        get_catalogue as get_shaoniandream_catalogue,
-    )
-    from app.site_plugins.shaoniandream_client import (
-        get_chapter as get_shaoniandream_chapter,
-    )
-    from app.site_plugins.shaoniandream_client import (
-        search_books as search_shaoniandream_books,
-    )
-
-try:
     from .fanqie_app import FanqieAppClient
 except ImportError:
     from app.fanqie_app import FanqieAppClient
@@ -602,7 +455,6 @@ _BIKA_TOKEN_CACHE: dict[str, str] = {}
 _COMIC_18_SCRAMBLE_ID_CACHE: dict[str, int] = {}
 _PIXIV_COMIC_PAGE_KEYS: dict[str, tuple[str, int]] = {}
 _YANMAGA_PAGE_KEYS: dict[str, tuple[str, str, str]] = {}
-_EHENTAI_IMAGE_REFERERS: dict[str, str] = {}
 MANGA_RENDERER_VERSION = 11
 
 
@@ -1252,75 +1104,6 @@ async def _search_comicores_works(
     return results
 
 
-def _builtin_results_from_items(
-    items: list[dict[str, Any]],
-    limit: int,
-    *,
-    book_kind: str,
-) -> list[BuiltinSiteSearchResult]:
-    results: list[BuiltinSiteSearchResult] = []
-    seen: set[str] = set()
-    for item in items:
-        title = str(item.get("title") or "").strip()
-        source_url = str(item.get("url") or "").strip()
-        if not title or not source_url or source_url in seen:
-            continue
-        seen.add(source_url)
-        results.append(
-            BuiltinSiteSearchResult(
-                title=title,
-                author=str(item.get("author") or "").strip() or None,
-                synopsis=_normalize_search_text(item.get("synopsis") or ""),
-                cover=str(item.get("cover") or "").strip() or None,
-                sourceUrl=source_url,
-                bookKind=book_kind,
-            )
-        )
-        if len(results) >= limit:
-            break
-    return results
-
-
-async def _search_ciweimao_works(
-    source: BookSourceRecord,
-    keyword: str,
-    limit: int,
-) -> list[BuiltinSiteSearchResult]:
-    async with _build_http_client() as client:
-        items = await search_ciweimao_books(client, keyword)
-    return _builtin_results_from_items(items, limit, book_kind="轻小说")
-
-
-async def _search_shaoniandream_works(
-    source: BookSourceRecord,
-    keyword: str,
-    limit: int,
-) -> list[BuiltinSiteSearchResult]:
-    async with _build_http_client() as client:
-        items = await search_shaoniandream_books(client, keyword)
-    return _builtin_results_from_items(items, limit, book_kind="长小说")
-
-
-async def _search_sfacg_works(
-    source: BookSourceRecord,
-    keyword: str,
-    limit: int,
-) -> list[BuiltinSiteSearchResult]:
-    async with _build_http_client() as client:
-        items = await search_sfacg_books(client, keyword)
-    return _builtin_results_from_items(items, limit, book_kind="轻小说")
-
-
-async def _search_ehentai_works(
-    source: BookSourceRecord,
-    keyword: str,
-    limit: int,
-) -> list[BuiltinSiteSearchResult]:
-    async with _build_http_client() as client:
-        items = await search_ehentai_galleries(client, keyword, origin=source.baseUrl)
-    return _builtin_results_from_items(items, limit, book_kind="漫画")
-
-
 async def search_builtin_site_books(
     source: BookSourceRecord,
     keyword: str,
@@ -1347,14 +1130,6 @@ async def search_builtin_site_books(
         return await _search_copymanga_works(source, normalized_keyword, limit)
     if plugin.search_handler == "comicores":
         return await _search_comicores_works(source, normalized_keyword, limit)
-    if plugin.search_handler == "ciweimao":
-        return await _search_ciweimao_works(source, normalized_keyword, limit)
-    if plugin.search_handler == "shaoniandream":
-        return await _search_shaoniandream_works(source, normalized_keyword, limit)
-    if plugin.search_handler == "sfacg":
-        return await _search_sfacg_works(source, normalized_keyword, limit)
-    if plugin.search_handler == "ehentai":
-        return await _search_ehentai_works(source, normalized_keyword, limit)
 
     raise ValueError("当前内置站点暂未实现作品搜索，请在书架页粘贴作品链接")
 
@@ -2932,7 +2707,7 @@ async def _download_single_chapter(
         "images_repaired": _is_18comic_url(source_url),
         "content_source": result.content_source,
         "authorization_method": result.authorization_method,
-        "access_restricted": bool(chapter.get("access_restricted")) or result.access_restricted,
+        "access_restricted": result.access_restricted,
     }
 
 
@@ -9633,18 +9408,12 @@ async def _preview_yanmaga(source_url: str, payload: AddBookPayload) -> PreviewR
         if episode.id in seen_episode_ids:
             continue
         seen_episode_ids.add(episode.id)
-        unique_episodes.append(episode)
+        if episode.publicly_readable:
+            unique_episodes.append(episode)
     if not unique_episodes:
-        raise ValueError("Yanmaga 当前没有可解析的章节目录")
+        raise ValueError("Yanmaga 当前没有可供匿名访问的公开章节")
 
-    chapters = [
-        ChapterPreview(
-            title=episode.title,
-            url=episode.url,
-            accessRestricted=not episode.publicly_readable,
-        )
-        for episode in unique_episodes
-    ]
+    chapters = [ChapterPreview(title=episode.title, url=episode.url) for episode in unique_episodes]
     return PreviewResponse(
         title=book.title or payload.title or "未命名漫画",
         author=book.author,
@@ -9714,10 +9483,10 @@ def _pixiv_comic_preview_from_payloads(
     chapters: list[ChapterPreview] = []
     seen: set[str] = set()
     for item in reversed(episode_items):
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or str(item.get("state") or "") != "readable":
             continue
         episode = item.get("episode")
-        if not isinstance(episode, dict):
+        if not isinstance(episode, dict) or str(episode.get("state") or "readable") != "readable":
             continue
         viewer_path = str(episode.get("viewer_path") or "").strip()
         episode_id = str(episode.get("id") or "").strip()
@@ -9729,15 +9498,11 @@ def _pixiv_comic_preview_from_payloads(
             ChapterPreview(
                 title=_pixiv_comic_episode_title(episode)[:180],
                 url=chapter_url,
-                accessRestricted=(
-                    str(item.get("state") or "readable") != "readable"
-                    or str(episode.get("state") or "readable") != "readable"
-                ),
             )
         )
 
     if not chapters:
-        raise ValueError("该 Pixiv Comic 作品当前没有可解析的章节目录")
+        raise ValueError("该 Pixiv Comic 作品当前没有可公开阅读的章节")
 
     image = work.get("image") if isinstance(work.get("image"), dict) else {}
     description_html = str(work.get("description") or "").strip()
@@ -10097,6 +9862,8 @@ async def _preview_copymanga(source_url: str, payload: AddBookPayload) -> Previe
         raise ValueError("无法识别拷贝漫画作品路径，请提交 /comic/{作品标识} 链接")
     async with _build_http_client() as client:
         detail = await get_mangacopy_detail(client, path_word)
+        if any(bool(detail.get(key)) for key in ("is_lock", "is_login", "is_vip")):
+            raise ValueError("拷贝漫画作品当前不是匿名公开内容")
         comic = detail.get("comic")
         if not isinstance(comic, dict):
             raise ValueError("拷贝漫画作品详情缺少 comic 数据")
@@ -10152,7 +9919,7 @@ async def _preview_comicores(source_url: str, payload: AddBookPayload) -> Previe
         post = await get_comicores_book(client, book_key)
     title = comicores_title(post) or payload.title or book_key
     synopsis = comicores_synopsis(post)
-    boundary = "解析说明：当前解析器只提供作品元数据与搜索，尚未实现章节资源解析。"
+    boundary = "访问说明：该站章节区是登录后可见的网盘或付费下载资源，青卷仅展示公开作品元数据。"
     return PreviewResponse(
         title=title,
         author="、".join(comicores_authors(post)) or None,
@@ -10160,114 +9927,6 @@ async def _preview_comicores(source_url: str, payload: AddBookPayload) -> Previe
         cover=comicores_cover(post),
         chapterCount=0,
         chapters=[],
-        bookKind="漫画",
-    )
-
-
-async def _preview_ciweimao(source_url: str, payload: AddBookPayload) -> PreviewResponse:
-    book_id = ciweimao_book_id_from_url(source_url)
-    if not book_id:
-        raise ValueError("无法识别刺猬猫作品链接，请提交 /book/{id} 地址")
-    async with _build_http_client() as client:
-        book = await get_ciweimao_book(client, book_id)
-        catalogue = await get_ciweimao_catalogue(client, book_id)
-    chapters = [
-        ChapterPreview(
-            title=str(item["title"]),
-            url=str(item["url"]),
-            accessRestricted=bool(item.get("access_restricted")),
-        )
-        for item in catalogue
-    ]
-    return PreviewResponse(
-        title=str(book.get("title") or payload.title or f"刺猬猫作品 {book_id}"),
-        author=str(book.get("author") or "").strip() or None,
-        synopsis=str(book.get("description") or "").strip(),
-        cover=str(book.get("cover") or "").strip() or None,
-        chapterCount=len(chapters),
-        chapters=chapters,
-        bookKind="轻小说",
-    )
-
-
-async def _preview_shaoniandream(source_url: str, payload: AddBookPayload) -> PreviewResponse:
-    book_id = shaoniandream_book_id_from_url(source_url)
-    if not book_id:
-        raise ValueError("无法识别少年梦作品链接，请提交 /book_detail/{id} 地址")
-    async with _build_http_client() as client:
-        book = await get_shaoniandream_book(client, book_id)
-        catalogue = await get_shaoniandream_catalogue(client, book_id)
-    chapters = [
-        ChapterPreview(
-            title=str(item["title"]),
-            url=str(item["url"]),
-            accessRestricted=bool(item.get("access_restricted")),
-        )
-        for item in catalogue
-    ]
-    return PreviewResponse(
-        title=str(book.get("title") or payload.title or f"少年梦作品 {book_id}"),
-        author=str(book.get("author") or "").strip() or None,
-        synopsis=str(book.get("synopsis") or "").strip(),
-        cover=str(book.get("cover") or "").strip() or None,
-        chapterCount=len(chapters),
-        chapters=chapters,
-        bookKind="长小说",
-    )
-
-
-async def _preview_sfacg(source_url: str, payload: AddBookPayload) -> PreviewResponse:
-    novel_id = sfacg_book_id_from_url(source_url)
-    if not novel_id:
-        raise ValueError("无法识别 SF 轻小说作品链接，请提交 /Novel/{id} 地址")
-    async with _build_http_client() as client:
-        raw_book = await get_sfacg_book(client, novel_id)
-        catalogue = await get_sfacg_catalogue(client, novel_id)
-    book = normalize_sfacg_book(raw_book)
-    chapters = [
-        ChapterPreview(
-            title=str(item["title"]),
-            url=str(item["url"]),
-            accessRestricted=bool(item.get("access_restricted")),
-        )
-        for item in catalogue
-    ]
-    return PreviewResponse(
-        title=str(book.get("title") or payload.title or f"SF 轻小说 {novel_id}"),
-        author=str(book.get("author") or "").strip() or None,
-        synopsis=str(book.get("synopsis") or "").strip(),
-        cover=str(book.get("cover") or "").strip() or None,
-        chapterCount=len(chapters),
-        chapters=chapters,
-        bookKind="轻小说",
-    )
-
-
-async def _preview_ehentai(source_url: str, payload: AddBookPayload) -> PreviewResponse:
-    gallery_ids = ehentai_gallery_ids_from_url(source_url)
-    if not gallery_ids:
-        raise ValueError("无法识别 E-Hentai 画廊链接，请提交 /g/{gid}/{token}/ 地址")
-    gid, token = gallery_ids
-    async with _build_http_client() as client:
-        metadata = await get_ehentai_gallery_metadata(client, gid, token)
-        page = await get_ehentai_gallery_page(client, source_url)
-    title = str(metadata.get("title") or payload.title or f"E-Hentai Gallery {gid}")
-    details = [
-        str(metadata.get("category") or "").strip(),
-        str(page.get("description") or "").strip(),
-    ]
-    tags = [str(item) for item in metadata.get("tags") or []]
-    if tags:
-        details.append("标签：" + "、".join(tags[:20]))
-    filecount = int(metadata.get("filecount") or page.get("filecount") or 0)
-    chapter = ChapterPreview(title=title, url=source_url, pageCount=filecount)
-    return PreviewResponse(
-        title=title,
-        author=str(metadata.get("author") or page.get("uploader") or "").strip() or None,
-        synopsis="\n\n".join(item for item in details if item),
-        cover=str(metadata.get("cover") or "").strip() or None,
-        chapterCount=1,
-        chapters=[chapter],
         bookKind="漫画",
     )
 
@@ -10296,14 +9955,6 @@ async def preview_from_url(payload: AddBookPayload) -> PreviewResponse:
         return await _preview_copymanga(source_url, payload)
     if plugin.preview_handler == "comicores":
         return await _preview_comicores(source_url, payload)
-    if plugin.preview_handler == "ciweimao":
-        return await _preview_ciweimao(source_url, payload)
-    if plugin.preview_handler == "shaoniandream":
-        return await _preview_shaoniandream(source_url, payload)
-    if plugin.preview_handler == "sfacg":
-        return await _preview_sfacg(source_url, payload)
-    if plugin.preview_handler == "ehentai":
-        return await _preview_ehentai(source_url, payload)
     if plugin.preview_handler == "pixiv_comic":
         if not _is_pixiv_comic_work_url(source_url):
             raise ValueError("Pixiv Comic 章节链接不是作品页，请提交作品链接")
@@ -10586,7 +10237,7 @@ def _yanmaga_viewer_content_id(viewer_url: str, book_path: str, episode_id: str)
         raise ValueError("Yanmaga 章节没有跳转到同作品、同章节的官方 Viewer")
     content_id = parse_qs(parsed.query).get("cid", [""])[0].strip()
     if not content_id:
-        raise ValueError("Yanmaga 章节没有返回当前解析器可用的 Viewer 内容标识")
+        raise ValueError("Yanmaga 章节当前需要注册、登录、点数或已停止匿名公开")
     return content_id
 
 
@@ -10653,7 +10304,7 @@ async def _fetch_yanmaga_chapter_data(
         raise ValueError("Yanmaga Viewer 内容信息格式无效")
     items = info_payload.get("items")
     if info_payload.get("result") != 1 or not isinstance(items, list) or not items:
-        raise ValueError("Yanmaga Viewer 未返回可解析的章节内容")
+        raise ValueError("Yanmaga Viewer 未返回公开章节内容，章节可能已停止公开")
     item = items[0]
     if not isinstance(item, dict):
         raise ValueError("Yanmaga Viewer 内容信息格式无效")
@@ -10711,8 +10362,8 @@ async def _fetch_yanmaga_chapter_data(
         text=_manga_placeholder_text(title, len(image_urls)),
         image_urls=image_urls,
         illustration=False,
-        content_source="yanmaga_viewer",
-        authorization_method="upstream-viewer",
+        content_source="yanmaga_public_viewer",
+        authorization_method="public_web",
         access_restricted=False,
     )
 
@@ -10906,6 +10557,8 @@ async def _fetch_pixiv_comic_chapter_data(
     reading_episode = payload["data"].get("reading_episode")
     if not isinstance(reading_episode, dict):
         raise ValueError("Pixiv Comic 阅读接口缺少章节信息")
+    if reading_episode.get("is_displayable") is False:
+        raise ValueError("该 Pixiv Comic 章节当前不可阅读，可能需要登录、购买或已结束公开")
     pages = reading_episode.get("pages")
     if not isinstance(pages, list):
         raise ValueError("Pixiv Comic 阅读接口缺少漫画页面")
@@ -10933,7 +10586,6 @@ async def _fetch_pixiv_comic_chapter_data(
         text=_manga_placeholder_text(title, len(image_urls)),
         image_urls=image_urls,
         illustration=False,
-        access_restricted=reading_episode.get("is_displayable") is False,
     )
 
 
@@ -11177,15 +10829,12 @@ async def _fetch_quark_chapter_data(
         raise ValueError("夸克小说章节链接缺少作品或章节 ID")
     book_id, chapter_id = ids
     result = await get_quark_chapter_content(client, book_id, chapter_id)
-    chapter = result.get("chapter")
     return ChapterFetchResult(
         text=str(result.get("text") or ""),
         image_urls=[],
         content_source="shuqi-public-web",
         authorization_method="anonymous-public",
-        access_restricted=(
-            not quark_chapter_is_public(chapter) if isinstance(chapter, dict) else False
-        ),
+        access_restricted=False,
     )
 
 
@@ -11199,6 +10848,8 @@ async def _fetch_copymanga_chapter_data(
         raise ValueError("拷贝漫画章节链接缺少作品标识或章节 ID")
     path_word, chapter_id = ids
     result = await get_mangacopy_chapter(client, path_word, chapter_id)
+    if any(bool(result.get(key)) for key in ("is_lock", "is_login", "is_vip")):
+        raise ValueError("拷贝漫画章节当前需要登录、会员或其他访问权限")
     chapter = result.get("chapter")
     if not isinstance(chapter, dict):
         raise ValueError("拷贝漫画章节响应缺少 chapter 数据")
@@ -11215,84 +10866,13 @@ async def _fetch_copymanga_chapter_data(
             seen.add(value)
             image_urls.append(value)
     if not image_urls:
-        raise ValueError(f"拷贝漫画章节“{chapter_title or chapter_id}”没有返回可解析图片")
+        raise ValueError(f"拷贝漫画章节“{chapter_title or chapter_id}”没有公开图片")
     return ChapterFetchResult(
         text="",
         image_urls=image_urls,
         illustration=False,
         content_source="mangacopy-public-api",
         authorization_method="public-api",
-        access_restricted=any(bool(result.get(key)) for key in ("is_lock", "is_login", "is_vip")),
-    )
-
-
-async def _fetch_ciweimao_chapter_data(
-    client: httpx.AsyncClient,
-    chapter_url: str,
-) -> ChapterFetchResult:
-    chapter_id = ciweimao_chapter_id_from_url(chapter_url)
-    if not chapter_id:
-        raise ValueError("无法识别刺猬猫章节链接")
-    text = await get_ciweimao_chapter(client, chapter_id)
-    return ChapterFetchResult(
-        text=text,
-        image_urls=[],
-        content_source="ciweimao-encrypted-web-api",
-        authorization_method="anonymous-public",
-        access_restricted=False,
-    )
-
-
-async def _fetch_shaoniandream_chapter_data(
-    client: httpx.AsyncClient,
-    chapter_url: str,
-) -> ChapterFetchResult:
-    chapter_id = shaoniandream_chapter_id_from_url(chapter_url)
-    if not chapter_id:
-        raise ValueError("无法识别少年梦章节链接")
-    text = await get_shaoniandream_chapter(client, chapter_id)
-    return ChapterFetchResult(
-        text=text,
-        image_urls=[],
-        content_source="shaoniandream-encrypted-web-api",
-        authorization_method="anonymous-public",
-        access_restricted=False,
-    )
-
-
-async def _fetch_sfacg_chapter_data(
-    client: httpx.AsyncClient,
-    chapter_url: str,
-) -> ChapterFetchResult:
-    ids = sfacg_chapter_ids_from_url(chapter_url)
-    if not ids:
-        raise ValueError("无法识别 SF 轻小说章节链接")
-    text = await get_sfacg_chapter(client, ids[1])
-    return ChapterFetchResult(
-        text=text,
-        image_urls=[],
-        content_source="sfacg-signed-api",
-        authorization_method="upstream-access-policy",
-        access_restricted=False,
-    )
-
-
-async def _fetch_ehentai_chapter_data(
-    client: httpx.AsyncClient,
-    chapter_url: str,
-    chapter_title: str,
-) -> ChapterFetchResult:
-    if not ehentai_gallery_ids_from_url(chapter_url):
-        raise ValueError("无法识别 E-Hentai 画廊链接")
-    entries = await get_ehentai_gallery_image_entries(client, chapter_url)
-    image_urls = [item["image_url"] for item in entries]
-    for item in entries:
-        _EHENTAI_IMAGE_REFERERS[item["image_url"]] = item["referer"]
-    return ChapterFetchResult(
-        text=_manga_placeholder_text(chapter_title or "E-Hentai 画廊", len(image_urls)),
-        image_urls=image_urls,
-        content_source="ehentai-public-gallery",
-        authorization_method="anonymous-public",
         access_restricted=False,
     )
 
@@ -11302,7 +10882,10 @@ async def _fetch_chapter_data(
 ) -> ChapterFetchResult:
     plugin = _require_enabled_site_plugin(chapter_url)
     if plugin.chapter_handler is None:
-        raise ValueError(f"站点插件“{plugin.name}”当前只支持作品预览和搜索，尚未实现章节抓取")
+        raise ValueError(
+            f"站点插件“{plugin.name}”只支持作品预览和搜索，不提供章节抓取；"
+            "该站章节区包含登录后可见的网盘或付费下载资源"
+        )
     try:
         if plugin.chapter_handler == "fanqie":
             return await _fetch_fanqie_chapter_data(client, chapter_url, chapter_title)
@@ -11316,14 +10899,6 @@ async def _fetch_chapter_data(
             return await _fetch_bika_chapter_data(client, chapter_url, chapter_title)
         if plugin.chapter_handler == "copymanga":
             return await _fetch_copymanga_chapter_data(client, chapter_url, chapter_title)
-        if plugin.chapter_handler == "ciweimao":
-            return await _fetch_ciweimao_chapter_data(client, chapter_url)
-        if plugin.chapter_handler == "shaoniandream":
-            return await _fetch_shaoniandream_chapter_data(client, chapter_url)
-        if plugin.chapter_handler == "sfacg":
-            return await _fetch_sfacg_chapter_data(client, chapter_url)
-        if plugin.chapter_handler == "ehentai":
-            return await _fetch_ehentai_chapter_data(client, chapter_url, chapter_title)
         if plugin.chapter_handler == "pixiv_comic":
             if _is_pixiv_comic_story_url(chapter_url):
                 return await _fetch_pixiv_comic_chapter_data(client, chapter_url, chapter_title)
@@ -11806,8 +11381,6 @@ async def _download_binary_bytes(
     pixiv_comic_page = _PIXIV_COMIC_PAGE_KEYS.get(url)
     yanmaga_page = _YANMAGA_PAGE_KEYS.get(url)
     headers = _image_request_headers(url, referer)
-    if ehentai_referer := _EHENTAI_IMAGE_REFERERS.get(url):
-        headers["Referer"] = ehentai_referer
     if pixiv_comic_page:
         headers["X-Cobalt-Thumber-Parameter-GridShuffle-Key"] = pixiv_comic_page[0]
     if yanmaga_page:

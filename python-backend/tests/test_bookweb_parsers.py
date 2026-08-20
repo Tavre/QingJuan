@@ -155,7 +155,7 @@ def test_yanmaga_page_parser_preserves_access_boundary() -> None:
 
 
 @pytest.mark.asyncio
-async def test_yanmaga_preview_keeps_all_catalog_episodes(monkeypatch) -> None:
+async def test_yanmaga_preview_keeps_only_anonymous_public_episodes(monkeypatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/comics/Test":
             return httpx.Response(200, text=_yanmaga_book_html())
@@ -181,13 +181,11 @@ async def test_yanmaga_preview_keeps_all_catalog_episodes(monkeypatch) -> None:
     )
 
     assert result.bookKind == "漫画"
-    assert [chapter.title for chapter in result.chapters] == ["第一话", "第二话", "第三话"]
+    assert [chapter.title for chapter in result.chapters] == ["第一话", "第三话"]
     assert [chapter.url for chapter in result.chapters] == [
         "https://yanmaga.jp/comics/Test/e1",
-        "https://yanmaga.jp/comics/Test/e2",
         "https://yanmaga.jp/comics/Test/e3",
     ]
-    assert [chapter.accessRestricted for chapter in result.chapters] == [False, True, False]
 
 
 def _synthetic_scrambled_page() -> bytes:
@@ -270,8 +268,8 @@ async def test_yanmaga_chapter_registers_public_viewer_pages(monkeypatch) -> Non
             "第一话",
         )
 
-    assert result.content_source == "yanmaga_viewer"
-    assert result.authorization_method == "upstream-viewer"
+    assert result.content_source == "yanmaga_public_viewer"
+    assert result.authorization_method == "public_web"
     assert len(result.image_urls) == 1
     image_url = result.image_urls[0]
     assert image_url.startswith("https://sbc.yanmaga.jp/books/test/1/img/pages/001.jpg?")

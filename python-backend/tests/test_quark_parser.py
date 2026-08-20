@@ -237,26 +237,19 @@ async def test_quark_free_chapter_is_decoded_and_normalized(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_quark_attempts_nonfree_chapter_when_content_endpoint_returns_text(monkeypatch) -> None:
+async def test_quark_rejects_nonfree_chapter_before_content_request(monkeypatch) -> None:
     monkeypatch.setattr(quark_client, "QUARK_PAGE_MIN_INTERVAL_SECONDS", 0)
     requests: list[httpx.Request] = []
-    expected = "付费章节完整正文。" * 30
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.host == "www.shuqi.com":
-            return httpx.Response(200, text=_reader_html(_chapters_info(public=False)))
-        return httpx.Response(
-            200,
-            json={"state": "200", "ChapterContent": _encoded_content(expected)},
-        )
+        return httpx.Response(200, text=_reader_html(_chapters_info(public=False)))
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        result = await quark_client.get_quark_chapter_content(client, "46543", "2206013")
+        with pytest.raises(quark_client.QuarkBookError, match="不是匿名免费章节"):
+            await quark_client.get_quark_chapter_content(client, "46543", "2206013")
 
-    assert result["text"] == expected
-    assert result["chapter"]["isFreeRead"] is False
-    assert len(requests) == 2
+    assert len(requests) == 1
 
 
 @pytest.mark.asyncio
@@ -272,7 +265,7 @@ async def test_quark_rejects_untrusted_content_host(monkeypatch) -> None:
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        with pytest.raises(quark_client.QuarkBookError, match="非官方正文地址"):
+        with pytest.raises(quark_client.QuarkBookError, match="非官方免费正文地址"):
             await quark_client.get_quark_chapter_content(client, "46543", "2206013")
 
     assert len(requests) == 1

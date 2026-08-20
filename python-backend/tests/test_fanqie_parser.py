@@ -96,9 +96,7 @@ def _reader_html(
                     "isPaidPublication": False,
                     "isPaidStory": False,
                     "needPay": 0,
-                    "chapterWordNumber": (
-                        len(visible_text) if declared_word_count is None else declared_word_count
-                    ),
+                    "chapterWordNumber": declared_word_count or len(visible_text),
                     "content": resolved_content,
                 }
             }
@@ -128,6 +126,7 @@ def test_book_parser_flattens_volumes_orders_chapters_and_preserves_locks() -> N
     assert book.synopsis == "字面 undefined 必须保持不变"
     assert book.total_chapter_count == 3
     assert [chapter.item_id for chapter in book.chapters] == ["10002", "10001", "10003"]
+    assert [chapter.item_id for chapter in book.public_chapters] == ["10002", "10001"]
     assert book.chapters[-1].is_locked is True
 
 
@@ -158,17 +157,7 @@ def test_reader_parser_accepts_complete_content_despite_lock_hint() -> None:
 
     assert chapter.text == "这是第一段。\n\n这是第二段。"
     assert chapter.access_restricted is True
-    assert chapter.authorization_method == "public_web"
-
-
-def test_reader_parser_accepts_returned_locked_content_without_declared_length() -> None:
-    chapter = parse_fanqie_reader_page(
-        _reader_html(locked=True, declared_word_count=0),
-        "https://fanqienovel.com/reader/10002",
-    )
-
-    assert chapter.text == "这是第一段。\n\n这是第二段。"
-    assert chapter.access_restricted is True
+    assert chapter.authorization_method == "authorized_web_session"
 
 
 def test_reader_parser_refuses_incomplete_locked_preview_content() -> None:

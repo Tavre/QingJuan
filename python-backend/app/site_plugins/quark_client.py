@@ -376,15 +376,17 @@ async def get_quark_catalog(
         return copy.deepcopy(chapters_info), copy.deepcopy(chapters)
 
 
-def _content_url(
+def _free_content_url(
     chapters_info: dict[str, Any],
     chapter: dict[str, Any],
 ) -> str:
+    if not quark_chapter_is_public(chapter):
+        raise QuarkBookError("该夸克小说章节不是匿名免费章节，青卷不抓取付费或试读正文")
     prefix = str(chapters_info.get("freeContUrlPrefix") or "").strip()
     suffix = str(chapter.get("contUrlSuffix") or "").strip()
     url = f"{prefix}{suffix}"
     if not _is_free_content_url(url):
-        raise QuarkBookError("夸克小说章节返回了非 HTTPS 或非官方正文地址")
+        raise QuarkBookError("夸克小说章节返回了非 HTTPS 或非官方免费正文地址")
     return url
 
 
@@ -423,7 +425,7 @@ async def get_quark_chapter_content(
     )
     if chapter is None:
         raise QuarkBookError("夸克小说目录中未找到该章节")
-    content_url = _content_url(chapters_info, chapter)
+    content_url = _free_content_url(chapters_info, chapter)
     try:
         response = await client.get(content_url, follow_redirects=False)
     except httpx.HTTPError as exc:
@@ -442,7 +444,7 @@ async def get_quark_chapter_content(
         declared_length = 0
     actual_length = len(re.sub(r"\s+", "", text))
     if declared_length >= 80 and actual_length < max(20, int(declared_length * 0.3)):
-        raise QuarkBookError("夸克小说章节正文疑似不完整，请稍后重试")
+        raise QuarkBookError("夸克小说免费章节正文疑似不完整，请稍后重试")
     return {
         "text": text,
         "chapter": chapter,

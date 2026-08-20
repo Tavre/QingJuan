@@ -126,6 +126,7 @@ class FanqieAppClient:
                 declared_word_count=_declared_word_count(data),
                 content_source="app_full_api",
                 authorization_method="app_full_api",
+                trusted_complete=True,
             )
             return FanqieAppChapter(chapter=chapter, key_version=self._key_version)
         raise ValueError("番茄 APP 章节请求超过重试上限")

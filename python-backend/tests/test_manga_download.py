@@ -1786,16 +1786,6 @@ def test_pixiv_comic_work_payload_builds_readable_chapters_in_reading_order() ->
                         "state": "readable",
                     },
                 },
-                {
-                    "state": "locked",
-                    "episode": {
-                        "id": 180000,
-                        "numbering_title": "Step.0.5",
-                        "sub_title": "访问标记章节",
-                        "viewer_path": "/viewer/stories/180000",
-                        "state": "locked",
-                    },
-                },
                 {"state": "not_publishing", "message": "掲載期間が終了しました"},
                 {
                     "state": "readable",
@@ -1824,15 +1814,12 @@ def test_pixiv_comic_work_payload_builds_readable_chapters_in_reading_order() ->
     assert preview.bookKind == "漫画"
     assert [chapter.title for chapter in preview.chapters] == [
         "Step.0 星が堕ちた日",
-        "Step.0.5 访问标记章节",
         "Step.1① 砂漠に降る雨",
     ]
     assert [chapter.url for chapter in preview.chapters] == [
         "https://comic.pixiv.net/viewer/stories/177714",
-        "https://comic.pixiv.net/viewer/stories/180000",
         "https://comic.pixiv.net/viewer/stories/181852",
     ]
-    assert [chapter.accessRestricted for chapter in preview.chapters] == [False, True, False]
 
 
 @pytest.mark.asyncio
@@ -1862,7 +1849,7 @@ async def test_pixiv_comic_story_uses_signed_read_api_and_registers_page_keys() 
                 "data": {
                     "reading_episode": {
                         "title": "Step.0 星が堕ちた日",
-                        "is_displayable": False,
+                        "is_displayable": True,
                         "pages": [
                             {
                                 "url": image_url,
@@ -1883,7 +1870,6 @@ async def test_pixiv_comic_story_uses_signed_read_api_and_registers_page_keys() 
 
     assert len(requests) == 2
     assert result.image_urls == [image_url]
-    assert result.access_restricted is True
     assert "共 1 页" in result.text
     assert scraper._PIXIV_COMIC_PAGE_KEYS[image_url] == ("page-key", 32)
 

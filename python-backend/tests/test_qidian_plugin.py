@@ -200,7 +200,7 @@ def test_qidian_catalog_maps_volumes_and_access_state(monkeypatch) -> None:
     assert chapters[1]["chapterId"] == "12"
 
 
-def test_qidian_reports_unsupported_encrypted_chapter_format(monkeypatch) -> None:
+def test_qidian_protected_chapter_is_rejected_without_decryption(monkeypatch) -> None:
     page_context = {
         "pageContext": {
             "pageProps": {
@@ -222,38 +222,8 @@ def test_qidian_reports_unsupported_encrypted_chapter_format(monkeypatch) -> Non
         lambda *args, **kwargs: _FakeResponse(text=html),
     )
 
-    with pytest.raises(QidianApiError, match="尚未支持的加密正文格式"):
+    with pytest.raises(QidianApiError, match="不处理受保护内容解密"):
         qidian_client.get_chapter("123", "11", cookies={"ywguid": "private"})
-
-
-def test_qidian_parses_returned_vip_content_without_preemptive_rejection(monkeypatch) -> None:
-    page_context = {
-        "pageContext": {
-            "pageProps": {
-                "pageData": {
-                    "chapterInfo": {
-                        "chapterId": "12",
-                        "chapterName": "订阅章节",
-                        "content": "<p>第一段完整正文</p><p>第二段完整正文</p>",
-                        "freeStatus": "1",
-                        "isBuy": "0",
-                        "vipStatus": "1",
-                    }
-                }
-            }
-        }
-    }
-    html = f'<script id="vite-plugin-ssr_pageContext">{json.dumps(page_context)}</script>'
-    monkeypatch.setattr(
-        qidian_client,
-        "_request_get",
-        lambda *args, **kwargs: _FakeResponse(text=html),
-    )
-
-    result = qidian_client.get_chapter("123", "12")
-
-    assert result["text"] == "第一段完整正文\n第二段完整正文"
-    assert result["accessRestricted"] is True
 
 
 def test_qidian_free_chapter_normalizes_string_access_flags(monkeypatch) -> None:

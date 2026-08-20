@@ -1,4 +1,5 @@
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qingjuan/app/app_scope.dart';
 import 'package:qingjuan/app/app_state.dart';
@@ -233,8 +234,19 @@ void main() {
     api.close();
   });
 
-  testWidgets('Android Token input disables magnifier but keeps text selection',
+  testWidgets('Android Token input keeps selection and has explicit paste',
       (tester) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.getData') {
+        return <String, Object>{'text': ' clipboard-value '};
+      }
+      return null;
+    });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null),
+    );
     final preferences = await SharedPreferences.getInstance();
     final appState = AppState(preferences);
     final api = ApiClient(() => appState.backendUrl);
@@ -272,6 +284,14 @@ void main() {
       same(TextMagnifierConfiguration.disabled),
     );
     expect(token.enableInteractiveSelection, isTrue);
+
+    final paste = find.byKey(
+      const ValueKey('paste-linux-backend-token'),
+    );
+    await tester.ensureVisible(paste);
+    await tester.tap(paste);
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(token.controller!.text, 'clipboard-value');
 
     await backend.dispose();
     api.close();

@@ -14,6 +14,7 @@ import 'package:qingjuan/core/backend/backend_connection_manager.dart';
 import 'package:qingjuan/core/models/book.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
 import 'package:qingjuan/features/reader/reader_page.dart';
+import 'package:qingjuan/features/reader/reader_pagination.dart';
 import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/sources/sources_controller.dart';
 import 'package:qingjuan/features/tasks/tasks_controller.dart';
@@ -41,8 +42,12 @@ void main() {
     await tester.pumpWidget(harness.widget);
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pump();
-    expect(find.text('这是章节正文。'), findsOneWidget);
+    expect(find.textContaining('这是章节正文。'), findsOneWidget);
     expect(find.text('暂时无法加载'), findsNothing);
+    final body = tester.widget<Text>(
+      find.text('$readerFirstLineIndent这是章节正文。'),
+    );
+    expect(body.textAlign, TextAlign.justify);
   });
 
   testWidgets('Windows renders the v1.3.4 desktop reader chrome',
@@ -66,7 +71,15 @@ void main() {
     expect(find.byKey(const ValueKey('desktop-reader-page')), findsOneWidget);
     expect(find.text('上一章'), findsOneWidget);
     expect(find.text('下一章'), findsOneWidget);
-    expect(find.text('这是章节正文。'), findsOneWidget);
+    expect(find.textContaining('这是章节正文。'), findsOneWidget);
+    final body = tester.widget<SelectableText>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is SelectableText &&
+            widget.data == '$readerFirstLineIndent这是章节正文。',
+      ),
+    );
+    expect(body.textAlign, TextAlign.justify);
     expect(
       find.byKey(const ValueKey('reader-bottom-controls')),
       findsNothing,
@@ -98,7 +111,165 @@ void main() {
     await tester.pump();
 
     expect(find.byType(SelectableText).evaluate().length, lessThan(50));
-    expect(find.text('正文段落 500'), findsNothing);
+    expect(find.textContaining('正文段落 500'), findsNothing);
+  });
+
+  testWidgets('volume keys turn pages in paged reading mode', (tester) async {
+    final harness = await _Harness.create(
+      MockClient((request) async {
+        if (request.method == 'PUT') return http.Response('{}', 200);
+        return http.Response(
+          jsonEncode(_longChapterPayloadFor(1)),
+          200,
+          headers: const <String, String>{
+            'content-type': 'application/json; charset=utf-8',
+          },
+        );
+      }),
+      volumeKeyReadingEnabled: true,
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+
+    final pageView = tester.widget<PageView>(find.byType(PageView));
+    final controller = pageView.controller!;
+    expect(controller.page, 0);
+
+    await _sendReaderVolumeKey('down');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 320));
+
+    expect(controller.page, closeTo(1, 0.01));
+  });
+
+  testWidgets('volume keys move up and down in continuous reading mode',
+      (tester) async {
+    final harness = await _Harness.create(
+      MockClient((request) async {
+        if (request.method == 'PUT') return http.Response('{}', 200);
+        return http.Response(
+          jsonEncode(_longChapterPayloadFor(1)),
+          200,
+          headers: const <String, String>{
+            'content-type': 'application/json; charset=utf-8',
+          },
+        );
+      }),
+      flowMode: ReaderFlowMode.continuous,
+      volumeKeyReadingEnabled: true,
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+
+    final list = tester.widget<ListView>(
+      find.byKey(const ValueKey('reader-continuous-translated')),
+    );
+    final controller = list.controller!;
+    expect(controller.position.maxScrollExtent, greaterThan(0));
+
+    await _sendReaderVolumeKey('down');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 240));
+    final afterDown = controller.offset;
+    expect(afterDown, greaterThan(0));
+
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 150)),
+    );
+    await _sendReaderVolumeKey('up');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 240));
+
+    expect(controller.offset, lessThan(afterDown));
+  });
+
+  testWidgets(
+      'one volume press continues into a chapter still being prefetched',
+      (tester) async {
+    final releaseSecondChapter = Completer<void>();
+    final harness = await _Harness.create(
+      MockClient((request) async {
+        if (request.method == 'PUT') return http.Response('{}', 200);
+        final chapterIndex = int.parse(request.url.pathSegments.last);
+        if (chapterIndex == 2) await releaseSecondChapter.future;
+        final payload = chapterIndex == 2
+            ? _longChapterPayloadFor(chapterIndex)
+            : _chapterPayloadFor(chapterIndex);
+        return http.Response(
+          jsonEncode(payload),
+          200,
+          headers: const <String, String>{
+            'content-type': 'application/json; charset=utf-8',
+          },
+        );
+      }),
+      detail: _threeChapterDetail,
+      flowMode: ReaderFlowMode.continuous,
+      volumeKeyReadingEnabled: true,
+    );
+    addTearDown(harness.dispose);
+    addTearDown(() {
+      if (!releaseSecondChapter.isCompleted) releaseSecondChapter.complete();
+    });
+
+    await tester.pumpWidget(harness.widget);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+    final list = tester.widget<ListView>(
+      find.byKey(const ValueKey('reader-continuous-translated')),
+    );
+    final controller = list.controller!;
+
+    await _sendReaderVolumeKey('down');
+    releaseSecondChapter.complete();
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 240));
+
+    expect(find.textContaining('第二章正文段落'), findsWidgets);
+    expect(controller.offset, greaterThan(0));
+  });
+
+  testWidgets('volume up at a chapter start opens the previous chapter end',
+      (tester) async {
+    final harness = await _Harness.create(
+      MockClient((request) async {
+        if (request.method == 'PUT') return http.Response('{}', 200);
+        final chapterIndex = int.parse(request.url.pathSegments.last);
+        return http.Response(
+          jsonEncode(_longChapterPayloadFor(chapterIndex)),
+          200,
+          headers: const <String, String>{
+            'content-type': 'application/json; charset=utf-8',
+          },
+        );
+      }),
+      detail: _threeChapterDetail,
+      initialChapterIndex: 2,
+      flowMode: ReaderFlowMode.continuous,
+      volumeKeyReadingEnabled: true,
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+    await _sendReaderVolumeKey('up');
+    await tester.pump();
+    await tester.pump();
+
+    final list = tester.widget<ListView>(
+      find.byKey(const ValueKey('reader-continuous-translated')),
+    );
+    expect(find.text('第 1 / 3 章'), findsOneWidget);
+    expect(list.controller!.offset, greaterThan(0));
   });
 
   testWidgets('prefetches the next chapter and switches without a loading page',
@@ -143,14 +314,14 @@ void main() {
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pump();
 
-    expect(find.text('第一章正文。'), findsOneWidget);
+    expect(find.textContaining('第一章正文。'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('reader-next-button')));
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pump(const Duration(milliseconds: 150));
 
     expect(find.text('正在打开章节'), findsNothing);
-    expect(find.text('第二章正文。'), findsOneWidget);
+    expect(find.textContaining('第二章正文。'), findsOneWidget);
     expect(requestedChapters.where((index) => index == 2), hasLength(1));
     expect(requestedChapters, contains(3));
   });
@@ -181,6 +352,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('reader-settings-button')));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.byKey(const ValueKey('reader-settings-panel')), findsOneWidget);
+    expect(find.text('音量键滑动 / 翻页'), findsOneWidget);
     expect(find.byType(BackdropFilter), findsNothing);
     expect(find.byType(RepaintBoundary), findsWidgets);
     final bottomControls = find.byKey(
@@ -237,6 +409,14 @@ void main() {
     );
     expect(continuousReader, findsOneWidget);
     final continuousList = tester.widget<ListView>(continuousReader);
+    final continuousBody = tester.widget<SelectableText>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is SelectableText &&
+            widget.data == '$readerFirstLineIndent第一章正文。',
+      ),
+    );
+    expect(continuousBody.textAlign, TextAlign.justify);
     final contentPadding = continuousList.padding! as EdgeInsets;
     expect(contentPadding.bottom, lessThan(80));
     expect(continuousList.cacheExtent, 420);
@@ -258,7 +438,7 @@ void main() {
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pumpAndSettle();
 
-    expect(find.text('第三章正文。'), findsOneWidget);
+    expect(find.textContaining('第三章正文。'), findsOneWidget);
     expect(find.text('第 3 / 3 章'), findsOneWidget);
   });
 
@@ -300,7 +480,8 @@ void main() {
     expect(tester.widget<AnimatedSlide>(bottomControls).offset, Offset.zero);
   });
 
-  testWidgets('hiding Android reader controls keeps edge-to-edge system UI',
+  testWidgets(
+      'Android reader hides only the top system overlay and restores it',
       (tester) async {
     final platformCalls = <MethodCall>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -335,16 +516,40 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     final modeCalls = platformCalls.where(
-      (call) => call.method == 'SystemChrome.setEnabledSystemUIMode',
+      (call) => call.method == 'SystemChrome.setEnabledSystemUIOverlays',
     );
     expect(modeCalls, isNotEmpty);
     expect(
       modeCalls.map((call) => '${call.arguments}').join('\n'),
-      contains('SystemUiMode.edgeToEdge'),
+      contains('SystemUiOverlay.bottom'),
     );
     expect(
       modeCalls.map((call) => '${call.arguments}').join('\n'),
-      isNot(contains('SystemUiMode.immersiveSticky')),
+      isNot(contains('SystemUiOverlay.top')),
+    );
+
+    platformCalls.clear();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(
+      platformCalls.any(
+        (call) =>
+            call.method == 'SystemChrome.setEnabledSystemUIOverlays' &&
+            '${call.arguments}'.contains('SystemUiOverlay.bottom'),
+      ),
+      isTrue,
+    );
+
+    platformCalls.clear();
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(
+      platformCalls.any(
+        (call) =>
+            call.method == 'SystemChrome.setEnabledSystemUIMode' &&
+            '${call.arguments}'.contains('SystemUiMode.edgeToEdge'),
+      ),
+      isTrue,
     );
   });
 
@@ -377,6 +582,17 @@ void main() {
     expect(find.byKey(const ValueKey('reader-palette-night')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+}
+
+Future<void> _sendReaderVolumeKey(String direction) async {
+  await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .handlePlatformMessage(
+    'qingjuan/reader',
+    const StandardMethodCodec().encodeMethodCall(
+      MethodCall('volumeKey', direction),
+    ),
+    null,
+  );
 }
 
 const _detail = BookDetail(
@@ -493,6 +709,19 @@ Map<String, Object?> _chapterPayloadFor(int chapterIndex) => <String, Object?>{
       'pageTranslations': <String>[],
     };
 
+Map<String, Object?> _longChapterPayloadFor(int chapterIndex) {
+  final chapterName = <String>['一', '二', '三'][chapterIndex - 1];
+  final paragraphs = List<String>.generate(
+    80,
+    (index) => '第$chapterName章正文段落 ${index + 1}，用于验证连续滚动和分页。',
+  );
+  return <String, Object?>{
+    ..._chapterPayloadFor(chapterIndex),
+    'content': paragraphs.join('\n'),
+    'paragraphs': paragraphs,
+  };
+}
+
 class _Harness {
   _Harness({
     required this.widget,
@@ -508,8 +737,13 @@ class _Harness {
     http.Client client, {
     BookDetail detail = _detail,
     TargetPlatform targetPlatform = TargetPlatform.android,
+    int initialChapterIndex = 1,
+    ReaderFlowMode flowMode = ReaderFlowMode.paged,
+    bool volumeKeyReadingEnabled = false,
   }) async {
     final appState = AppState(await SharedPreferences.getInstance());
+    await appState.setReaderFlowMode(flowMode);
+    await appState.setVolumeKeyReadingEnabled(volumeKeyReadingEnabled);
     final api = ApiClient(() => appState.backendUrl, client: client);
     final backend = BackendConnectionManager(api, isConfigured: () => false);
     final library = LibraryController(api);
@@ -533,7 +767,7 @@ class _Harness {
           settings: settings,
           child: ReaderPage(
             detail: detail,
-            initialChapterIndex: 1,
+            initialChapterIndex: initialChapterIndex,
           ),
         ),
       ),

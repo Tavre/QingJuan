@@ -1,4 +1,5 @@
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter/services.dart';
 
 import '../../../app/app_state.dart';
 import '../../../core/backend/backend_connection_manager.dart';
@@ -84,16 +85,40 @@ class BackendConnectionCard extends StatelessWidget {
             const SizedBox(height: 12),
             InfoLabel(
               label: '连接 Token',
-              child: TextBox(
-                key: const ValueKey('linux-backend-token'),
-                controller: backendTokenController,
-                magnifierConfiguration:
-                    textInputMagnifierConfiguration(context),
-                obscureText: true,
-                enableInteractiveSelection: true,
-                enableSuggestions: false,
-                autocorrect: false,
-                placeholder: '由 Linux 服务端管理员生成',
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Expanded(
+                    child: TextBox(
+                      key: const ValueKey('linux-backend-token'),
+                      controller: backendTokenController,
+                      magnifierConfiguration:
+                          textInputMagnifierConfiguration(context),
+                      obscureText: true,
+                      enableInteractiveSelection: true,
+                      enableSuggestions: false,
+                      autocorrect: false,
+                      placeholder: '由 Linux 服务端管理员生成',
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Button(
+                    key: const ValueKey('paste-linux-backend-token'),
+                    onPressed: () => _pasteBackendToken(context),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        Icon(
+                          FluentIcons.paste,
+                          size: 16,
+                          semanticLabel: '粘贴连接 Token',
+                        ),
+                        SizedBox(width: 6),
+                        Text('粘贴'),
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ),
           ] else ...<Widget>[
@@ -158,6 +183,28 @@ class BackendConnectionCard extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _pasteBackendToken(BuildContext context) async {
+    try {
+      final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
+      final value = clipboard?.text?.trim();
+      if (value == null || value.isEmpty) return;
+      backendTokenController.value = TextEditingValue(
+        text: value,
+        selection: TextSelection.collapsed(offset: value.length),
+      );
+    } on PlatformException {
+      if (!context.mounted) return;
+      displayInfoBar(
+        context,
+        builder: (_, __) => const InfoBar(
+          title: Text('无法读取剪贴板'),
+          content: Text('请检查系统剪贴板权限后重试。'),
+          severity: InfoBarSeverity.warning,
+        ),
+      );
+    }
   }
 
   Widget _connectionStatusBar() {

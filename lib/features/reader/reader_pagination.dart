@@ -2,9 +2,11 @@ import 'dart:math' as math;
 
 import 'package:flutter/widgets.dart';
 
-// U+3164 是视觉为空的全宽占位符，但不会像 U+3000 那样在长段首行参与
-// 两端对齐时被排版引擎当作可裁剪空白。
-const String readerFirstLineIndent = '\u3164\u3164';
+// 段首标记只用于在分页字符串中保留“这里开始一个新段落”的信息。
+// 渲染前必须把它替换为固定宽度 WidgetSpan，不能把不可见字符直接交给
+// TextAlign.justify；Android 字体整形可能拉伸这类字符并造成段首漂移。
+const String readerParagraphStartMarker = '\uE000';
+const String _legacyReaderFirstLineIndent = '\u3164\u3164';
 
 List<String> readerParagraphsForLayout(
   List<String> paragraphs,
@@ -21,11 +23,45 @@ List<String> readerParagraphsForLayout(
 
 String? _normalizeReaderParagraph(String paragraph) {
   var body = paragraph.trim();
-  while (body.startsWith(readerFirstLineIndent)) {
-    body = body.substring(readerFirstLineIndent.length).trimLeft();
+  while (body.startsWith(readerParagraphStartMarker)) {
+    body = body.substring(readerParagraphStartMarker.length).trimLeft();
+  }
+  while (body.startsWith(_legacyReaderFirstLineIndent)) {
+    body = body.substring(_legacyReaderFirstLineIndent.length).trimLeft();
   }
   if (body.isEmpty) return null;
-  return '$readerFirstLineIndent$body';
+  return '$readerParagraphStartMarker$body';
+}
+
+TextSpan readerTextSpanForLayout(
+  String text, {
+  required double fontSize,
+}) {
+  final children = <InlineSpan>[];
+  var start = 0;
+  while (start < text.length) {
+    final markerIndex = text.indexOf(readerParagraphStartMarker, start);
+    if (markerIndex < 0) {
+      children.add(TextSpan(text: text.substring(start)));
+      break;
+    }
+    if (markerIndex > start) {
+      children.add(TextSpan(text: text.substring(start, markerIndex)));
+    }
+    children.add(
+      WidgetSpan(
+        child: SizedBox(
+          width: fontSize * 2,
+          height: 0,
+        ),
+      ),
+    );
+    start = markerIndex + readerParagraphStartMarker.length;
+  }
+  if (children.isEmpty && text.isNotEmpty) {
+    children.add(TextSpan(text: text));
+  }
+  return TextSpan(children: children);
 }
 
 String readerTextForPagination(

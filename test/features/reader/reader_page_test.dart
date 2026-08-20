@@ -14,7 +14,6 @@ import 'package:qingjuan/core/backend/backend_connection_manager.dart';
 import 'package:qingjuan/core/models/book.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
 import 'package:qingjuan/features/reader/reader_page.dart';
-import 'package:qingjuan/features/reader/reader_pagination.dart';
 import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/sources/sources_controller.dart';
 import 'package:qingjuan/features/tasks/tasks_controller.dart';
@@ -45,7 +44,12 @@ void main() {
     expect(find.textContaining('这是章节正文。'), findsOneWidget);
     expect(find.text('暂时无法加载'), findsNothing);
     final body = tester.widget<Text>(
-      find.text('$readerFirstLineIndent这是章节正文。'),
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is Text &&
+            widget.textSpan?.toPlainText(includePlaceholders: false) ==
+                '这是章节正文。',
+      ),
     );
     expect(body.textAlign, TextAlign.justify);
   });
@@ -76,7 +80,8 @@ void main() {
       find.byWidgetPredicate(
         (widget) =>
             widget is SelectableText &&
-            widget.data == '$readerFirstLineIndent这是章节正文。',
+            widget.textSpan?.toPlainText(includePlaceholders: false) ==
+                '这是章节正文。',
       ),
     );
     expect(body.textAlign, TextAlign.justify);
@@ -413,7 +418,8 @@ void main() {
       find.byWidgetPredicate(
         (widget) =>
             widget is SelectableText &&
-            widget.data == '$readerFirstLineIndent第一章正文。',
+            widget.textSpan?.toPlainText(includePlaceholders: false) ==
+                '第一章正文。',
       ),
     );
     expect(continuousBody.textAlign, TextAlign.justify);

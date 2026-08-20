@@ -1,4 +1,5 @@
 import 'package:flutter/widgets.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qingjuan/features/reader/reader_pagination.dart';
 
@@ -12,48 +13,114 @@ void main() {
     expect(
       paragraphs,
       const <String>[
-        '$readerFirstLineIndent第一段。',
-        '$readerFirstLineIndent第二段。',
+        '$readerParagraphStartMarker第一段。',
+        '$readerParagraphStartMarker第二段。',
       ],
     );
     expect(
       readerTextForPagination(paragraphs, ''),
-      '$readerFirstLineIndent第一段。\n\n'
-      '$readerFirstLineIndent第二段。',
+      '$readerParagraphStartMarker第一段。\n\n'
+      '$readerParagraphStartMarker第二段。',
     );
   });
 
-  test('justified long and short paragraphs keep the same first-line indent',
-      () {
+  test('reader span replaces paragraph markers with a fixed layout indent', () {
+    const fontSize = 20.0;
+    final span = readerTextSpanForLayout(
+      '$readerParagraphStartMarker正文。',
+      fontSize: fontSize,
+    );
+    final indent = span.children!.first as WidgetSpan;
+    final indentBox = indent.child as SizedBox;
+
+    expect(indentBox.width, fontSize * 2);
+    expect(indentBox.height, 0);
+    expect(span.toPlainText(includePlaceholders: false), '正文。');
+    expect(
+      span.children!.whereType<TextSpan>().map((part) => part.text).join(),
+      '正文。',
+    );
+  });
+
+  testWidgets(
+      'justified short and wrapped paragraphs keep fixed first-line geometry',
+      (tester) async {
     const fontSize = 20.0;
     const shortBody = '正文。';
-    const longBody = '正文需要足够长并自动换行，用于验证两端对齐时首行缩进不会被排版引擎裁掉。';
+    const longBody = '正文需要足够长并自动换行，用于验证两端对齐时首行缩进不会漂移，换行续行仍回到正文左边界。';
 
-    double firstCharacterLeft(String body) {
-      final text = '$readerFirstLineIndent$body';
-      final painter = TextPainter(
-        text: TextSpan(
-          text: text,
-          style: const TextStyle(fontSize: fontSize),
-        ),
-        textAlign: TextAlign.justify,
+    await tester.pumpWidget(
+      Directionality(
         textDirection: TextDirection.ltr,
-      )..layout(maxWidth: 180);
-      final contentOffset = text.indexOf('正');
-      return painter
-          .getBoxesForSelection(
-            TextSelection(
-              baseOffset: contentOffset,
-              extentOffset: contentOffset + 1,
+        child: Column(
+          children: <Widget>[
+            SizedBox(
+              width: 180,
+              child: Text.rich(
+                key: const ValueKey('short-reader-paragraph'),
+                readerTextSpanForLayout(
+                  '$readerParagraphStartMarker$shortBody',
+                  fontSize: fontSize,
+                ),
+                textAlign: TextAlign.justify,
+                style: const TextStyle(fontSize: fontSize),
+              ),
             ),
-          )
-          .first
-          .left;
-    }
+            SizedBox(
+              width: 180,
+              child: Text.rich(
+                key: const ValueKey('long-reader-paragraph'),
+                readerTextSpanForLayout(
+                  '$readerParagraphStartMarker$longBody',
+                  fontSize: fontSize,
+                ),
+                textAlign: TextAlign.justify,
+                style: const TextStyle(fontSize: fontSize),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
 
-    expect(readerFirstLineIndent.trim(), readerFirstLineIndent);
-    expect(firstCharacterLeft(longBody), firstCharacterLeft(shortBody));
-    expect(firstCharacterLeft(longBody), closeTo(fontSize * 2, 0.01));
+    RenderParagraph paragraphFor(ValueKey<String> key) =>
+        tester.renderObject<RenderParagraph>(
+          find.descendant(
+            of: find.byKey(key),
+            matching: find.byType(RichText),
+          ),
+        );
+
+    final shortParagraph = paragraphFor(
+      const ValueKey<String>('short-reader-paragraph'),
+    );
+    final longParagraph = paragraphFor(
+      const ValueKey<String>('long-reader-paragraph'),
+    );
+    final shortFirst = shortParagraph
+        .getBoxesForSelection(
+          const TextSelection(baseOffset: 1, extentOffset: 2),
+        )
+        .single;
+    final longFirst = longParagraph
+        .getBoxesForSelection(
+          const TextSelection(baseOffset: 1, extentOffset: 2),
+        )
+        .single;
+    final continuation =
+        List<int>.generate(longBody.length - 1, (index) => 2 + index)
+            .map(
+              (offset) => longParagraph.getBoxesForSelection(
+                TextSelection(baseOffset: offset, extentOffset: offset + 1),
+              ),
+            )
+            .where((boxes) => boxes.isNotEmpty)
+            .map((boxes) => boxes.first)
+            .firstWhere((box) => box.top > longFirst.top + 1);
+
+    expect(shortFirst.left, closeTo(fontSize * 2, 0.01));
+    expect(longFirst.left, closeTo(shortFirst.left, 0.01));
+    expect(continuation.left, closeTo(0, 0.01));
   });
 
   test('pagination preserves the complete chapter text in order', () {
@@ -78,10 +145,10 @@ void main() {
     final pages = paginateReaderText(text, 40);
 
     expect(pages, hasLength(greaterThan(1)));
-    expect(pages.first.startsWith(readerFirstLineIndent), isTrue);
+    expect(pages.first.startsWith(readerParagraphStartMarker), isTrue);
     expect(
       pages.skip(1).every(
-            (page) => !page.startsWith(readerFirstLineIndent),
+            (page) => !page.startsWith(readerParagraphStartMarker),
           ),
       isTrue,
     );

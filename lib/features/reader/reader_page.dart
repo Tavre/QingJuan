@@ -1211,8 +1211,11 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     final paragraphs = _readerParagraphs(content);
     return Padding(
       padding: const EdgeInsets.only(bottom: 18),
-      child: SelectableText(
-        paragraphs[contentIndex],
+      child: SelectableText.rich(
+        readerTextSpanForLayout(
+          paragraphs[contentIndex],
+          fontSize: _fontSize,
+        ),
         textAlign: TextAlign.justify,
         style: TextStyle(
           color: textColor,
@@ -1371,8 +1374,11 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                       ],
                       Expanded(
                         child: SelectionArea(
-                          child: Text(
-                            pages[index],
+                          child: Text.rich(
+                            readerTextSpanForLayout(
+                              pages[index],
+                              fontSize: _fontSize,
+                            ),
                             textAlign: TextAlign.justify,
                             style: TextStyle(
                               color: textColor,
@@ -2044,8 +2050,11 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     final paragraphs = _readerParagraphs(content);
     return Padding(
       padding: const EdgeInsets.only(bottom: 18),
-      child: SelectableText(
-        paragraphs[contentIndex],
+      child: SelectableText.rich(
+        readerTextSpanForLayout(
+          paragraphs[contentIndex],
+          fontSize: _fontSize,
+        ),
         textAlign: TextAlign.justify,
         style: TextStyle(fontSize: _fontSize, height: 1.85),
       ),

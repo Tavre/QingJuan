@@ -663,9 +663,15 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
 
   Future<void> _setNativeReaderSystemUi(bool enabled) async {
     try {
+      // Color.value is required for the Flutter 3.24 release toolchain.
+      // ignore: deprecated_member_use
+      final backgroundColor = _palette.background.value;
       await _readerPlatformChannel.invokeMethod<void>(
         'setReaderSystemUi',
-        enabled,
+        <String, Object>{
+          'enabled': enabled,
+          'backgroundColor': backgroundColor,
+        },
       );
     } on MissingPluginException {
       // 非 Android 平台和 Widget 测试没有原生阅读窗口通道。
@@ -682,10 +688,10 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     if (revision != _systemChromeRevision) return;
     SystemChrome.setSystemUIOverlayStyle(
       SystemUiOverlayStyle(
-        statusBarColor: const Color(0x00000000),
+        statusBarColor: palette.background,
         statusBarIconBrightness:
             palette.isDark ? Brightness.light : Brightness.dark,
-        systemNavigationBarColor: const Color(0x00000000),
+        systemNavigationBarColor: palette.background,
         systemNavigationBarIconBrightness:
             palette.isDark ? Brightness.light : Brightness.dark,
         systemStatusBarContrastEnforced: false,
@@ -1101,11 +1107,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
           addAutomaticKeepAlives: false,
           itemCount: elements.length,
           itemBuilder: (context, index) => Center(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(
-                maxWidth:
-                    elements[index].content.imageSources.isNotEmpty ? 920 : 720,
-              ),
+            child: SizedBox(
+              width:
+                  elements[index].content.imageSources.isNotEmpty ? 920 : 720,
               child: _buildContinuousElement(context, elements[index]),
             ),
           ),
@@ -1234,6 +1238,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
         readerTextSpanForLayout(
           paragraphs[contentIndex],
           fontSize: _fontSize,
+          textScaler: MediaQuery.textScalerOf(context),
         ),
         textAlign: TextAlign.justify,
         style: TextStyle(
@@ -1397,6 +1402,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                             readerTextSpanForLayout(
                               pages[index],
                               fontSize: _fontSize,
+                              textScaler: MediaQuery.textScalerOf(context),
                             ),
                             textAlign: TextAlign.justify,
                             style: TextStyle(
@@ -2073,6 +2079,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
         readerTextSpanForLayout(
           paragraphs[contentIndex],
           fontSize: _fontSize,
+          textScaler: MediaQuery.textScalerOf(context),
         ),
         textAlign: TextAlign.justify,
         style: TextStyle(fontSize: _fontSize, height: 1.85),
@@ -2162,12 +2169,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                                   ? _content!.imageSources.length
                                   : _readerParagraphs(_content!).length),
                           itemBuilder: (context, index) => Center(
-                            child: ConstrainedBox(
-                              constraints: BoxConstraints(
-                                maxWidth: _content!.imageSources.isNotEmpty
-                                    ? 920
-                                    : 760,
-                              ),
+                            child: SizedBox(
+                              width:
+                                  _content!.imageSources.isNotEmpty ? 920 : 760,
                               child: _buildDesktopReaderItem(
                                 context,
                                 _content!,

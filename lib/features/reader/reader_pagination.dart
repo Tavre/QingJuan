@@ -36,6 +36,7 @@ String? _normalizeReaderParagraph(String paragraph) {
 TextSpan readerTextSpanForLayout(
   String text, {
   required double fontSize,
+  TextScaler textScaler = TextScaler.noScaling,
 }) {
   final children = <InlineSpan>[];
   var start = 0;
@@ -51,7 +52,7 @@ TextSpan readerTextSpanForLayout(
     children.add(
       WidgetSpan(
         child: SizedBox(
-          width: fontSize * 2,
+          width: textScaler.scale(fontSize) * 2,
           height: 0,
         ),
       ),

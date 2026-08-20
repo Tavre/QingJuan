@@ -3,10 +3,12 @@ from __future__ import annotations
 from .alphapolis import PLUGIN as ALPHAPOLIS_PLUGIN
 from .base import SitePlugin
 from .bika import PLUGIN as BIKA_PLUGIN
+from .ciweimao import PLUGIN as CIWEIMAO_PLUGIN
 from .comic18 import PLUGIN as COMIC18_PLUGIN
 from .comicores import PLUGIN as COMICORES_PLUGIN
 from .copymanga import PLUGIN as COPYMANGA_PLUGIN
 from .dmzj import PLUGIN as DMZJ_PLUGIN
+from .ehentai import PLUGIN as EHENTAI_PLUGIN
 from .fanqie import PLUGIN as FANQIE_PLUGIN
 from .generic_web import PLUGIN as GENERIC_WEB_PLUGIN
 from .hameln import PLUGIN as HAMELN_PLUGIN
@@ -20,6 +22,8 @@ from .pixiv import PLUGIN as PIXIV_PLUGIN
 from .pixiv_comic import PLUGIN as PIXIV_COMIC_PLUGIN
 from .qidian import PLUGIN as QIDIAN_PLUGIN
 from .quark import PLUGIN as QUARK_PLUGIN
+from .sfacg import PLUGIN as SFACG_PLUGIN
+from .shaoniandream import PLUGIN as SHAONIANDREAM_PLUGIN
 from .syosetu import PLUGIN as SYOSETU_PLUGIN
 from .webtoons import PLUGIN as WEBTOONS_PLUGIN
 from .yanmaga import PLUGIN as YANMAGA_PLUGIN
@@ -29,8 +33,12 @@ SITE_PLUGINS: tuple[SitePlugin, ...] = (
     FANQIE_PLUGIN,
     QIDIAN_PLUGIN,
     QUARK_PLUGIN,
+    CIWEIMAO_PLUGIN,
+    SFACG_PLUGIN,
+    SHAONIANDREAM_PLUGIN,
     COMIC18_PLUGIN,
     BIKA_PLUGIN,
+    EHENTAI_PLUGIN,
     PIXIV_COMIC_PLUGIN,
     PIXIV_PLUGIN,
     YANMAGA_PLUGIN,

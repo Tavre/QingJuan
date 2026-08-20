@@ -28,8 +28,8 @@ Android 使用触控优先的移动端风格；窗口宽度变化不会让两种
 - 使用设备系统 TTS 听书
 - 支持亮色、深色和跟随系统主题
 
-目前支持番茄小说、起点中文网、夸克小说、哔哩轻小说、Kakuyomu、Syosetu、Novel18、Pixiv、Yanmaga、Webtoon、拷贝漫画、COMICORES、动漫之家、
-18Comic、Bika 等站点，也支持导入 Legado / 阅读 App JSON 书源。搜索页可选择“书源”“夸克”“番茄”或“起点”；夸克、番茄与起点搜索只读取匿名公开作品，夸克章节仍仅限免费内容。拷贝漫画支持公开目录和漫画页，COMICORES 仅展示公开作品元数据，不接入登录或付费下载资源。Windows 本机模式在客户端“插件配置”中启停内置解析器；
+目前支持番茄小说、起点中文网、夸克小说、刺猬猫、SF 轻小说、少年梦、哔哩轻小说、Kakuyomu、Syosetu、Novel18、Pixiv、Yanmaga、Webtoon、拷贝漫画、COMICORES、动漫之家、
+18Comic、Bika、E-Hentai 等站点，也支持导入 Legado / 阅读 App JSON 书源。搜索页可选择“书源”“夸克”“番茄”或“起点”；内置解析器会保留目录中的全部章节，并在上游返回可解析内容时默认保存，不因 VIP、订阅或付费标记提前跳过。未实现章节解析或上游未返回可用内容时会明确提示。Windows 本机模式在客户端“插件配置”中启停内置解析器；
 Linux 远程模式在服务器管理界面的“插件管理”中统一维护，客户端会自动隐藏该入口。外部规则仍只在“书源管理”中管理。
 
 番茄与起点插件支持扫码登录；番茄扫码受限时也可粘贴已登录浏览器请求的 Cookie。连接成功后可一键添加当前账号书架，
@@ -126,30 +126,8 @@ sudo qingjuan-uninstall
 
 ## 开发、构建与 CI
 
-开发环境、项目结构、测试和发布规范见[开发文档](./docs/development/README.md)。本地常用构建命令：
-
-```powershell
-# 从 assets/logo.png 重新生成 Windows / Android 应用图标
-python ./tool/generate_app_icons.py
-
-# Windows x64 客户端与随包本机后端
-./tool/build_windows.ps1
-
-# Android Release APK
-flutter build apk --release
-```
-
-`.github/workflows/ci.yml` 在 Pull Request、推送到 `main` / `master`（包括 PR 合并）以及手动触发时运行：
-
-1. Flutter 格式、分析和测试；
-2. Python Ruff 与 Pytest；
-3. Linux 部署脚本与原生后端冒烟测试。
-
-只有这 3 个 CI 门禁全部成功后，工作流才会并行构建 Windows x64 与 Android Release 产物，并上传到该次
-Actions 运行的 **Artifacts**。推送与 `pubspec.yaml` 版本一致的 `v<版本>` 标签时，发布工作流会进一步生成
-Windows ZIP、签名 Android APK 和对应 SHA-256，并上传到 GitHub Releases。
-
-欢迎提交 [Issue](https://github.com/Tavre/QingJuan/issues) 或 Pull Request。提交代码前请移除密钥、账号和个人数据。
+开发环境、架构、测试、构建、CI 与发布要求统一见[开发文档](./docs/development/README.md)。
+欢迎提交 [Issue](https://github.com/Tavre/QingJuan/issues) 或 Pull Request；提交前请遵循开发文档并移除密钥、账号和个人数据。
 
 ## 交流
 

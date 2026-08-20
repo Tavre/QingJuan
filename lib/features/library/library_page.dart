@@ -163,6 +163,8 @@ class LibraryPage extends StatelessWidget {
               children: <Widget>[
                 Expanded(
                   child: TextBox(
+                    magnifierConfiguration:
+                        textInputMagnifierConfiguration(context),
                     placeholder: '搜索书名或简介',
                     prefix: const Padding(
                       padding: EdgeInsets.only(left: 10),
@@ -294,6 +296,7 @@ class _LibraryContent extends StatelessWidget {
         ),
         SliverToBoxAdapter(
           child: TextBox(
+            magnifierConfiguration: textInputMagnifierConfiguration(context),
             placeholder: '搜索书名或简介',
             prefix: const Padding(
               padding: EdgeInsets.only(left: 11),

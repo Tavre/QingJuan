@@ -2,6 +2,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 
 import '../../../app/app_state.dart';
 import '../../../core/backend/backend_connection_manager.dart';
+import '../../../shared/responsive.dart';
 import 'settings_section_card.dart';
 
 class BackendConnectionCard extends StatelessWidget {
@@ -75,6 +76,8 @@ class BackendConnectionCard extends StatelessWidget {
               child: TextBox(
                 key: const ValueKey('linux-backend-url'),
                 controller: backendUrlController,
+                magnifierConfiguration:
+                    textInputMagnifierConfiguration(context),
                 placeholder: 'https://qingjuan.example.com',
               ),
             ),
@@ -84,7 +87,10 @@ class BackendConnectionCard extends StatelessWidget {
               child: TextBox(
                 key: const ValueKey('linux-backend-token'),
                 controller: backendTokenController,
+                magnifierConfiguration:
+                    textInputMagnifierConfiguration(context),
                 obscureText: true,
+                enableInteractiveSelection: true,
                 enableSuggestions: false,
                 autocorrect: false,
                 placeholder: '由 Linux 服务端管理员生成',

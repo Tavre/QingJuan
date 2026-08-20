@@ -154,6 +154,61 @@ void main() {
     expect(find.text('听小说'), findsOneWidget);
   });
 
+  testWidgets('Android detail keeps the full synopsis in a scrollable viewport',
+      (tester) async {
+    final longSynopsis = List<String>.filled(
+      10,
+      '这是一段用于验证滑动行为的超长书籍简介，确保完整内容保留在详情页中。',
+    ).join();
+    final payload = <String, Object?>{
+      ..._detailPayload,
+      'book': <String, Object?>{
+        ...(_detailPayload['book']! as Map<String, Object?>),
+        'synopsis': longSynopsis,
+      },
+      'synopsis': longSynopsis,
+    };
+    final harness = await _Harness.create(
+      MockClient((_) async => http.Response(
+            jsonEncode(payload),
+            200,
+            headers: const <String, String>{
+              'content-type': 'application/json; charset=utf-8',
+            },
+          )),
+      child: const MediaQuery(
+        data: MediaQueryData(size: Size(390, 844)),
+        child: UiPlatformScope(
+          platform: TargetPlatform.android,
+          child: BookDetailPage(bookId: 'book-1'),
+        ),
+      ),
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final synopsis = tester.widget<Text>(find.text(longSynopsis));
+    expect(synopsis.maxLines, isNull);
+    expect(synopsis.overflow, isNot(TextOverflow.ellipsis));
+
+    final region = find.byKey(const ValueKey('book-synopsis-scroll'));
+    expect(region, findsOneWidget);
+    final scrollView = find.descendant(
+      of: region,
+      matching: find.byType(SingleChildScrollView),
+    );
+    expect(scrollView, findsOneWidget);
+    final controller =
+        tester.widget<SingleChildScrollView>(scrollView).controller!;
+    expect(controller.position.maxScrollExtent, greaterThan(0));
+
+    await tester.drag(scrollView, const Offset(0, -80));
+    await tester.pumpAndSettle();
+    expect(controller.offset, greaterThan(0));
+  });
+
   testWidgets('hides audiobook action for manga books', (tester) async {
     final payload = <String, Object?>{
       ..._detailPayload,

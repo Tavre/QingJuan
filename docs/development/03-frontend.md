@@ -40,6 +40,8 @@ class _LibraryPageState extends State<LibraryPage> {
   保存入口和跨 Controller 编排；各区域的布局与短生命周期 UI 状态放入 `widgets/` 下的领域化 Widget，
   不得把连接切换、数据重载等跨功能流程复制到 Section 内。
 - 只为缩短文件而抽取无语义的一行 Widget 没有价值。
+- 搜索结果中的书籍简介属于有界摘要，可以设置 `maxLines` 和 `TextOverflow.ellipsis`。书籍详情必须保留完整简介：手机端使用带独立 `ScrollController` 的固定高度纵向滚动区，Windows 不截断正文；滚动区 Controller 必须随 Widget 释放。
+- 所有手机端 `TextBox` 通过共享响应式规则使用 `TextMagnifierConfiguration.disabled`，只关闭放大镜；`enableInteractiveSelection` 和默认上下文菜单保持启用，使长按仍可选择、复制和粘贴。Windows 继续使用 Fluent 默认文本交互。
 
 Widget 不应：
 
@@ -142,8 +144,8 @@ Controller 表达一个功能域的用例和可观察状态：
 ## 7. 持久化
 
 - 轻量客户端偏好可存 `SharedPreferences`：主题、Windows 后端模式、远程后端地址、最后导航位置。
-- 连接 Token 使用 Windows / Android 平台安全存储，不得写入 `SharedPreferences`、日志、异常、
-  剪贴板或截图友好的普通文本配置。
+- 连接 Token 使用 Windows / Android 平台安全存储，不得写入 `SharedPreferences`、日志、异常或截图友好的普通文本配置。
+  应用不得自动复制、回显或记录 Token；用户在密码输入框内主动调用系统复制、粘贴菜单属于标准文本编辑行为。
 - 书籍、任务、模型凭据、阅读进度和站点插件启停状态由当前后端 SQLite 管理；Windows 本机数据与 Linux 数据互不自动同步。
 - 站点插件开关属于当前后端实例，不写入客户端 `SharedPreferences`。多个客户端连接同一后端时读取同一组开关；
   切换后端后必须重新加载，不能把上一后端的状态复制过去。

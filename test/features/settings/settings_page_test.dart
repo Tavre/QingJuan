@@ -232,6 +232,50 @@ void main() {
     await backend.dispose();
     api.close();
   });
+
+  testWidgets('Android Token input disables magnifier but keeps text selection',
+      (tester) async {
+    final preferences = await SharedPreferences.getInstance();
+    final appState = AppState(preferences);
+    final api = ApiClient(() => appState.backendUrl);
+    final backend = BackendConnectionManager(
+      api,
+      isConfigured: () => appState.hasBackendConnection,
+    );
+
+    await tester.pumpWidget(
+      FluentApp(
+        home: UiPlatformScope(
+          platform: TargetPlatform.android,
+          child: AppScope(
+            appState: appState,
+            api: api,
+            backend: backend,
+            library: LibraryController(api),
+            sources: SourcesController(api),
+            tasks: TasksController(api),
+            settings: SettingsController(api),
+            child: SettingsPage(
+              voiceService: _FakeTtsVoiceService(const <TtsVoice>[]),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final token = tester.widget<TextBox>(
+      find.byKey(const ValueKey('linux-backend-token')),
+    );
+    expect(
+      token.magnifierConfiguration,
+      same(TextMagnifierConfiguration.disabled),
+    );
+    expect(token.enableInteractiveSelection, isTrue);
+
+    await backend.dispose();
+    api.close();
+  });
 }
 
 class _FakeTtsVoiceService implements TtsVoiceService {

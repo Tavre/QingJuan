@@ -48,6 +48,8 @@ class SourcesPage extends StatelessWidget {
               children: <Widget>[
                 TextBox(
                   controller: controller,
+                  magnifierConfiguration:
+                      textInputMagnifierConfiguration(sheetContext),
                   maxLines: fromUrl ? 1 : 10,
                   placeholder:
                       fromUrl ? 'https://...' : '粘贴 JSON 或 Legado 书源文本',

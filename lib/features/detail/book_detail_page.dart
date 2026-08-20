@@ -910,7 +910,6 @@ class _BookHero extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = FluentTheme.of(context);
     return AppSurface(
       tone: AppSurfaceTone.accent,
       borderRadius: 18,
@@ -942,16 +941,68 @@ class _BookHero extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 10),
-                Text(
-                  detail.synopsis.trim().isEmpty ? '暂无简介。' : detail.synopsis,
-                  maxLines: compact ? 6 : 7,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.typography.body?.copyWith(height: 1.55),
+                _ScrollableSynopsis(
+                  text: detail.synopsis.trim().isEmpty
+                      ? '暂无简介。'
+                      : detail.synopsis,
+                  maxHeight: compact ? 128 : 150,
                 ),
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ScrollableSynopsis extends StatefulWidget {
+  const _ScrollableSynopsis({required this.text, required this.maxHeight});
+
+  final String text;
+  final double maxHeight;
+
+  @override
+  State<_ScrollableSynopsis> createState() => _ScrollableSynopsisState();
+}
+
+class _ScrollableSynopsisState extends State<_ScrollableSynopsis> {
+  final ScrollController _controller = ScrollController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = FluentTheme.of(context);
+    return ConstrainedBox(
+      key: const ValueKey('book-synopsis-scroll'),
+      constraints: BoxConstraints(maxHeight: widget.maxHeight),
+      child: ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+        child: Scrollbar(
+          controller: _controller,
+          thumbVisibility: true,
+          interactive: true,
+          style: const ScrollbarThemeData(
+            thickness: 2,
+            hoveringThickness: 4,
+            crossAxisMargin: 1,
+            hoveringCrossAxisMargin: 1,
+          ),
+          child: SingleChildScrollView(
+            controller: _controller,
+            primary: false,
+            padding: const EdgeInsetsDirectional.only(end: 10),
+            child: Text(
+              widget.text,
+              style: theme.typography.body?.copyWith(height: 1.55),
+            ),
+          ),
+        ),
       ),
     );
   }

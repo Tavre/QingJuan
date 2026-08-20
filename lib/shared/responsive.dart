@@ -34,6 +34,12 @@ bool usesMobileUi(BuildContext context) =>
         false,
     };
 
+/// 手机端只关闭文本选区放大镜，保留系统选择、复制、粘贴和上下文菜单。
+TextMagnifierConfiguration? textInputMagnifierConfiguration(
+  BuildContext context,
+) =>
+    usesMobileUi(context) ? TextMagnifierConfiguration.disabled : null;
+
 WindowClass windowClassOf(BuildContext context) {
   final width = MediaQuery.sizeOf(context).width;
   if (width < 700) return WindowClass.compact;

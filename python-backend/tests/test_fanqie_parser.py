@@ -338,6 +338,32 @@ async def test_fanqie_network_retries_are_bounded(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
+async def test_fanqie_network_retries_successful_pages_without_ssr_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        text = (
+            "<html>temporary verification page</html>" if attempts == 1 else _book_html()
+        )
+        return httpx.Response(200, request=request, text=text)
+
+    async def no_wait(_: object) -> None:
+        return None
+
+    monkeypatch.setattr(scraper, "_throttle_fanqie_request", no_wait)
+    monkeypatch.setattr(scraper.asyncio, "sleep", no_wait)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        response = await scraper._get_fanqie_html_response(client, BOOK_URL)
+
+    assert "__INITIAL_STATE__=" in response.text
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
 async def test_fanqie_network_rejects_cross_site_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(302, request=request, headers={"Location": "http://127.0.0.1/private"})

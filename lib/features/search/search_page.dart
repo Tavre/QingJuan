@@ -163,6 +163,7 @@ class _SearchPageState extends State<SearchPage> {
           child: TextBox(
             key: const ValueKey('search-query-input'),
             controller: _controller,
+            magnifierConfiguration: textInputMagnifierConfiguration(context),
             placeholder: '输入书名或作者',
             onSubmitted: (_) => _search(sources),
             prefix: const Padding(
@@ -313,6 +314,8 @@ class _SearchPageState extends State<SearchPage> {
                   child: TextBox(
                     key: const ValueKey('search-query-input'),
                     controller: _controller,
+                    magnifierConfiguration:
+                        textInputMagnifierConfiguration(context),
                     placeholder: '输入书名或作者',
                     onSubmitted: (_) => _search(sources),
                     prefix: const Padding(

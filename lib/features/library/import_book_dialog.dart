@@ -205,6 +205,8 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
                 child: TextBox(
                   key: const ValueKey('import-book-url'),
                   controller: _urlController,
+                  magnifierConfiguration:
+                      textInputMagnifierConfiguration(context),
                   placeholder: 'https://...',
                   enabled: !busy,
                   onChanged: busy ? null : (_) => setState(() {}),
@@ -213,7 +215,12 @@ class _ImportBookDialogState extends State<_ImportBookDialog> {
               const SizedBox(height: 12),
               InfoLabel(
                 label: '自定义标题（可选）',
-                child: TextBox(controller: _titleController, enabled: !busy),
+                child: TextBox(
+                  controller: _titleController,
+                  magnifierConfiguration:
+                      textInputMagnifierConfiguration(context),
+                  enabled: !busy,
+                ),
               ),
               const SizedBox(height: 12),
               Row(

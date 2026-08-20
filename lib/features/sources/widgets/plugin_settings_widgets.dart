@@ -175,6 +175,7 @@ class PluginFilterBar extends StatelessWidget {
     final search = TextBox(
       key: const ValueKey('plugin-search-box'),
       controller: searchController,
+      magnifierConfiguration: textInputMagnifierConfiguration(context),
       placeholder: '搜索名称、域名、标签或能力',
       prefix: const Padding(
         padding: EdgeInsets.only(left: 10),

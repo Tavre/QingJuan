@@ -11045,6 +11045,15 @@ def _retry_wait_seconds(response: httpx.Response, attempt: int) -> float:
     return min(12.0, 1.5 * (2**attempt))
 
 
+def _fanqie_response_needs_retry(response: httpx.Response) -> bool:
+    if response.status_code in FANQIE_RETRYABLE_STATUS_CODES:
+        return True
+    if not response.is_success:
+        return False
+    body = response.text
+    return not body.strip() or "__INITIAL_STATE__=" not in body
+
+
 def _fanqie_target_identity(url: str) -> tuple[str, str]:
     book_id = fanqie_book_id_from_url(url)
     if book_id:
@@ -11084,7 +11093,10 @@ async def _get_fanqie_html_response(
                     continue
                 raise
 
-            if response.status_code in FANQIE_RETRYABLE_STATUS_CODES and attempt < FANQIE_MAX_RETRIES - 1:
+            if (
+                _fanqie_response_needs_retry(response)
+                and attempt < FANQIE_MAX_RETRIES - 1
+            ):
                 await asyncio.sleep(_retry_wait_seconds(response, attempt))
                 continue
             break

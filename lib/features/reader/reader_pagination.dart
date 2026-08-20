@@ -2,6 +2,38 @@ import 'dart:math' as math;
 
 import 'package:flutter/widgets.dart';
 
+// U+3164 是视觉为空的全宽占位符，但不会像 U+3000 那样在长段首行参与
+// 两端对齐时被排版引擎当作可裁剪空白。
+const String readerFirstLineIndent = '\u3164\u3164';
+
+List<String> readerParagraphsForLayout(
+  List<String> paragraphs,
+  String fallback,
+) {
+  final source = paragraphs.isNotEmpty
+      ? paragraphs
+      : fallback.replaceAll('\r\n', '\n').split(RegExp(r'\n+'));
+  return source
+      .map(_normalizeReaderParagraph)
+      .whereType<String>()
+      .toList(growable: false);
+}
+
+String? _normalizeReaderParagraph(String paragraph) {
+  var body = paragraph.trim();
+  while (body.startsWith(readerFirstLineIndent)) {
+    body = body.substring(readerFirstLineIndent.length).trimLeft();
+  }
+  if (body.isEmpty) return null;
+  return '$readerFirstLineIndent$body';
+}
+
+String readerTextForPagination(
+  List<String> paragraphs,
+  String fallback,
+) =>
+    readerParagraphsForLayout(paragraphs, fallback).join('\n\n');
+
 int estimateReaderPageCharacters(
   Size viewport,
   double fontSize, {

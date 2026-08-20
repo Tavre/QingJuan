@@ -30,7 +30,7 @@ class ReaderPage extends StatefulWidget {
   State<ReaderPage> createState() => _ReaderPageState();
 }
 
-class _ReaderPageState extends State<ReaderPage> {
+class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   static const Duration _visibleChapterCheckInterval =
       Duration(milliseconds: 80);
   static const Duration _progressSaveDelay = Duration(milliseconds: 420);
@@ -40,6 +40,8 @@ class _ReaderPageState extends State<ReaderPage> {
   final Map<String, ChapterContent> _chapterCache = <String, ChapterContent>{};
   final Map<String, Future<ChapterContent>> _inflight =
       <String, Future<ChapterContent>>{};
+  final Map<ChapterContent, List<String>> _paragraphCache =
+      Map<ChapterContent, List<String>>.identity();
   final Map<int, GlobalKey> _chapterHeadingKeys = <int, GlobalKey>{};
 
   late AppScope _scope;
@@ -60,9 +62,9 @@ class _ReaderPageState extends State<ReaderPage> {
   bool _controlsVisible = true;
   bool _settingsVisible = false;
   bool _initialized = false;
-  bool _continuousPrefetching = false;
+  Future<void>? _continuousChapterAheadRequest;
   bool _checkingVisibleChapter = false;
-  bool _mobileUi = true;
+  bool _mobileUi = false;
   int _loadToken = 0;
   int _pageIndex = 0;
   int _pageCount = 1;
@@ -87,8 +89,16 @@ class _ReaderPageState extends State<ReaderPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _chapterIndex = widget.initialChapterIndex.clamp(1, _chapterCount);
     _scrollController.addListener(_handleContinuousScroll);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _initialized && _mobileUi) {
+      _applySystemChrome();
+    }
   }
 
   @override
@@ -129,6 +139,15 @@ class _ReaderPageState extends State<ReaderPage> {
   }
 
   String _cacheKey(int chapterIndex, String mode) => '$mode:$chapterIndex';
+
+  List<String> _readerParagraphs(ChapterContent content) =>
+      _paragraphCache.putIfAbsent(
+        content,
+        () => readerParagraphsForLayout(
+          content.paragraphs,
+          content.content,
+        ),
+      );
 
   Future<ChapterContent> _getChapter(
     int chapterIndex,
@@ -173,7 +192,9 @@ class _ReaderPageState extends State<ReaderPage> {
     }).toList();
     for (final key in removable) {
       if (_chapterCache.length <= maximumCachedChapters) break;
-      _evictChapterImages(_chapterCache.remove(key));
+      final removed = _chapterCache.remove(key);
+      if (removed != null) _paragraphCache.remove(removed);
+      _evictChapterImages(removed);
     }
   }
 
@@ -264,28 +285,39 @@ class _ReaderPageState extends State<ReaderPage> {
 
   Future<void> _ensureContinuousChapterAhead() async {
     if (_flowMode != ReaderFlowMode.continuous ||
-        _continuousPrefetching ||
         _continuousChapterIndices.isEmpty) {
+      return;
+    }
+    final pending = _continuousChapterAheadRequest;
+    if (pending != null) {
+      await pending;
       return;
     }
     final next = _continuousChapterIndices.last + 1;
     if (next > _chapterCount) return;
-    _continuousPrefetching = true;
     final mode = _mode;
-    try {
-      await _getChapter(next, mode);
-      if (!mounted ||
-          _flowMode != ReaderFlowMode.continuous ||
-          mode != _mode ||
-          _continuousChapterIndices.contains(next) ||
-          _continuousChapterIndices.last + 1 != next) {
-        return;
+    final request = () async {
+      try {
+        await _getChapter(next, mode);
+        if (!mounted ||
+            _flowMode != ReaderFlowMode.continuous ||
+            mode != _mode ||
+            _continuousChapterIndices.contains(next) ||
+            _continuousChapterIndices.last + 1 != next) {
+          return;
+        }
+        setState(() => _continuousChapterIndices.add(next));
+      } catch (_) {
+        // 到达章末时仍可通过底栏重试，预取失败不插入错误整页。
       }
-      setState(() => _continuousChapterIndices.add(next));
-    } catch (_) {
-      // 到达章末时仍可通过底栏重试，预取失败不插入错误整页。
+    }();
+    _continuousChapterAheadRequest = request;
+    try {
+      await request;
     } finally {
-      _continuousPrefetching = false;
+      if (identical(_continuousChapterAheadRequest, request)) {
+        _continuousChapterAheadRequest = null;
+      }
     }
   }
 
@@ -414,20 +446,99 @@ class _ReaderPageState extends State<ReaderPage> {
       _chapterIndex = visible;
       _content = _chapterCache[_cacheKey(visible, _mode)] ?? _content;
     });
-    unawaited(_saveProgress(chapterIndex: previous, ratio: 1));
+    unawaited(
+      _saveProgress(
+        chapterIndex: previous,
+        ratio: visible > previous ? 1 : 0,
+      ),
+    );
     unawaited(_prefetchAdjacent(visible));
   }
 
   Future<void> _scrollByPage(int direction) async {
+    if (!_scrollController.hasClients || direction == 0) return;
+    var position = _scrollController.position;
+    final distance = position.viewportDimension * 0.84;
+    final desiredTarget = _scrollController.offset + distance * direction;
+
+    if (direction > 0 && desiredTarget > position.maxScrollExtent) {
+      final previousLastChapter = _continuousChapterIndices.isEmpty
+          ? null
+          : _continuousChapterIndices.last;
+      await _ensureContinuousChapterAhead();
+      if (!mounted || !_scrollController.hasClients) return;
+      final currentLastChapter = _continuousChapterIndices.isEmpty
+          ? null
+          : _continuousChapterIndices.last;
+      if (currentLastChapter != previousLastChapter) {
+        await WidgetsBinding.instance.endOfFrame;
+      }
+    } else if (direction < 0 &&
+        desiredTarget < position.minScrollExtent &&
+        _continuousChapterIndices.isNotEmpty &&
+        _continuousChapterIndices.first > 1) {
+      await _openPreviousContinuousChapterAtEnd(
+        _continuousChapterIndices.first - 1,
+      );
+      return;
+    }
+
     if (!_scrollController.hasClients) return;
-    await _ensureContinuousChapterAhead();
-    if (!_scrollController.hasClients) return;
-    final position = _scrollController.position;
+    position = _scrollController.position;
     final target = (_scrollController.offset +
             position.viewportDimension * 0.84 * direction)
         .clamp(position.minScrollExtent, position.maxScrollExtent)
         .toDouble();
     await _moveScrollTo(target);
+  }
+
+  Future<void> _openPreviousContinuousChapterAtEnd(int chapterIndex) async {
+    if (chapterIndex < 1 || chapterIndex > _chapterCount || _switchingChapter) {
+      return;
+    }
+    final loadToken = ++_loadToken;
+    final mode = _mode;
+    final previous = _chapterIndex;
+    _cancelScheduledProgressSave();
+    unawaited(_saveProgress(chapterIndex: previous, ratio: 0));
+    setState(() {
+      _switchingChapter = true;
+      _switchError = null;
+    });
+    try {
+      final content = await _getChapter(chapterIndex, mode);
+      if (!mounted ||
+          loadToken != _loadToken ||
+          mode != _mode ||
+          _flowMode != ReaderFlowMode.continuous) {
+        return;
+      }
+      setState(() {
+        _chapterIndex = chapterIndex;
+        _content = content;
+        _switchingChapter = false;
+        _pageIndex = 0;
+        _pageCount = 1;
+        _continuousChapterIndices
+          ..clear()
+          ..add(chapterIndex);
+        _chapterHeadingKeys.clear();
+      });
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || !_scrollController.hasClients) return;
+      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+      if (chapterIndex > 1) {
+        unawaited(_prefetchChapter(chapterIndex - 1, mode));
+      }
+      unawaited(_ensureContinuousChapterAhead());
+      _scheduleProgressSave();
+    } catch (error) {
+      if (!mounted || loadToken != _loadToken) return;
+      setState(() {
+        _switchingChapter = false;
+        _switchError = '$error';
+      });
+    }
   }
 
   Future<void> _moveScrollTo(
@@ -551,7 +662,10 @@ class _ReaderPageState extends State<ReaderPage> {
     if (!_mobileUi) return;
     final palette = _palette;
     unawaited(
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge),
+      SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.manual,
+        overlays: const <SystemUiOverlay>[SystemUiOverlay.bottom],
+      ),
     );
     SystemChrome.setSystemUIOverlayStyle(
       SystemUiOverlayStyle(
@@ -563,6 +677,23 @@ class _ReaderPageState extends State<ReaderPage> {
             palette.isDark ? Brightness.light : Brightness.dark,
         systemStatusBarContrastEnforced: false,
         systemNavigationBarContrastEnforced: false,
+      ),
+    );
+  }
+
+  void _restoreHostSystemChrome() {
+    if (!_mobileUi) return;
+    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
+    SystemChrome.setSystemUIOverlayStyle(
+      SystemUiOverlayStyle(
+        statusBarColor: const Color(0x00000000),
+        statusBarIconBrightness: _hostBrightness == Brightness.dark
+            ? Brightness.light
+            : Brightness.dark,
+        systemNavigationBarColor: const Color(0x00000000),
+        systemNavigationBarIconBrightness: _hostBrightness == Brightness.dark
+            ? Brightness.light
+            : Brightness.dark,
       ),
     );
   }
@@ -665,6 +796,7 @@ class _ReaderPageState extends State<ReaderPage> {
     if (widget.detail.book.kind == '漫画') return;
     _hideControlsTimer?.cancel();
     unawaited(_hardwareKeys.setEnabled(false));
+    _restoreHostSystemChrome();
     await Navigator.of(context).push<void>(
       qjPageRoute<void>(
         context: context,
@@ -680,6 +812,7 @@ class _ReaderPageState extends State<ReaderPage> {
       ),
     );
     if (!mounted) return;
+    _applySystemChrome();
     unawaited(_hardwareKeys.setEnabled(_volumeKeyReadingEnabled));
     _scheduleControlsHide();
   }
@@ -891,26 +1024,13 @@ class _ReaderPageState extends State<ReaderPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _hideControlsTimer?.cancel();
     _visibleChapterTimer?.cancel();
     _cancelScheduledProgressSave();
     unawaited(_saveProgress());
     unawaited(_hardwareKeys.detach());
-    if (_mobileUi) {
-      unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
-      SystemChrome.setSystemUIOverlayStyle(
-        SystemUiOverlayStyle(
-          statusBarColor: const Color(0x00000000),
-          statusBarIconBrightness: _hostBrightness == Brightness.dark
-              ? Brightness.light
-              : Brightness.dark,
-          systemNavigationBarColor: const Color(0x00000000),
-          systemNavigationBarIconBrightness: _hostBrightness == Brightness.dark
-              ? Brightness.light
-              : Brightness.dark,
-        ),
-      );
-    }
+    _restoreHostSystemChrome();
     for (final content in _chapterCache.values) {
       _evictChapterImages(content);
     }
@@ -918,6 +1038,7 @@ class _ReaderPageState extends State<ReaderPage> {
       ..removeListener(_handleContinuousScroll)
       ..dispose();
     _pageController.dispose();
+    _paragraphCache.clear();
     super.dispose();
   }
 
@@ -929,7 +1050,7 @@ class _ReaderPageState extends State<ReaderPage> {
       elements.add(_ReaderElement.heading(chapterIndex, content));
       final itemCount = content.imageSources.isNotEmpty
           ? content.imageSources.length
-          : (content.paragraphs.isEmpty ? 1 : content.paragraphs.length);
+          : _readerParagraphs(content).length;
       for (var index = 0; index < itemCount; index++) {
         elements.add(_ReaderElement.content(chapterIndex, content, index));
       }
@@ -1087,13 +1208,12 @@ class _ReaderPageState extends State<ReaderPage> {
         ),
       );
     }
-    final paragraphs = content.paragraphs.isEmpty
-        ? <String>[content.content]
-        : content.paragraphs;
+    final paragraphs = _readerParagraphs(content);
     return Padding(
       padding: const EdgeInsets.only(bottom: 18),
       child: SelectableText(
         paragraphs[contentIndex],
+        textAlign: TextAlign.justify,
         style: TextStyle(
           color: textColor,
           fontSize: _fontSize,
@@ -1145,9 +1265,7 @@ class _ReaderPageState extends State<ReaderPage> {
     final pages = content.imageSources.isNotEmpty
         ? List<String>.filled(content.imageSources.length, '', growable: false)
         : paginateReaderText(
-            content.content.isEmpty
-                ? content.paragraphs.join('\n\n')
-                : content.content,
+            _readerParagraphs(content).join('\n\n'),
             estimateReaderPageCharacters(
               viewport,
               _fontSize,
@@ -1255,6 +1373,7 @@ class _ReaderPageState extends State<ReaderPage> {
                         child: SelectionArea(
                           child: Text(
                             pages[index],
+                            textAlign: TextAlign.justify,
                             style: TextStyle(
                               color: textColor,
                               fontSize: _fontSize,
@@ -1848,7 +1967,7 @@ class _ReaderPageState extends State<ReaderPage> {
                           checked: _volumeKeyReadingEnabled,
                           onChanged: _setVolumeKeyReading,
                           content: Text(
-                            '使用音量键翻页',
+                            '音量键滑动 / 翻页',
                             style: TextStyle(
                               color: palette.text,
                               fontSize: 13,
@@ -1922,13 +2041,12 @@ class _ReaderPageState extends State<ReaderPage> {
       );
     }
 
-    final paragraphs = content.paragraphs.isEmpty
-        ? <String>[content.content]
-        : content.paragraphs;
+    final paragraphs = _readerParagraphs(content);
     return Padding(
       padding: const EdgeInsets.only(bottom: 18),
       child: SelectableText(
         paragraphs[contentIndex],
+        textAlign: TextAlign.justify,
         style: TextStyle(fontSize: _fontSize, height: 1.85),
       ),
     );
@@ -2014,9 +2132,7 @@ class _ReaderPageState extends State<ReaderPage> {
                           itemCount: 1 +
                               (_content!.imageSources.isNotEmpty
                                   ? _content!.imageSources.length
-                                  : (_content!.paragraphs.isEmpty
-                                      ? 1
-                                      : _content!.paragraphs.length)),
+                                  : _readerParagraphs(_content!).length),
                           itemBuilder: (context, index) => Center(
                             child: ConstrainedBox(
                               constraints: BoxConstraints(

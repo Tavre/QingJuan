@@ -3,7 +3,7 @@ from .base import SitePlugin
 PLUGIN = SitePlugin(
     id="qidian",
     name="起点中文网",
-    description="匿名搜索并解析起点作品、完整目录与可取得的章节正文，支持扫码登录并导入当前账号书架。",
+    description="匿名搜索并解析起点作品与公开章节，支持扫码登录并一键导入当前账号书架。",
     category="novel",
     domains=("qidian.com",),
     book_kinds=("长小说", "轻小说"),

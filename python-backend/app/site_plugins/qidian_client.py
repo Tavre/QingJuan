@@ -546,7 +546,9 @@ def get_chapter(
     if not isinstance(chapter_info, dict):
         raise QidianApiError("起点章节正文格式无效")
     if chapter_info.get("fkp"):
-        raise QidianApiError("起点章节使用当前解析器尚未支持的加密正文格式")
+        raise QidianApiError("该章节为起点受保护正文，当前插件不处理受保护内容解密")
+    if _truthy_flag(chapter_info.get("freeStatus")) and not _truthy_flag(chapter_info.get("isBuy")):
+        raise QidianApiError("该章节仅返回试读内容，请在起点确认访问权限")
 
     paragraphs = _extract_paragraphs(str(chapter_info.get("content") or ""))
     if not paragraphs:

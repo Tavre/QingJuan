@@ -9,6 +9,7 @@ import android.view.Surface
 import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
@@ -49,12 +50,19 @@ class MainActivity : FlutterActivity() {
             READER_CHANNEL,
         ).also { channel ->
             channel.setMethodCallHandler { call, result ->
-                if (call.method != "setVolumeKeyEnabled") {
-                    result.notImplemented()
-                    return@setMethodCallHandler
+                when (call.method) {
+                    "setVolumeKeyEnabled" -> {
+                        volumeKeyReadingEnabled = call.arguments as? Boolean ?: false
+                        result.success(null)
+                    }
+
+                    "setReaderSystemUi" -> {
+                        setReaderSystemUi(call.arguments as? Boolean ?: false)
+                        result.success(null)
+                    }
+
+                    else -> result.notImplemented()
                 }
-                volumeKeyReadingEnabled = call.arguments as? Boolean ?: false
-                result.success(null)
             }
         }
     }
@@ -81,6 +89,29 @@ class MainActivity : FlutterActivity() {
             return true
         }
         return super.onKeyUp(keyCode, event)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun setReaderSystemUi(enabled: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+            val controller = window.insetsController ?: return
+            if (enabled) {
+                controller.hide(WindowInsets.Type.statusBars())
+            } else {
+                controller.show(WindowInsets.Type.statusBars())
+            }
+            return
+        }
+
+        val edgeToEdge = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+        window.decorView.systemUiVisibility = if (enabled) {
+            edgeToEdge or View.SYSTEM_UI_FLAG_FULLSCREEN
+        } else {
+            edgeToEdge
+        }
     }
 
     @Suppress("DEPRECATION")

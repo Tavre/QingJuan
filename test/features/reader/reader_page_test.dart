@@ -490,14 +490,25 @@ void main() {
       'Android reader hides only the top system overlay and restores it',
       (tester) async {
     final platformCalls = <MethodCall>[];
+    final readerPlatformCalls = <MethodCall>[];
+    const readerChannel = MethodChannel('qingjuan/reader');
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, (call) async {
       platformCalls.add(call);
       return null;
     });
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(readerChannel, (call) async {
+      readerPlatformCalls.add(call);
+      return null;
+    });
     addTearDown(
-      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(SystemChannels.platform, null),
+      () {
+        final messenger =
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+        messenger.setMockMethodCallHandler(SystemChannels.platform, null);
+        messenger.setMockMethodCallHandler(readerChannel, null);
+      },
     );
     final harness = await _Harness.create(
       MockClient((request) async {
@@ -517,43 +528,79 @@ void main() {
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pump();
     platformCalls.clear();
+    readerPlatformCalls.clear();
 
     await tester.tapAt(const Offset(400, 300));
     await tester.pump(const Duration(milliseconds: 300));
 
     final modeCalls = platformCalls.where(
-      (call) => call.method == 'SystemChrome.setEnabledSystemUIOverlays',
+      (call) => call.method == 'SystemChrome.setEnabledSystemUIMode',
     );
     expect(modeCalls, isNotEmpty);
     expect(
       modeCalls.map((call) => '${call.arguments}').join('\n'),
-      contains('SystemUiOverlay.bottom'),
+      contains('SystemUiMode.edgeToEdge'),
     );
     expect(
-      modeCalls.map((call) => '${call.arguments}').join('\n'),
-      isNot(contains('SystemUiOverlay.top')),
+      platformCalls.any(
+        (call) => call.method == 'SystemChrome.setEnabledSystemUIOverlays',
+      ),
+      isFalse,
+    );
+    expect(
+      readerPlatformCalls.any(
+        (call) => call.method == 'setReaderSystemUi' && call.arguments == true,
+      ),
+      isTrue,
+    );
+    final readerSurface = find.byKey(
+      const ValueKey('reader-mobile-surface'),
+    );
+    expect(tester.getTopLeft(readerSurface), Offset.zero);
+    expect(tester.getSize(readerSurface), const Size(800, 600));
+    final surfaceDecoration = tester
+        .widget<AnimatedContainer>(readerSurface)
+        .decoration as BoxDecoration;
+    expect(
+      surfaceDecoration.color,
+      isNot(const Color(0xFF000000)),
     );
 
     platformCalls.clear();
+    readerPlatformCalls.clear();
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await tester.pump();
     expect(
       platformCalls.any(
         (call) =>
-            call.method == 'SystemChrome.setEnabledSystemUIOverlays' &&
-            '${call.arguments}'.contains('SystemUiOverlay.bottom'),
+            call.method == 'SystemChrome.setEnabledSystemUIMode' &&
+            '${call.arguments}'.contains('SystemUiMode.edgeToEdge'),
+      ),
+      isTrue,
+    );
+    expect(
+      readerPlatformCalls.any(
+        (call) => call.method == 'setReaderSystemUi' && call.arguments == true,
       ),
       isTrue,
     );
 
     platformCalls.clear();
+    readerPlatformCalls.clear();
     await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
     expect(
       platformCalls.any(
         (call) =>
             call.method == 'SystemChrome.setEnabledSystemUIMode' &&
             '${call.arguments}'.contains('SystemUiMode.edgeToEdge'),
+      ),
+      isTrue,
+    );
+    expect(
+      readerPlatformCalls.any(
+        (call) => call.method == 'setReaderSystemUi' && call.arguments == false,
       ),
       isTrue,
     );

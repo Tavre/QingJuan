@@ -34,6 +34,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   static const Duration _visibleChapterCheckInterval =
       Duration(milliseconds: 80);
   static const Duration _progressSaveDelay = Duration(milliseconds: 420);
+  static const MethodChannel _readerPlatformChannel =
+      MethodChannel('qingjuan/reader');
 
   final ScrollController _scrollController = ScrollController();
   final ReaderHardwareKeyService _hardwareKeys = ReaderHardwareKeyService();
@@ -66,6 +68,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   bool _checkingVisibleChapter = false;
   bool _mobileUi = false;
   int _loadToken = 0;
+  int _systemChromeRevision = 0;
   int _pageIndex = 0;
   int _pageCount = 1;
   double? _pendingChapterSlider;
@@ -97,7 +100,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && _initialized && _mobileUi) {
-      _applySystemChrome();
+      unawaited(_applySystemChrome());
     }
   }
 
@@ -126,7 +129,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     unawaited(_loadChapter(_chapterIndex, initial: true));
     if (_mobileUi) {
       _scheduleControlsHide();
-      _applySystemChrome();
+      unawaited(_applySystemChrome());
     }
   }
 
@@ -658,15 +661,25 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     );
   }
 
-  void _applySystemChrome() {
+  Future<void> _setNativeReaderSystemUi(bool enabled) async {
+    try {
+      await _readerPlatformChannel.invokeMethod<void>(
+        'setReaderSystemUi',
+        enabled,
+      );
+    } on MissingPluginException {
+      // 非 Android 平台和 Widget 测试没有原生阅读窗口通道。
+    } on PlatformException {
+      // 系统栏增强失败不能阻断正文阅读。
+    }
+  }
+
+  Future<void> _applySystemChrome() async {
     if (!_mobileUi) return;
+    final revision = ++_systemChromeRevision;
     final palette = _palette;
-    unawaited(
-      SystemChrome.setEnabledSystemUIMode(
-        SystemUiMode.manual,
-        overlays: const <SystemUiOverlay>[SystemUiOverlay.bottom],
-      ),
-    );
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    if (revision != _systemChromeRevision) return;
     SystemChrome.setSystemUIOverlayStyle(
       SystemUiOverlayStyle(
         statusBarColor: const Color(0x00000000),
@@ -679,11 +692,16 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
         systemNavigationBarContrastEnforced: false,
       ),
     );
+    await _setNativeReaderSystemUi(true);
   }
 
-  void _restoreHostSystemChrome() {
+  Future<void> _restoreHostSystemChrome() async {
     if (!_mobileUi) return;
-    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
+    final revision = ++_systemChromeRevision;
+    await _setNativeReaderSystemUi(false);
+    if (revision != _systemChromeRevision) return;
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    if (revision != _systemChromeRevision) return;
     SystemChrome.setSystemUIOverlayStyle(
       SystemUiOverlayStyle(
         statusBarColor: const Color(0x00000000),
@@ -704,7 +722,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       _controlsVisible = value;
       if (!value) _settingsVisible = false;
     });
-    _applySystemChrome();
+    unawaited(_applySystemChrome());
     if (value) {
       _scheduleControlsHide();
     } else {
@@ -732,7 +750,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   void _setPaletteMode(ReaderPaletteMode value) {
     if (_paletteMode == value) return;
     setState(() => _paletteMode = value);
-    _applySystemChrome();
+    unawaited(_applySystemChrome());
     unawaited(_scope.appState.setReaderPaletteMode(value));
   }
 
@@ -796,7 +814,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     if (widget.detail.book.kind == '漫画') return;
     _hideControlsTimer?.cancel();
     unawaited(_hardwareKeys.setEnabled(false));
-    _restoreHostSystemChrome();
+    await _restoreHostSystemChrome();
+    if (!mounted) return;
     await Navigator.of(context).push<void>(
       qjPageRoute<void>(
         context: context,
@@ -812,7 +831,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       ),
     );
     if (!mounted) return;
-    _applySystemChrome();
+    unawaited(_applySystemChrome());
     unawaited(_hardwareKeys.setEnabled(_volumeKeyReadingEnabled));
     _scheduleControlsHide();
   }
@@ -1030,7 +1049,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     _cancelScheduledProgressSave();
     unawaited(_saveProgress());
     unawaited(_hardwareKeys.detach());
-    _restoreHostSystemChrome();
+    unawaited(_restoreHostSystemChrome());
     for (final content in _chapterCache.values) {
       _evictChapterImages(content);
     }
@@ -2207,6 +2226,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
         if (!didPop && _settingsVisible) _toggleSettings();
       },
       child: AnimatedContainer(
+        key: const ValueKey('reader-mobile-surface'),
         duration: _motionDuration(260, targetContext: context),
         curve: QjMotion.enterCurve,
         color: _readerBackgroundColor(context),

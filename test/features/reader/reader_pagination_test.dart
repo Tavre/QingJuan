@@ -26,14 +26,16 @@ void main() {
 
   test('reader span replaces paragraph markers with a fixed layout indent', () {
     const fontSize = 20.0;
+    const textScaler = TextScaler.linear(1.3);
     final span = readerTextSpanForLayout(
       '$readerParagraphStartMarker正文。',
       fontSize: fontSize,
+      textScaler: textScaler,
     );
     final indent = span.children!.first as WidgetSpan;
     final indentBox = indent.child as SizedBox;
 
-    expect(indentBox.width, fontSize * 2);
+    expect(indentBox.width, textScaler.scale(fontSize) * 2);
     expect(indentBox.height, 0);
     expect(span.toPlainText(includePlaceholders: false), '正文。');
     expect(

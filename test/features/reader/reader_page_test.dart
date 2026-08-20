@@ -487,6 +487,51 @@ void main() {
   });
 
   testWidgets(
+      'continuous reader keeps short and wrapped paragraph starts globally aligned',
+      (tester) async {
+    const shortBody = '短段。';
+    const longBody =
+        '这是一个足够长的正文段落，用于覆盖不同 Android 厂商字体宽度与换行结果，并验证段落外层不会按固有宽度收缩后分别居中。';
+    final payload = <String, Object?>{
+      ..._chapterPayload,
+      'content': '$shortBody\n$longBody',
+      'paragraphs': const <String>[shortBody, longBody],
+    };
+    final harness = await _Harness.create(
+      MockClient((request) async {
+        if (request.method == 'PUT') return http.Response('{}', 200);
+        return http.Response(
+          jsonEncode(payload),
+          200,
+          headers: const <String, String>{
+            'content-type': 'application/json; charset=utf-8',
+          },
+        );
+      }),
+      flowMode: ReaderFlowMode.continuous,
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+
+    Finder paragraphFinder(String body) => find.byWidgetPredicate(
+          (widget) =>
+              widget is SelectableText &&
+              widget.textSpan?.toPlainText(includePlaceholders: false) == body,
+        );
+    expect(
+      tester.getSize(paragraphFinder(shortBody)).width,
+      closeTo(tester.getSize(paragraphFinder(longBody)).width, 0.01),
+    );
+    expect(
+      tester.getTopLeft(paragraphFinder(shortBody)).dx,
+      closeTo(tester.getTopLeft(paragraphFinder(longBody)).dx, 0.01),
+    );
+  });
+
+  testWidgets(
       'Android reader hides only the top system overlay and restores it',
       (tester) async {
     final platformCalls = <MethodCall>[];
@@ -549,7 +594,13 @@ void main() {
     );
     expect(
       readerPlatformCalls.any(
-        (call) => call.method == 'setReaderSystemUi' && call.arguments == true,
+        (call) {
+          if (call.method != 'setReaderSystemUi') return false;
+          final arguments = call.arguments as Map<Object?, Object?>?;
+          return arguments?['enabled'] == true &&
+              arguments?['backgroundColor'] is int &&
+              arguments?['backgroundColor'] != 0xFF000000;
+        },
       ),
       isTrue,
     );
@@ -581,7 +632,12 @@ void main() {
     );
     expect(
       readerPlatformCalls.any(
-        (call) => call.method == 'setReaderSystemUi' && call.arguments == true,
+        (call) {
+          if (call.method != 'setReaderSystemUi') return false;
+          final arguments = call.arguments as Map<Object?, Object?>?;
+          return arguments?['enabled'] == true &&
+              arguments?['backgroundColor'] is int;
+        },
       ),
       isTrue,
     );
@@ -600,7 +656,12 @@ void main() {
     );
     expect(
       readerPlatformCalls.any(
-        (call) => call.method == 'setReaderSystemUi' && call.arguments == false,
+        (call) {
+          if (call.method != 'setReaderSystemUi') return false;
+          final arguments = call.arguments as Map<Object?, Object?>?;
+          return arguments?['enabled'] == false &&
+              arguments?['backgroundColor'] is int;
+        },
       ),
       isTrue,
     );

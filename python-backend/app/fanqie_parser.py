@@ -64,11 +64,6 @@ class FanqieBook:
     total_chapter_count: int
     chapters: tuple[FanqieChapter, ...]
 
-    @property
-    def public_chapters(self) -> tuple[FanqieChapter, ...]:
-        return tuple(chapter for chapter in self.chapters if not chapter.is_locked)
-
-
 @dataclass(frozen=True)
 class FanqieReaderChapter:
     item_id: str
@@ -249,7 +244,6 @@ def _validate_reader_content(
     text: str,
     image_urls: tuple[str, ...],
     declared_word_count: int,
-    access_restricted: bool,
 ) -> None:
     if not text and not image_urls:
         raise FanqieParseError("章节正文", "网页没有返回可用正文")
@@ -266,10 +260,6 @@ def _validate_reader_content(
                 f"网页只返回了试读片段（正文 {visible_count} 字，章节声明 {declared_word_count} 字）",
             )
         return
-
-    if access_restricted:
-        raise FanqieParseError("章节正文", "章节带访问限制且缺少声明字数，无法确认正文完整")
-
 
 def _chapter_items(page: dict[str, Any]) -> list[dict[str, Any]]:
     groups = page.get("chapterListWithVolume")
@@ -379,7 +369,6 @@ def parse_fanqie_chapter_content(
     declared_word_count: int = 0,
     content_source: str = "web_initial_state",
     authorization_method: str = "public_web",
-    trusted_complete: bool = False,
 ) -> FanqieReaderChapter:
     """解析已取得的番茄章节 HTML。
 
@@ -390,12 +379,10 @@ def parse_fanqie_chapter_content(
     if not normalized_item_id.isdigit():
         raise FanqieParseError("章节信息", "章节编号无效")
     text, image_urls = _reader_text_and_images(str(content or ""), source_url)
-    validation_access_restricted = access_restricted and not trusted_complete
     _validate_reader_content(
         text=text,
         image_urls=image_urls,
         declared_word_count=max(0, int(declared_word_count or 0)),
-        access_restricted=validation_access_restricted,
     )
     return FanqieReaderChapter(
         item_id=normalized_item_id,
@@ -431,5 +418,5 @@ def parse_fanqie_reader_page(html: str, source_url: str) -> FanqieReaderChapter:
         access_restricted=access_restricted,
         declared_word_count=declared_word_count,
         content_source="web_initial_state",
-        authorization_method=("authorized_web_session" if access_restricted else "public_web"),
+        authorization_method="public_web",
     )

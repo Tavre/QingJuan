@@ -149,6 +149,38 @@ async def test_copymanga_chapter_returns_only_official_https_images() -> None:
 
 
 @pytest.mark.asyncio
+async def test_copymanga_uses_returned_images_even_when_upstream_marks_vip() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "code": 200,
+                "results": {
+                    "is_lock": True,
+                    "is_login": True,
+                    "is_vip": True,
+                    "chapter": {
+                        "contents": [
+                            {"url": "https://sg.mangafunb.fun/t/test-comic/vip-001.jpg"}
+                        ]
+                    },
+                },
+            },
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await scraper._fetch_copymanga_chapter_data(
+            client,
+            "https://www.mangacopy.com/comic/test-comic/chapter/chapter-vip",
+            "VIP 章节",
+        )
+
+    assert result.image_urls == ["https://sg.mangafunb.fun/t/test-comic/vip-001.jpg"]
+    assert result.access_restricted is True
+
+
+@pytest.mark.asyncio
 async def test_copymanga_builtin_search(monkeypatch) -> None:
     transport = httpx.MockTransport(_copy_transport)
     monkeypatch.setattr(
@@ -228,7 +260,7 @@ async def test_comicores_preview_is_metadata_only(monkeypatch) -> None:
     assert preview.author == "作者甲"
     assert preview.chapterCount == 0
     assert preview.chapters == []
-    assert "仅展示公开作品元数据" in preview.synopsis
+    assert "尚未实现章节资源解析" in preview.synopsis
     assert "受保护下载信息" not in preview.synopsis
 
 
@@ -236,7 +268,7 @@ async def test_comicores_preview_is_metadata_only(monkeypatch) -> None:
 async def test_comicores_chapter_access_is_not_implemented(monkeypatch) -> None:
     monkeypatch.setattr(scraper, "is_site_plugin_enabled", lambda _plugin_id: True)
     async with httpx.AsyncClient(transport=httpx.MockTransport(_comicores_transport)) as client:
-        with pytest.raises(ValueError, match="网盘或付费下载资源"):
+        with pytest.raises(ValueError, match="尚未实现章节抓取"):
             await scraper._fetch_chapter_data(
                 client,
                 "https://www.comicores.cc/test-book/.html",

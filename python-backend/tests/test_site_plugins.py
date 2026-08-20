@@ -31,8 +31,10 @@ def test_site_plugin_registry_has_unique_ids_and_generic_fallback_last() -> None
         "18comic",
         "alphapolis",
         "bika",
+        "ciweimao",
         "comicores",
         "copymanga",
+        "ehentai",
         "fanqie",
         "generic",
         "hameln",
@@ -42,6 +44,8 @@ def test_site_plugin_registry_has_unique_ids_and_generic_fallback_last() -> None
         "pixiv_comic",
         "qidian",
         "quark",
+        "sfacg",
+        "shaoniandream",
         "syosetu",
         "yanmaga",
     }
@@ -49,8 +53,10 @@ def test_site_plugin_registry_has_unique_ids_and_generic_fallback_last() -> None
         "18comic",
         "alphapolis",
         "bika",
+        "ciweimao",
         "comicores",
         "copymanga",
+        "ehentai",
         "fanqie",
         "generic",
         "generic_manga",
@@ -62,6 +68,8 @@ def test_site_plugin_registry_has_unique_ids_and_generic_fallback_last() -> None
         "pixiv_comic",
         "qidian",
         "quark",
+        "sfacg",
+        "shaoniandream",
         "syosetu",
         "yanmaga",
     }
@@ -75,6 +83,10 @@ def test_site_plugin_registry_has_unique_ids_and_generic_fallback_last() -> None
     assert resolve_site_plugin("https://www.copymanga.site/comic/example").id == "copymanga"
     assert resolve_site_plugin("https://www.mangacopy.com/comic/example").id == "copymanga"
     assert resolve_site_plugin("https://www.comicores.cc/example/.html").id == "comicores"
+    assert resolve_site_plugin("https://www.ciweimao.com/book/100495948").id == "ciweimao"
+    assert resolve_site_plugin("https://e-hentai.org/g/123/0123456789/").id == "ehentai"
+    assert resolve_site_plugin("https://book.sfacg.com/Novel/465469/").id == "sfacg"
+    assert resolve_site_plugin("https://www.shaoniandream.com/book_detail/3490").id == "shaoniandream"
     assert "chapter" not in resolve_site_plugin("https://www.comicores.cc/example/.html").capabilities
     assert resolve_site_plugin("https://example.test/book").id == "generic-web"
 

@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from .admin import router as admin_router
+from .auth import router as auth_router
 from .devices import router as devices_router
 from .translation_model import router as translation_model_router
 
@@ -14,6 +15,7 @@ settings_router = APIRouter(tags=["settings"])
 
 API_ROUTERS = (
     system_router,
+    auth_router,
     devices_router,
     translation_model_router,
     plugins_router,

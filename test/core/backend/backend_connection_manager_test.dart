@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -144,7 +145,28 @@ void main() {
     api.close();
   });
 
-  test('ready connection automatically checks the Linux translation model',
+  test('remote server without multi-user capability is rejected', () async {
+    final api = ApiClient(
+      () => 'https://qingjuan.example.test',
+      token: () => 'connection-token',
+      client: MockClient((request) async => http.Response(
+            '{"service":"qingjuan-backend","apiVersion":"1",'
+            '"capabilities":{}}',
+            200,
+          )),
+    );
+    final manager = BackendConnectionManager(api, isConfigured: () => true);
+
+    await manager.ensureReady();
+
+    expect(manager.status, BackendStatus.failed);
+    expect(manager.message, contains('不支持多用户书架'));
+    expect(manager.multiUserEnabled, isFalse);
+    await manager.dispose();
+    api.close();
+  });
+
+  test('ready connection defers model check until the user session is ready',
       () async {
     final requestedPaths = <String>[];
     final api = ApiClient(
@@ -155,7 +177,7 @@ void main() {
         if (request.url.path == '/api/v1/meta') {
           return http.Response(
             '{"service":"qingjuan-backend","apiVersion":"1",'
-            '"capabilities":{"translationModelCheck":true}}',
+            '"capabilities":{"translationModelCheck":true,"multiUser":true}}',
             200,
           );
         }
@@ -178,10 +200,15 @@ void main() {
     await manager.ensureReady();
 
     expect(manager.status, BackendStatus.ready);
+    expect(manager.translationModelCheck, isNull);
+    expect(manager.message, 'Linux 后端已连接');
+    expect(requestedPaths, <String>['/api/v1/meta']);
+
+    await manager.checkTranslationModel();
+
     expect(manager.translationModelCheck?.status,
         TranslationModelCheckStatus.ready);
     expect(manager.translationModelCheck?.model, 'server-model');
-    expect(manager.message, contains('模型自检通过'));
     expect(requestedPaths,
         <String>['/api/v1/meta', '/api/v1/translation-model/check']);
     await manager.dispose();
@@ -197,7 +224,7 @@ void main() {
         if (request.url.path == '/api/v1/meta') {
           return http.Response(
             '{"service":"qingjuan-backend","apiVersion":"1",'
-            '"capabilities":{"translationModelCheck":true}}',
+            '"capabilities":{"translationModelCheck":true,"multiUser":true}}',
             200,
           );
         }
@@ -216,10 +243,227 @@ void main() {
     final manager = BackendConnectionManager(api, isConfigured: () => true);
 
     await manager.ensureReady();
+    await manager.checkTranslationModel();
 
     expect(manager.status, BackendStatus.ready);
     expect(manager.translationModelCheck?.available, isFalse);
-    expect(manager.message, contains('翻译服务自检超时'));
+    expect(manager.translationModelCheck?.message, contains('翻译服务自检超时'));
+    expect(manager.message, 'Linux 后端已连接');
+    await manager.dispose();
+    api.close();
+  });
+
+  test('heartbeat reports an interrupted restart and recovers automatically',
+      () async {
+    var metaRequests = 0;
+    final api = ApiClient(
+      () => 'https://qingjuan.example.test',
+      token: () => 'connection-token',
+      client: MockClient((request) async {
+        if (request.url.path == '/api/v1/devices/heartbeat') {
+          return http.Response('', 204);
+        }
+        expect(request.url.path, '/api/v1/meta');
+        metaRequests += 1;
+        if (metaRequests == 2) {
+          return http.Response('{"detail":"restarting"}', 503);
+        }
+        return http.Response(
+          '{"service":"qingjuan-backend","apiVersion":"1",'
+          '"capabilities":{"translationModelCheck":true,"multiUser":true}}',
+          200,
+        );
+      }),
+    );
+    final manager = BackendConnectionManager(api, isConfigured: () => true);
+    var notifications = 0;
+    manager.addListener(() => notifications += 1);
+
+    await manager.ensureReady();
+    await manager.probeRemoteHealth();
+
+    expect(manager.status, BackendStatus.failed);
+    expect(manager.message, contains('等待服务恢复'));
+
+    await manager.probeRemoteHealth();
+
+    expect(manager.status, BackendStatus.ready);
+    expect(manager.message, 'Linux 后端已连接');
+    expect(notifications, greaterThanOrEqualTo(4));
+    await manager.dispose();
+    api.close();
+  });
+
+  test('an initial restart failure keeps probing until the backend recovers',
+      () async {
+    var metaRequests = 0;
+    final recovered = Completer<void>();
+    final api = ApiClient(
+      () => 'https://qingjuan.example.test',
+      token: () => 'connection-token',
+      client: MockClient((request) async {
+        if (request.url.path == '/api/v1/devices/heartbeat') {
+          return http.Response('', 204);
+        }
+        metaRequests += 1;
+        if (metaRequests == 1) {
+          return http.Response('{"detail":"restarting"}', 503);
+        }
+        return http.Response(
+          '{"service":"qingjuan-backend","apiVersion":"1",'
+          '"capabilities":{"translationModelCheck":true,"multiUser":true}}',
+          200,
+        );
+      }),
+    );
+    final manager = BackendConnectionManager(
+      api,
+      isConfigured: () => true,
+      heartbeatInterval: const Duration(milliseconds: 5),
+    );
+    manager.addListener(() {
+      if (manager.status == BackendStatus.ready && !recovered.isCompleted) {
+        recovered.complete();
+      }
+    });
+
+    await manager.ensureReady();
+    expect(manager.status, BackendStatus.failed);
+
+    await recovered.future.timeout(const Duration(seconds: 1));
+
+    expect(manager.status, BackendStatus.ready);
+    expect(manager.readyEpoch, 1);
+    expect(metaRequests, greaterThanOrEqualTo(2));
+    await manager.dispose();
+    api.close();
+  });
+
+  test('failed replacement probe preserves the active healthy connection',
+      () async {
+    final api = ApiClient(
+      () => 'https://old.example.test',
+      token: () => 'old-token',
+      client: MockClient((request) async {
+        if (request.url.host == 'old.example.test') {
+          return http.Response(
+            '{"service":"qingjuan-backend","apiVersion":"1",'
+            '"capabilities":{"multiUser":true,"oldServer":true}}',
+            200,
+          );
+        }
+        return http.Response(
+          '{"detail":"连接凭据无效"}',
+          401,
+          headers: <String, String>{'content-type': 'application/json'},
+        );
+      }),
+    );
+    final manager = BackendConnectionManager(api, isConfigured: () => true);
+    await manager.ensureReady();
+
+    await expectLater(
+      manager.testRemoteConnection(
+        baseUrl: 'https://new.example.test',
+        token: 'new-token',
+      ),
+      throwsA(isA<Exception>()),
+    );
+
+    expect(manager.status, BackendStatus.ready);
+    expect(manager.message, contains('已连接'));
+    expect(manager.capabilities['oldServer'], isTrue);
+    expect(manager.translationModelCheck, isNull);
+    await manager.dispose();
+    api.close();
+  });
+
+  test('a delayed model check cannot overwrite a replacement backend result',
+      () async {
+    var backendUrl = 'https://old.example.test';
+    final oldModelGate = Completer<void>();
+    final api = ApiClient(
+      () => backendUrl,
+      token: () => 'connection-token',
+      client: MockClient((request) async {
+        if (request.url.path == '/api/v1/meta') {
+          return http.Response(
+            '{"service":"qingjuan-backend","apiVersion":"1",'
+            '"capabilities":{"translationModelCheck":true,"multiUser":true}}',
+            200,
+          );
+        }
+        if (request.url.path == '/api/v1/translation-model/check') {
+          if (request.url.host == 'old.example.test') {
+            await oldModelGate.future;
+          }
+          final model = request.url.host == 'old.example.test'
+              ? 'old-model'
+              : 'new-model';
+          return http.Response(
+            '{"enabled":true,"configured":true,"available":true,'
+            '"status":"ready","model":"$model","supportsVision":false,'
+            '"checkedAt":"2030-01-01T00:00:00Z","latencyMs":12,'
+            '"message":"自检通过","cached":false}',
+            200,
+            headers: <String, String>{'content-type': 'application/json'},
+          );
+        }
+        return http.Response('', 204);
+      }),
+    );
+    final manager = BackendConnectionManager(api, isConfigured: () => true);
+
+    await manager.ensureReady();
+    final oldCheck = manager.checkTranslationModel();
+    await Future<void>.delayed(Duration.zero);
+    backendUrl = 'https://new.example.test';
+    await manager.ensureReady();
+    await manager.checkTranslationModel();
+    oldModelGate.complete();
+    await oldCheck;
+
+    expect(manager.translationModelCheck?.model, 'new-model');
+    expect(manager.translationModelCheckInProgress, isFalse);
+    await manager.dispose();
+    api.close();
+  });
+
+  test('a delayed old connection cannot overwrite the replacement backend',
+      () async {
+    var backendUrl = 'https://old.example.test';
+    final oldResponseGate = Completer<void>();
+    final api = ApiClient(
+      () => backendUrl,
+      token: () => 'connection-token',
+      client: MockClient((request) async {
+        if (request.url.host == 'old.example.test') {
+          await oldResponseGate.future;
+          return http.Response(
+            '{"service":"qingjuan-backend","apiVersion":"1",'
+            '"capabilities":{"multiUser":true,"oldServer":true}}',
+            200,
+          );
+        }
+        return http.Response(
+          '{"service":"qingjuan-backend","apiVersion":"1",'
+          '"capabilities":{"multiUser":true,"newServer":true}}',
+          200,
+        );
+      }),
+    );
+    final manager = BackendConnectionManager(api, isConfigured: () => true);
+
+    final oldConnection = manager.ensureReady();
+    await Future<void>.delayed(Duration.zero);
+    backendUrl = 'https://new.example.test';
+    await manager.ensureReady();
+    oldResponseGate.complete();
+    await oldConnection;
+
+    expect(manager.status, BackendStatus.ready);
+    expect(manager.capabilities['newServer'], isTrue);
+    expect(manager.capabilities.containsKey('oldServer'), isFalse);
     await manager.dispose();
     api.close();
   });

@@ -134,6 +134,11 @@ void main() {
   test('Windows local backend disables the admin web interface', () {
     expect(windowsLocalBackendEnvironment['QINGJUAN_DISABLE_ADMIN_WEB'], '1');
     expect(windowsLocalBackendEnvironment['QINGJUAN_TRUST_LOCAL_ADMIN'], '1');
+    expect(windowsLocalBackendEnvironment['QINGJUAN_MULTI_USER'], '0');
+    expect(
+      windowsLocalBackendEnvironment['QINGJUAN_2FA_ENCRYPTION_KEY'],
+      isEmpty,
+    );
     expect(
         windowsLocalBackendEnvironment['QINGJUAN_AUTH_TOKEN_SHA256'], isEmpty);
   });

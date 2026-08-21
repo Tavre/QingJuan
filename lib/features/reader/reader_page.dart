@@ -10,6 +10,7 @@ import '../../core/models/book.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/motion.dart';
 import '../../shared/responsive.dart';
+import '../../shared/smooth_scroll.dart';
 import '../audiobook/audiobook_page.dart';
 import 'reader_controls.dart';
 import 'reader_hardware_key_service.dart';
@@ -34,10 +35,13 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   static const Duration _visibleChapterCheckInterval =
       Duration(milliseconds: 80);
   static const Duration _progressSaveDelay = Duration(milliseconds: 420);
+  static const int _hardwareKeyAnimationMilliseconds = 170;
   static const MethodChannel _readerPlatformChannel =
       MethodChannel('qingjuan/reader');
 
-  final ScrollController _scrollController = ScrollController();
+  final ScrollController _scrollController = QjScrollController(
+    debugLabel: 'reader-content',
+  );
   final ReaderHardwareKeyService _hardwareKeys = ReaderHardwareKeyService();
   final Map<String, ChapterContent> _chapterCache = <String, ChapterContent>{};
   final Map<String, Future<ChapterContent>> _inflight =
@@ -85,7 +89,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   TextDirection? _paginationTextDirection;
   Locale? _paginationLocale;
   List<String> _paginationPages = const <String>[];
-  DateTime? _lastHardwareKeyAt;
+  final List<ReaderHardwareKey> _pendingHardwareKeys = <ReaderHardwareKey>[];
+  bool _drainingHardwareKeys = false;
   Offset? _readerPointerDown;
   String? _error;
   String? _switchError;
@@ -463,7 +468,10 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     unawaited(_prefetchAdjacent(visible));
   }
 
-  Future<void> _scrollByPage(int direction) async {
+  Future<void> _scrollByPage(
+    int direction, {
+    int milliseconds = 220,
+  }) async {
     if (!_scrollController.hasClients || direction == 0) return;
     var position = _scrollController.position;
     final distance = position.viewportDimension * 0.84;
@@ -497,7 +505,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
             position.viewportDimension * 0.84 * direction)
         .clamp(position.minScrollExtent, position.maxScrollExtent)
         .toDouble();
-    await _moveScrollTo(target);
+    await _moveScrollTo(target, milliseconds: milliseconds);
   }
 
   Future<void> _openPreviousContinuousChapterAtEnd(int chapterIndex) async {
@@ -567,35 +575,80 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
 
   void _handleHardwareKey(ReaderHardwareKey key) {
     if (!_volumeKeyReadingEnabled || !mounted) return;
-    final now = DateTime.now();
-    if (_lastHardwareKeyAt != null &&
-        now.difference(_lastHardwareKeyAt!) <
-            const Duration(milliseconds: 140)) {
-      return;
-    }
-    _lastHardwareKeyAt = now;
-    if (_flowMode == ReaderFlowMode.continuous) {
-      unawaited(_scrollByPage(key == ReaderHardwareKey.up ? -1 : 1));
-    } else if (key == ReaderHardwareKey.up) {
-      _previousPage();
-    } else {
-      _nextPage();
+    _pendingHardwareKeys.add(key);
+    if (!_drainingHardwareKeys) unawaited(_drainHardwareKeys());
+  }
+
+  Future<void> _drainHardwareKeys() async {
+    _drainingHardwareKeys = true;
+    try {
+      while (mounted &&
+          _volumeKeyReadingEnabled &&
+          _pendingHardwareKeys.isNotEmpty) {
+        final key = _pendingHardwareKeys.removeAt(0);
+        final direction = key == ReaderHardwareKey.up ? -1 : 1;
+        if (_flowMode == ReaderFlowMode.continuous) {
+          await _scrollByPage(
+            direction,
+            milliseconds: _hardwareKeyAnimationMilliseconds,
+          );
+        } else {
+          await _turnPageWithHardwareKey(direction);
+        }
+      }
+    } finally {
+      _drainingHardwareKeys = false;
+      if (mounted &&
+          _volumeKeyReadingEnabled &&
+          _pendingHardwareKeys.isNotEmpty) {
+        unawaited(_drainHardwareKeys());
+      }
     }
   }
 
-  Future<void> _goToPage(int pageIndex) async {
+  Future<void> _turnPageWithHardwareKey(int direction) async {
+    if (_switchingChapter || direction == 0) return;
+    final target = _pageIndex + direction;
+    if (target >= 0 && target < _pageCount && _pageController.hasClients) {
+      await _goToPage(
+        target,
+        maximumMilliseconds: _hardwareKeyAnimationMilliseconds,
+      );
+      return;
+    }
+    final previousChapter = _chapterIndex;
+    await _moveChapter(direction);
+    if (!mounted ||
+        _flowMode != ReaderFlowMode.paged ||
+        _chapterIndex == previousChapter) {
+      return;
+    }
+    // _loadChapter replaces the PageController before the rebuilt PageView has
+    // attached and calculated its page count. Keep the queue paused until that
+    // layout is ready, otherwise the next key mistakes the new chapter for a
+    // one-page chapter and skips it.
+    await WidgetsBinding.instance.endOfFrame;
+  }
+
+  Future<void> _goToPage(
+    int pageIndex, {
+    int? maximumMilliseconds,
+  }) async {
     if (_pageController.positions.length != 1) return;
     if (_pageAnimation == ReaderPageAnimation.none ||
         QjMotion.disabled(context)) {
       _pageController.jumpToPage(pageIndex);
       return;
     }
-    final duration = switch (_pageAnimation) {
+    var duration = switch (_pageAnimation) {
       ReaderPageAnimation.cover => 300,
       ReaderPageAnimation.slide => 220,
       ReaderPageAnimation.fade => 260,
       ReaderPageAnimation.none => 0,
     };
+    if (maximumMilliseconds != null) {
+      duration = math.min(duration, maximumMilliseconds);
+    }
     final curve = switch (_pageAnimation) {
       ReaderPageAnimation.cover => Curves.easeInOutCubic,
       ReaderPageAnimation.slide => Curves.easeOutCubic,
@@ -794,6 +847,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
 
   void _setFlowMode(ReaderFlowMode value) {
     if (_flowMode == value) return;
+    _pendingHardwareKeys.clear();
     _cancelScheduledProgressSave();
     unawaited(_saveProgress());
     setState(() {
@@ -824,6 +878,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   Future<void> _openAudiobook() async {
     if (widget.detail.book.kind == '漫画') return;
     _hideControlsTimer?.cancel();
+    _pendingHardwareKeys.clear();
     unawaited(_hardwareKeys.setEnabled(false));
     await _restoreHostSystemChrome();
     if (!mounted) return;
@@ -849,17 +904,20 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
 
   void _setVolumeKeyReading(bool value) {
     setState(() => _volumeKeyReadingEnabled = value);
+    if (!value) _pendingHardwareKeys.clear();
     unawaited(_scope.appState.setVolumeKeyReadingEnabled(value));
     unawaited(_hardwareKeys.setEnabled(value));
   }
 
   Future<void> _showChapterPicker() async {
     _hideControlsTimer?.cancel();
+    _pendingHardwareKeys.clear();
     unawaited(_hardwareKeys.setEnabled(false));
     if (!mounted) return;
     final palette = _palette;
-    final controller = ScrollController(
+    final controller = QjScrollController(
       initialScrollOffset: math.max(0, (_chapterIndex - 3) * 58).toDouble(),
+      debugLabel: 'reader-chapter-list',
     );
     final selected = await showGeneralDialog<int>(
       context: context,
@@ -1058,6 +1116,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     _hideControlsTimer?.cancel();
     _visibleChapterTimer?.cancel();
     _cancelScheduledProgressSave();
+    _pendingHardwareKeys.clear();
     unawaited(_saveProgress());
     unawaited(_hardwareKeys.detach());
     unawaited(_restoreHostSystemChrome());

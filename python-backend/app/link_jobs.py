@@ -13,6 +13,7 @@ from .models import (
     PreviewResponse,
     TaskLogLevel,
 )
+from .multi_user import DEFAULT_ADMIN_USER_ID
 
 
 def _now() -> str:
@@ -21,6 +22,7 @@ def _now() -> str:
 
 @dataclass
 class _StoredLinkJob:
+    owner_id: str
     payload: AddBookPayload
     record: LinkJobRecord
     next_sequence: int = 1
@@ -32,7 +34,12 @@ class LinkJobStore:
     def __init__(self) -> None:
         self._jobs: dict[str, _StoredLinkJob] = {}
 
-    def create(self, mode: LinkJobMode, payload: AddBookPayload) -> LinkJobRecord:
+    def create(
+        self,
+        mode: LinkJobMode,
+        payload: AddBookPayload,
+        owner_id: str = DEFAULT_ADMIN_USER_ID,
+    ) -> LinkJobRecord:
         timestamp = _now()
         record = LinkJobRecord(
             id=f"link-{uuid4()}",
@@ -43,14 +50,25 @@ class LinkJobStore:
             createdAt=timestamp,
             updatedAt=timestamp,
         )
-        self._jobs[record.id] = _StoredLinkJob(payload=payload.model_copy(deep=True), record=record)
+        self._jobs[record.id] = _StoredLinkJob(
+            owner_id=owner_id,
+            payload=payload.model_copy(deep=True),
+            record=record,
+        )
         return record.model_copy(deep=True)
 
-    def get(self, job_id: str) -> LinkJobRecord:
-        return self._require(job_id).record.model_copy(deep=True)
+    def get(self, job_id: str, owner_id: str | None = None) -> LinkJobRecord:
+        stored = self._require(job_id)
+        self._check_owner(stored, job_id, owner_id)
+        return stored.record.model_copy(deep=True)
 
-    def payload_for(self, job_id: str) -> AddBookPayload:
-        return self._require(job_id).payload.model_copy(deep=True)
+    def payload_for(self, job_id: str, owner_id: str | None = None) -> AddBookPayload:
+        stored = self._require(job_id)
+        self._check_owner(stored, job_id, owner_id)
+        return stored.payload.model_copy(deep=True)
+
+    def owner_for(self, job_id: str) -> str:
+        return self._require(job_id).owner_id
 
     def start(self, job_id: str, message: str) -> LinkJobRecord:
         stored = self._require(job_id)
@@ -120,3 +138,8 @@ class LinkJobStore:
             return self._jobs[job_id]
         except KeyError as exc:
             raise KeyError(f"未找到链接任务：{job_id}") from exc
+
+    @staticmethod
+    def _check_owner(stored: _StoredLinkJob, job_id: str, owner_id: str | None) -> None:
+        if owner_id is not None and stored.owner_id != owner_id:
+            raise KeyError(f"未找到链接任务：{job_id}")

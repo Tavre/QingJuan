@@ -14,6 +14,7 @@ import 'package:qingjuan/core/models/settings.dart';
 import 'package:qingjuan/core/models/tts_speech_style.dart';
 import 'package:qingjuan/core/models/tts_voice.dart';
 import 'package:qingjuan/features/audiobook/tts_voice_service.dart';
+import 'package:qingjuan/features/auth/auth_controller.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
 import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/settings/settings_page.dart';
@@ -70,6 +71,7 @@ void main() {
             appState: appState,
             api: api,
             backend: BackendConnectionManager(api, isConfigured: () => false),
+            auth: AuthController.localAdministrator(api),
             library: LibraryController(api),
             sources: SourcesController(api),
             tasks: TasksController(api),
@@ -104,6 +106,8 @@ void main() {
     expect(find.text('newapi'), findsNothing);
     expect(find.text('anthropic'), findsNothing);
 
+    await tester.ensureVisible(find.byType(ComboBox<String>));
+    await tester.pumpAndSettle();
     await tester.tap(find.byType(ComboBox<String>));
     await tester.pumpAndSettle();
     await tester.tap(
@@ -113,6 +117,8 @@ void main() {
 
     expect(appState.ttsVoice, voice);
 
+    await tester.ensureVisible(find.byType(ComboBox<TtsSpeechStyle>));
+    await tester.pumpAndSettle();
     await tester.tap(find.byType(ComboBox<TtsSpeechStyle>));
     await tester.pumpAndSettle();
     await tester.tap(find.textContaining('沉浸小说').last);
@@ -129,6 +135,8 @@ void main() {
       <TtsSpeechStyle>[TtsSpeechStyle.immersive],
     );
 
+    await tester.ensureVisible(find.byType(ComboBox<String>));
+    await tester.pumpAndSettle();
     await tester.tap(find.byType(ComboBox<String>));
     await tester.pumpAndSettle();
     await tester.tap(find.text('跟随系统默认声音').last);
@@ -160,6 +168,7 @@ void main() {
             appState: appState,
             api: api,
             backend: backend,
+            auth: AuthController.localAdministrator(api),
             library: LibraryController(api),
             sources: SourcesController(api),
             tasks: TasksController(api),
@@ -332,6 +341,7 @@ void main() {
             appState: appState,
             api: api,
             backend: backend,
+            auth: AuthController.localAdministrator(api),
             library: LibraryController(api),
             sources: SourcesController(api),
             tasks: TasksController(api),
@@ -405,6 +415,7 @@ void main() {
             appState: appState,
             api: api,
             backend: backend,
+            auth: AuthController.localAdministrator(api),
             library: LibraryController(api),
             sources: SourcesController(api),
             tasks: TasksController(api),
@@ -418,6 +429,25 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    expect(
+      find.byKey(const ValueKey('mobile-my-dashboard')),
+      findsOneWidget,
+    );
+    expect(find.text('账户概览'), findsNothing);
+    expect(find.text('账户与服务器'), findsNothing);
+    expect(find.byKey(const ValueKey('linux-backend-token')), findsNothing);
+
+    final backendEntry = find.byKey(
+      const ValueKey('my-feature-backend'),
+    );
+    await tester.ensureVisible(backendEntry);
+    await tester.tap(backendEntry);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('mobile-sheet-surface')),
+      findsOneWidget,
+    );
     final token = tester.widget<TextBox>(
       find.byKey(const ValueKey('linux-backend-token')),
     );

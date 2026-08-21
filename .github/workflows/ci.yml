@@ -88,35 +88,56 @@ jobs:
           bash -n deploy/linux/uninstall.sh
           bash -n deploy/linux/qingjuan-info.sh
           bash -n deploy/linux/qingjuan-password.sh
+          bash -n deploy/linux/qingjuan-update-runner.sh
           bash deploy/linux/uninstall.sh --help >/dev/null
           bash deploy/linux/qingjuan-password.sh --help >/dev/null
-          grep -q '^ExecStart=/opt/qingjuan/venv/bin/python -m app.main serve' \
+          bash deploy/linux/update.sh --help >/dev/null
+          grep -q '^ExecStart=/opt/qingjuan/current/venv/bin/python -m app.main serve' \
             deploy/linux/qingjuan-backend.service
           grep -q '^User=qingjuan$' deploy/linux/qingjuan-backend.service
+          grep -q '^RuntimeDirectory=qingjuan$' deploy/linux/qingjuan-backend.service
           grep -Fq 'chown -R root:"$SERVICE_USER" "$VENV_DIR"' deploy/linux/install.sh
           grep -Fq 'chmod -R u=rwX,g=rX,o= "$VENV_DIR"' deploy/linux/install.sh
-          grep -Fq 'chown -R root:"$SERVICE_USER" "$VENV_DIR"' deploy/linux/update.sh
-          grep -Fq 'chmod -R u=rwX,g=rX,o= "$VENV_DIR"' deploy/linux/update.sh
+          grep -Fq 'chown -R root:"$SERVICE_USER" "$target_release"' deploy/linux/update.sh
+          grep -Fq 'chmod -R u=rwX,g=rX,o= "$target_release"' deploy/linux/update.sh
+          grep -Fq 'TRUSTED_UPSTREAM_REF="refs/qingjuan-updater/upstream"' deploy/linux/update.sh
+          grep -Fq 'mktemp -d "$UPDATER_STATE_DIR/rollback.' deploy/linux/update.sh
+          test "$(grep -n 'pip check' deploy/linux/update.sh | head -n1 | cut -d: -f1)" \
+            -lt "$(grep -n 'systemctl stop "$SERVICE_NAME"' deploy/linux/update.sh | tail -n1 | cut -d: -f1)"
           grep -Fq 'QINGJUAN_ADMIN_PASSWORD_HASH=' deploy/linux/install.sh
           grep -Fq 'QINGJUAN_CONNECTION_TOKEN_FILE=' deploy/linux/install.sh
+          grep -Fq 'QINGJUAN_UPDATE_REQUEST_FILE=' deploy/linux/install.sh
           grep -Fq 'chmod 0640 "$client_file"' deploy/linux/install.sh
           grep -Fq '管理界面：${admin_url}' deploy/linux/qingjuan-info.sh
           grep -Fq 'qingjuan-password.sh' deploy/linux/install.sh
+          grep -q '^ExecStart=/usr/local/sbin/qingjuan-update-runner$' \
+            deploy/linux/qingjuan-updater.service
+          grep -q '^PathExists=/run/qingjuan/update-request.json$' \
+            deploy/linux/qingjuan-updater.path
           test -f python-backend/app/admin_static/index.html
           sudo useradd --system --no-create-home qingjuan
           sudo install -d /opt/qingjuan/venv/bin /opt/qingjuan/app/python-backend
+          sudo install -d /opt/qingjuan/releases/legacy
           sudo install -d -o qingjuan -g qingjuan /var/lib/qingjuan
           sudo install -d -m 0700 /etc/qingjuan
           sudo ln -s "$(command -v python)" /opt/qingjuan/venv/bin/python
           sudo chmod 0700 /opt/qingjuan/venv /opt/qingjuan/venv/bin
           sudo chown -R root:qingjuan /opt/qingjuan/venv
           sudo chmod -R u=rwX,g=rX,o= /opt/qingjuan/venv
+          sudo ln -s /opt/qingjuan/app /opt/qingjuan/releases/legacy/app
+          sudo ln -s /opt/qingjuan/venv /opt/qingjuan/releases/legacy/venv
+          sudo ln -s /opt/qingjuan/releases/legacy /opt/qingjuan/current
+          sudo install -o root -g root -m 0755 \
+            deploy/linux/qingjuan-update-runner.sh /usr/local/sbin/qingjuan-update-runner
           sudo -u qingjuan test -x /opt/qingjuan/venv/bin/python
           printf '%s\n' \
             'QINGJUAN_BIND_HOST=127.0.0.1' \
             'QINGJUAN_PORT=19453' \
             | sudo tee /etc/qingjuan/backend.env >/dev/null
-          systemd-analyze verify deploy/linux/qingjuan-backend.service
+          systemd-analyze verify \
+            deploy/linux/qingjuan-backend.service \
+            deploy/linux/qingjuan-updater.service \
+            deploy/linux/qingjuan-updater.path
       - name: Install backend dependencies
         working-directory: python-backend
         run: python -m pip install -r requirements.txt

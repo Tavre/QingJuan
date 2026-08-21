@@ -1,4 +1,5 @@
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter/material.dart' show Icons;
 
 import '../../../app/app_state.dart';
 import '../../../shared/app_surface.dart';
@@ -54,7 +55,10 @@ class ThemeSettingsCard extends StatelessWidget {
                         'theme-mode-${AppThemeMode.values[index].name}',
                       ),
                       label: _label(AppThemeMode.values[index]),
-                      icon: _icon(AppThemeMode.values[index]),
+                      icon: _icon(
+                        AppThemeMode.values[index],
+                        mobile: true,
+                      ),
                       selected: themeMode == AppThemeMode.values[index],
                       onPressed: () => onChanged(AppThemeMode.values[index]),
                     ),
@@ -72,15 +76,10 @@ class ThemeSettingsCard extends StatelessWidget {
                   AppThemeMode.light => '浅色',
                   AppThemeMode.dark => '深色',
                 };
-                final icon = switch (mode) {
-                  AppThemeMode.system => FluentIcons.system,
-                  AppThemeMode.light => FluentIcons.brightness,
-                  AppThemeMode.dark => FluentIcons.clear_night,
-                };
                 return _ThemeModeChoice(
                   key: ValueKey<String>('theme-mode-${mode.name}'),
                   label: label,
-                  icon: icon,
+                  icon: _icon(mode, mobile: false),
                   selected: themeMode == mode,
                   onPressed: () => onChanged(mode),
                 );
@@ -97,10 +96,13 @@ class ThemeSettingsCard extends StatelessWidget {
         AppThemeMode.dark => '深色',
       };
 
-  IconData _icon(AppThemeMode mode) => switch (mode) {
-        AppThemeMode.system => FluentIcons.system,
-        AppThemeMode.light => FluentIcons.brightness,
-        AppThemeMode.dark => FluentIcons.clear_night,
+  IconData _icon(AppThemeMode mode, {required bool mobile}) => switch (mode) {
+        AppThemeMode.system =>
+          mobile ? Icons.brightness_auto_rounded : FluentIcons.system,
+        AppThemeMode.light =>
+          mobile ? Icons.light_mode_rounded : FluentIcons.brightness,
+        AppThemeMode.dark =>
+          mobile ? Icons.dark_mode_rounded : FluentIcons.clear_night,
       };
 }
 
@@ -121,15 +123,19 @@ class _ThemeModeChoice extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
+    final mobile = usesMobileUi(context);
     final accent = theme.accentColor.defaultBrushFor(theme.brightness);
     return SizedBox(
-      width: usesMobileUi(context) ? double.infinity : 92,
+      width: mobile ? double.infinity : 92,
       child: AppSurface(
         onPressed: onPressed,
         selected: selected,
         tone: selected ? AppSurfaceTone.accent : AppSurfaceTone.muted,
         borderRadius: 16,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+        padding: EdgeInsets.symmetric(
+          horizontal: mobile ? 4 : 10,
+          vertical: 12,
+        ),
         child: Column(
           children: <Widget>[
             Icon(
@@ -139,12 +145,15 @@ class _ThemeModeChoice extends StatelessWidget {
               color: selected ? accent : theme.resources.textFillColorSecondary,
             ),
             const SizedBox(height: 7),
-            Text(
-              label,
-              maxLines: 1,
-              style: theme.typography.caption?.copyWith(
-                color: selected ? accent : null,
-                fontWeight: selected ? FontWeight.w700 : null,
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                label,
+                maxLines: 1,
+                style: theme.typography.caption?.copyWith(
+                  color: selected ? accent : null,
+                  fontWeight: selected ? FontWeight.w700 : null,
+                ),
               ),
             ),
           ],

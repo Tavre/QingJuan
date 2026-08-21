@@ -40,6 +40,37 @@ void main() {
     expect(preferences.getString('qingjuan.backendUrl'), isNull);
   });
 
+  test('atomic backend activation advances the connection revision once',
+      () async {
+    final preferences = await SharedPreferences.getInstance();
+    final secrets = _MemorySecretStore();
+    final state = AppState(preferences, secretStore: secrets);
+
+    await state.applyBackendConnection(
+      mode: BackendConnectionMode.remote,
+      remoteUrl: 'https://qingjuan.example.test/',
+      remoteToken: 'token-one',
+    );
+    expect(state.backendConnectionRevision, 1);
+    expect(state.backendUrl, 'https://qingjuan.example.test');
+    expect(secrets.token, 'token-one');
+
+    await state.applyBackendConnection(
+      mode: BackendConnectionMode.remote,
+      remoteUrl: 'https://qingjuan.example.test',
+      remoteToken: 'token-one',
+    );
+    expect(state.backendConnectionRevision, 1);
+
+    await state.applyBackendConnection(
+      mode: BackendConnectionMode.remote,
+      remoteUrl: 'https://qingjuan.example.test',
+      remoteToken: 'token-two',
+    );
+    expect(state.backendConnectionRevision, 2);
+    expect(secrets.token, 'token-two');
+  });
+
   test('fresh Windows state defaults to the local backend', () async {
     final state = AppState(
       await SharedPreferences.getInstance(),

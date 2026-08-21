@@ -12,6 +12,8 @@ import '../core/backend/backend_url_validator.dart';
 import '../core/backend/connection_secret_store.dart';
 import '../core/backend/device_identity.dart';
 import '../core/backend/local_backend_process.dart';
+import '../core/backend/user_session_store.dart';
+import '../features/auth/auth_controller.dart';
 import '../features/library/library_controller.dart';
 import '../features/settings/settings_controller.dart';
 import '../features/shell/app_shell.dart';
@@ -27,11 +29,34 @@ class QingJuanApp extends StatefulWidget {
     required this.appState,
     required this.api,
     required this.backend,
+    required this.auth,
     required this.library,
     required this.sources,
     required this.tasks,
     required this.settings,
   });
+
+  @visibleForTesting
+  factory QingJuanApp.testing({
+    required AppState appState,
+    required ApiClient api,
+    required BackendConnectionManager backend,
+    required AuthController auth,
+    required LibraryController library,
+    required SourcesController sources,
+    required TasksController tasks,
+    required SettingsController settings,
+  }) =>
+      QingJuanApp._(
+        appState: appState,
+        api: api,
+        backend: backend,
+        auth: auth,
+        library: library,
+        sources: sources,
+        tasks: tasks,
+        settings: settings,
+      );
 
   static Future<QingJuanApp> bootstrap() async {
     final preferences = await SharedPreferences.getInstance();
@@ -44,10 +69,14 @@ class QingJuanApp extends StatefulWidget {
       initialRemoteBackendToken: token,
       localBackendSupported: Platform.isWindows,
     );
+    late final AuthController auth;
     final api = ApiClient(
       () => appState.backendUrl,
       token: () => appState.backendToken,
+      userToken: () => auth.userToken,
+      connectionRevision: () => appState.backendConnectionRevision,
       deviceHeaders: () => deviceIdentity.headers,
+      onUserSessionExpired: () => auth.invalidateSession(),
     );
     final backend = BackendConnectionManager(
       api,
@@ -56,10 +85,16 @@ class QingJuanApp extends StatefulWidget {
       localBackend: Platform.isWindows ? WindowsLocalBackendLifecycle() : null,
       validateConfiguration: () => validateBackendUrl(appState.backendUrl),
     );
+    auth = AuthController(
+      api,
+      const SecureUserSessionStore(),
+      backendUrl: () => appState.backendUrl,
+    );
     return QingJuanApp._(
       appState: appState,
       api: api,
       backend: backend,
+      auth: auth,
       library: LibraryController(api),
       sources: SourcesController(api),
       tasks: TasksController(api),
@@ -70,6 +105,7 @@ class QingJuanApp extends StatefulWidget {
   final AppState appState;
   final ApiClient api;
   final BackendConnectionManager backend;
+  final AuthController auth;
   final LibraryController library;
   final SourcesController sources;
   final TasksController tasks;
@@ -80,33 +116,161 @@ class QingJuanApp extends StatefulWidget {
 }
 
 class _QingJuanAppState extends State<QingJuanApp> {
+  final _navigatorKey = GlobalKey<NavigatorState>();
+  String? _activeWorkspaceIdentity;
+  int _workspaceGeneration = 0;
+  int _backendActivationOperation = 0;
+  int _handledReadyEpoch = 0;
+  int _activationEpochInProgress = 0;
+  bool _initializing = true;
+
   @override
   void initState() {
     super.initState();
+    widget.auth.addListener(_handleAuthChanged);
+    widget.backend.addListener(_handleBackendChanged);
     unawaited(_initialize());
   }
 
   Future<void> _initialize() async {
     await widget.backend.ensureReady();
+    if (!mounted) return;
     widget.appState.showNotice(widget.backend.message);
     if (widget.backend.status == BackendStatus.ready) {
-      await Future.wait<void>(<Future<void>>[
-        widget.library.load(),
-        widget.sources.load(),
-        widget.tasks.load(),
-        widget.settings.load(),
-      ]);
+      await _activateReadyBackend();
     } else {
       widget.appState.selectSection(AppSection.settings);
     }
+    if (!mounted) return;
+    _initializing = false;
+    if (widget.backend.status == BackendStatus.ready) {
+      await _activateReadyBackend();
+    }
+    if (!mounted) return;
+    await _synchronizeWorkspace();
+  }
+
+  void _handleAuthChanged() {
+    if (_initializing || _activationEpochInProgress != 0) return;
+    unawaited(_checkTranslationModelForCurrentUser());
+    unawaited(_synchronizeWorkspace());
+  }
+
+  void _handleBackendChanged() {
+    if (_initializing || widget.backend.status != BackendStatus.ready) return;
+    unawaited(_activateReadyBackend());
+  }
+
+  Future<void> _activateReadyBackend() async {
+    if (!mounted || widget.backend.status != BackendStatus.ready) return;
+    final readyEpoch = widget.backend.readyEpoch;
+    if (readyEpoch == 0 ||
+        readyEpoch == _handledReadyEpoch ||
+        readyEpoch == _activationEpochInProgress) {
+      return;
+    }
+    final operation = ++_backendActivationOperation;
+    _activationEpochInProgress = readyEpoch;
+    try {
+      await widget.auth.initializeForCurrentBackend(
+        multiUser: widget.backend.multiUserEnabled,
+      );
+      if (!mounted ||
+          operation != _backendActivationOperation ||
+          widget.backend.status != BackendStatus.ready ||
+          widget.backend.readyEpoch != readyEpoch) {
+        return;
+      }
+      _handledReadyEpoch = readyEpoch;
+      await _checkTranslationModelForCurrentUser();
+      if (!mounted ||
+          operation != _backendActivationOperation ||
+          widget.backend.status != BackendStatus.ready ||
+          widget.backend.readyEpoch != readyEpoch) {
+        return;
+      }
+      await _synchronizeWorkspace();
+    } catch (error) {
+      if (mounted &&
+          operation == _backendActivationOperation &&
+          widget.backend.readyEpoch == readyEpoch) {
+        _handledReadyEpoch = readyEpoch;
+        widget.appState.showNotice('账号状态恢复失败：$error');
+        widget.appState.selectSection(AppSection.settings);
+      }
+    } finally {
+      if (_activationEpochInProgress == readyEpoch) {
+        _activationEpochInProgress = 0;
+      }
+    }
+  }
+
+  Future<void> _checkTranslationModelForCurrentUser() async {
+    if (!widget.auth.canAccessWorkspace ||
+        widget.backend.status != BackendStatus.ready ||
+        widget.backend.capabilities['translationModelCheck'] != true ||
+        widget.backend.translationModelCheckInProgress ||
+        widget.backend.translationModelCheck != null) {
+      return;
+    }
+    await widget.backend.checkTranslationModel();
+  }
+
+  Future<void> _synchronizeWorkspace() async {
+    if (!mounted) return;
+    final identity = widget.auth.workspaceIdentity;
+    if (identity == _activeWorkspaceIdentity) {
+      if (identity == null) {
+        widget.appState.selectSection(AppSection.settings);
+      }
+      return;
+    }
+    _activeWorkspaceIdentity = identity;
+    final generation = ++_workspaceGeneration;
+    _resetWorkspaceState();
+    _returnToWorkspaceRoot();
+    if (identity == null) {
+      widget.appState.selectSection(AppSection.settings);
+      return;
+    }
+    await Future.wait<void>(<Future<void>>[
+      widget.library.load(),
+      widget.sources.load(),
+      widget.tasks.load(),
+      widget.settings.load(),
+    ]);
+    if (!mounted || generation != _workspaceGeneration) return;
+  }
+
+  void _resetWorkspaceState() {
+    widget.library.resetForBackendSwitch();
+    widget.sources.resetForBackendSwitch();
+    widget.tasks.resetForBackendSwitch();
+    widget.settings.resetForBackendSwitch();
+    PaintingBinding.instance.imageCache
+      ..clear()
+      ..clearLiveImages();
+  }
+
+  void _returnToWorkspaceRoot() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final navigator = _navigatorKey.currentState;
+      if (navigator != null) navigator.popUntil((route) => route.isFirst);
+    });
   }
 
   @override
   void dispose() {
+    _backendActivationOperation += 1;
+    _workspaceGeneration += 1;
+    widget.auth.removeListener(_handleAuthChanged);
+    widget.backend.removeListener(_handleBackendChanged);
     widget.library.dispose();
     widget.sources.dispose();
     widget.tasks.dispose();
     widget.settings.dispose();
+    widget.auth.dispose();
     unawaited(widget.backend.dispose());
     widget.api.close();
     widget.appState.dispose();
@@ -119,6 +283,7 @@ class _QingJuanAppState extends State<QingJuanApp> {
       appState: widget.appState,
       api: widget.api,
       backend: widget.backend,
+      auth: widget.auth,
       library: widget.library,
       sources: widget.sources,
       tasks: widget.tasks,
@@ -127,6 +292,7 @@ class _QingJuanAppState extends State<QingJuanApp> {
         animation: widget.appState.themeModeListenable,
         builder: (context, _) {
           return FluentApp(
+            navigatorKey: _navigatorKey,
             debugShowCheckedModeBanner: false,
             title: '青卷',
             themeMode: widget.appState.themeModeListenable.value,

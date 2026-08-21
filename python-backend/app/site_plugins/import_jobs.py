@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from ..models import SitePluginBookshelfImportItem, SitePluginBookshelfImportJob
+from ..multi_user import DEFAULT_ADMIN_USER_ID
 
 
 def _now() -> str:
@@ -13,11 +14,18 @@ def _now() -> str:
 class SitePluginImportJobStore:
     def __init__(self, *, maximum_jobs: int = 32) -> None:
         self._jobs: dict[str, SitePluginBookshelfImportJob] = {}
+        self._owners: dict[str, str] = {}
         self._maximum_jobs = maximum_jobs
 
-    def create(self, plugin_id: str) -> SitePluginBookshelfImportJob:
+    def create(
+        self,
+        plugin_id: str,
+        owner_id: str = DEFAULT_ADMIN_USER_ID,
+    ) -> SitePluginBookshelfImportJob:
         if any(
-            job.pluginId == plugin_id and job.status in {"queued", "running"}
+            job.pluginId == plugin_id
+            and self._owners.get(job.id) == owner_id
+            and job.status in {"queued", "running"}
             for job in self._jobs.values()
         ):
             raise ValueError("该插件已有书架导入任务正在运行")
@@ -31,14 +39,26 @@ class SitePluginImportJobStore:
             updatedAt=timestamp,
         )
         self._jobs[job.id] = job
+        self._owners[job.id] = owner_id
         self._trim()
         return job.model_copy(deep=True)
 
-    def get(self, job_id: str, plugin_id: str | None = None) -> SitePluginBookshelfImportJob:
+    def get(
+        self,
+        job_id: str,
+        plugin_id: str | None = None,
+        owner_id: str | None = None,
+    ) -> SitePluginBookshelfImportJob:
         job = self._require(job_id)
-        if plugin_id is not None and job.pluginId != plugin_id:
+        if (plugin_id is not None and job.pluginId != plugin_id) or (
+            owner_id is not None and self._owners.get(job_id) != owner_id
+        ):
             raise KeyError(f"未找到插件导入任务：{job_id}")
         return job.model_copy(deep=True)
+
+    def owner_for(self, job_id: str) -> str:
+        self._require(job_id)
+        return self._owners[job_id]
 
     def start(self, job_id: str, message: str) -> None:
         job = self._require(job_id)
@@ -92,6 +112,7 @@ class SitePluginImportJobStore:
 
     def clear(self) -> None:
         self._jobs.clear()
+        self._owners.clear()
 
     def _require(self, job_id: str) -> SitePluginBookshelfImportJob:
         try:
@@ -102,9 +123,9 @@ class SitePluginImportJobStore:
     def _trim(self) -> None:
         if len(self._jobs) <= self._maximum_jobs:
             return
-        terminal = [
-            job for job in self._jobs.values() if job.status in {"completed", "failed"}
-        ]
+        terminal = [job for job in self._jobs.values() if job.status in {"completed", "failed"}]
         terminal.sort(key=lambda job: job.updatedAt)
         while len(self._jobs) > self._maximum_jobs and terminal:
-            self._jobs.pop(terminal.pop(0).id, None)
+            removed_id = terminal.pop(0).id
+            self._jobs.pop(removed_id, None)
+            self._owners.pop(removed_id, None)

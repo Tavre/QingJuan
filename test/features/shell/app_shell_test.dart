@@ -6,8 +6,10 @@ import 'package:qingjuan/app/app_state.dart';
 import 'package:qingjuan/app/app_theme.dart';
 import 'package:qingjuan/core/api/api_client.dart';
 import 'package:qingjuan/core/backend/backend_connection_manager.dart';
+import 'package:qingjuan/core/backend/user_session_store.dart';
 import 'package:qingjuan/core/models/book.dart';
 import 'package:qingjuan/core/state/load_state.dart';
+import 'package:qingjuan/features/auth/auth_controller.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
 import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/shell/app_shell.dart';
@@ -119,7 +121,14 @@ void main() {
       find.byKey(const ValueKey('mobile-navigation-settings')),
     );
     await tester.pump(const Duration(milliseconds: 180));
-    expect(find.text('设备与服务'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('mobile-my-dashboard')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('my-profile-card')), findsOneWidget);
+    expect(find.text('我的阅读'), findsOneWidget);
+    expect(find.text('设置与服务'), findsOneWidget);
+    expect(find.text('账户与服务器'), findsNothing);
     expect(find.byKey(const ValueKey('settings-plugins-button')), findsNothing);
     expect(tester.takeException(), isNull);
   });
@@ -135,7 +144,14 @@ void main() {
     await tester.pump(const Duration(milliseconds: 600));
 
     expect(harness.appState.section, AppSection.settings);
-    expect(find.text('首次使用需要连接服务器'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('mobile-my-dashboard')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('my-feature-backend')),
+      findsOneWidget,
+    );
 
     for (final section in <AppSection>[
       AppSection.library,
@@ -160,6 +176,33 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 150));
     expect(harness.appState.section, AppSection.settings);
+  });
+
+  testWidgets('anonymous Linux user is gated from personal workspace pages',
+      (tester) async {
+    final harness = await _Harness.create(
+      const Size(390, 844),
+      multiUser: true,
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(
+      find.byKey(const ValueKey('auth-required-library')),
+      findsOneWidget,
+    );
+    expect(find.text('请先登录 Linux 后端'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(const ValueKey('auth-required-open-account')),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(harness.appState.section, AppSection.settings);
+    expect(find.byKey(const ValueKey('auth-login-tab')), findsOneWidget);
+    expect(find.byKey(const ValueKey('auth-register-tab')), findsOneWidget);
   });
 
   testWidgets('tablet uses persistent Fluent navigation pane', (tester) async {
@@ -311,6 +354,18 @@ void main() {
 
     expect(
         find.byKey(const ValueKey('mobile-bottom-navigation')), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('mobile-navigation-settings')),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(
+      find.byKey(const ValueKey('mobile-my-dashboard')),
+      findsOneWidget,
+    );
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('my-feature-about')),
+    );
+    await tester.pump(const Duration(milliseconds: 180));
     expect(tester.takeException(), isNull);
   });
 
@@ -357,6 +412,8 @@ class _Harness {
     required this.widget,
     required this.appState,
     required this.api,
+    required this.backend,
+    required this.auth,
     required this.library,
     required this.sources,
     required this.tasks,
@@ -371,6 +428,7 @@ class _Harness {
     Brightness brightness = Brightness.light,
     TargetPlatform targetPlatform = TargetPlatform.android,
     BackendConnectionMode backendMode = BackendConnectionMode.remote,
+    bool multiUser = false,
   }) async {
     final preferences = await SharedPreferences.getInstance();
     if (configured) {
@@ -389,7 +447,19 @@ class _Harness {
     final backend = BackendConnectionManager(
       api,
       isConfigured: () => appState.hasBackendConnection,
-    );
+    )
+      ..status = configured ? BackendStatus.ready : BackendStatus.unconfigured
+      ..multiUserEnabled = multiUser;
+    final auth = multiUser
+        ? AuthController(
+            api,
+            const _EmptyUserSessionStore(),
+            backendUrl: () => appState.backendUrl,
+          )
+        : AuthController.localAdministrator(api);
+    if (multiUser) {
+      await auth.initializeForCurrentBackend(multiUser: true);
+    }
     final library = LibraryController(api);
     if (books.isNotEmpty) {
       library.books = books;
@@ -408,6 +478,7 @@ class _Harness {
             appState: appState,
             api: api,
             backend: backend,
+            auth: auth,
             library: library,
             sources: sources,
             tasks: tasks,
@@ -421,6 +492,8 @@ class _Harness {
       widget: widget,
       appState: appState,
       api: api,
+      backend: backend,
+      auth: auth,
       library: library,
       sources: sources,
       tasks: tasks,
@@ -431,17 +504,37 @@ class _Harness {
   final Widget widget;
   final AppState appState;
   final ApiClient api;
+  final BackendConnectionManager backend;
+  final AuthController auth;
   final LibraryController library;
   final SourcesController sources;
   final TasksController tasks;
   final SettingsController settings;
 
-  void dispose() {
+  Future<void> dispose() async {
     library.dispose();
     sources.dispose();
     tasks.dispose();
     settings.dispose();
+    auth.dispose();
+    await backend.dispose();
     api.close();
     appState.dispose();
   }
+}
+
+class _EmptyUserSessionStore implements UserSessionStore {
+  const _EmptyUserSessionStore();
+
+  @override
+  Future<void> deleteToken() async {}
+
+  @override
+  Future<String?> readToken(String backendUrl) async => null;
+
+  @override
+  Future<void> writeToken({
+    required String backendUrl,
+    required String token,
+  }) async {}
 }

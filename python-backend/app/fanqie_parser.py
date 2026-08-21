@@ -64,6 +64,7 @@ class FanqieBook:
     total_chapter_count: int
     chapters: tuple[FanqieChapter, ...]
 
+
 @dataclass(frozen=True)
 class FanqieReaderChapter:
     item_id: str
@@ -260,6 +261,7 @@ def _validate_reader_content(
                 f"网页只返回了试读片段（正文 {visible_count} 字，章节声明 {declared_word_count} 字）",
             )
         return
+
 
 def _chapter_items(page: dict[str, Any]) -> list[dict[str, Any]]:
     groups = page.get("chapterListWithVolume")

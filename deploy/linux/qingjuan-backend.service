@@ -7,10 +7,12 @@ After=network-online.target
 Type=simple
 User=qingjuan
 Group=qingjuan
-WorkingDirectory=/opt/qingjuan/app/python-backend
+WorkingDirectory=/opt/qingjuan/current/app/python-backend
 EnvironmentFile=/etc/qingjuan/backend.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/qingjuan/venv/bin/python -m app.main serve --host ${QINGJUAN_BIND_HOST} --port ${QINGJUAN_PORT}
+RuntimeDirectory=qingjuan
+RuntimeDirectoryMode=0750
+ExecStart=/opt/qingjuan/current/venv/bin/python -m app.main serve --host ${QINGJUAN_BIND_HOST} --port ${QINGJUAN_PORT}
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=45s

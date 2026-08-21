@@ -2,10 +2,11 @@
 set -Eeuo pipefail
 umask 077
 
-readonly REPO_DIR="/opt/qingjuan/app"
-readonly VENV_DIR="/opt/qingjuan/venv"
+readonly REPO_DIR="/opt/qingjuan/current/app"
+readonly VENV_DIR="/opt/qingjuan/current/venv"
 readonly BACKEND_FILE="/etc/qingjuan/backend.env"
 readonly SERVICE_NAME="qingjuan-backend"
+readonly MAINTENANCE_LOCK="/run/lock/qingjuan-maintenance.lock"
 
 generate_password="false"
 
@@ -51,6 +52,15 @@ if [[ ! -f "$REPO_DIR/python-backend/app/admin_password.py" ]]; then
   printf '当前服务版本不包含管理密码工具，请先更新青卷后端。\n' >&2
   exit 1
 fi
+if ! command -v flock >/dev/null 2>&1; then
+  printf '缺少系统命令：flock\n' >&2
+  exit 1
+fi
+exec 9>"$MAINTENANCE_LOCK"
+if ! flock -n 9; then
+  printf '已有安装、更新或维护任务正在运行。\n' >&2
+  exit 1
+fi
 
 if [[ "$generate_password" == "true" ]]; then
   new_password="$(
@@ -87,8 +97,19 @@ if ! systemctl restart "$SERVICE_NAME"; then
   exit 1
 fi
 port="$(sed -n 's/^QINGJUAN_PORT=//p' "$BACKEND_FILE" | tail -n 1)"
+health_host="$(sed -n 's/^QINGJUAN_BIND_HOST=//p' "$BACKEND_FILE" | tail -n 1)"
+case "$health_host" in
+  ""|"0.0.0.0"|"127.0.0.1"|"localhost") health_host="127.0.0.1" ;;
+  "::"|"[::]"|"::0") health_host="[::1]" ;;
+  *:* )
+    health_host="${health_host#\[}"
+    health_host="${health_host%\]}"
+    health_host="[${health_host}]"
+    ;;
+esac
 for _ in $(seq 1 60); do
-  if curl --fail --silent --max-time 2 "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1; then
+  if curl --noproxy '*' --fail --silent --max-time 2 \
+    "http://${health_host}:${port}/healthz" >/dev/null 2>&1; then
     printf '%s\n' \
       '管理密码已修改，所有旧的管理界面会话均已退出。' \
       '管理地址：请运行 sudo qingjuan-info 查看。'

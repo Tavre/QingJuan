@@ -93,9 +93,7 @@ def test_diagnostics_require_admin_and_return_redacted_read_only_state(
                 "timestamp": "2030-01-01T00:00:00Z",
                 "level": "warning",
                 "source": "qingjuan.runtime",
-                "message": (
-                    f"Authorization: Bearer hidden-diagnostic-token at {private_path}"
-                ),
+                "message": (f"Authorization: Bearer hidden-diagnostic-token at {private_path}"),
             },
             ensure_ascii=False,
         )

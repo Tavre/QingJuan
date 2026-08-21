@@ -173,9 +173,7 @@ def _kakuyomu_paragraph_text(paragraph: Any) -> str:
             reading = reading_node.get_text() if reading_node is not None else ""
             if not base:
                 base = "".join(
-                    str(node)
-                    for node in child.children
-                    if getattr(node, "name", None) not in {"rp", "rt"}
+                    str(node) for node in child.children if getattr(node, "name", None) not in {"rp", "rt"}
                 ).strip()
             parts.append(f"{base}（{reading}）" if reading else base)
             continue

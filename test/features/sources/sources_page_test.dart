@@ -10,11 +10,15 @@ import 'package:qingjuan/app/app_theme.dart';
 import 'package:qingjuan/core/api/api_client.dart';
 import 'package:qingjuan/core/backend/backend_connection_manager.dart';
 import 'package:qingjuan/core/models/site_plugin.dart';
+import 'package:qingjuan/core/models/source.dart';
+import 'package:qingjuan/core/models/user_account.dart';
 import 'package:qingjuan/core/state/load_state.dart';
+import 'package:qingjuan/features/auth/auth_controller.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
 import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/sources/plugins_page.dart';
 import 'package:qingjuan/features/sources/sources_controller.dart';
+import 'package:qingjuan/features/sources/sources_page.dart';
 import 'package:qingjuan/features/tasks/tasks_controller.dart';
 import 'package:qingjuan/shared/responsive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -63,6 +67,96 @@ const _samplePlugins = <SitePlugin>[
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
+
+  testWidgets('regular remote user cannot mutate shared source configuration',
+      (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final appState = AppState(
+      preferences,
+      initialRemoteBackendToken: 'test-token',
+    );
+    final api = ApiClient(
+      () => 'https://qingjuan.example.test',
+      client: MockClient((_) async => http.Response('{}', 500)),
+    );
+    final backend = BackendConnectionManager(api, isConfigured: () => true);
+    final auth = AuthController.localAdministrator(api)
+      ..status = UserAuthStatus.authenticated
+      ..user = const UserAccount(
+        id: 'user-reader',
+        username: 'reader',
+        displayName: '普通读者',
+        role: 'user',
+        status: 'active',
+        createdAt: '2030-01-01T00:00:00Z',
+      );
+    final library = LibraryController(api);
+    final sources = SourcesController(api)
+      ..sources = const <BookSource>[
+        BookSource(
+          id: 'source-1',
+          name: '共享书源',
+          baseUrl: 'https://source.example.test',
+          description: '由管理员维护',
+          enabled: true,
+          supported: true,
+          status: 'online',
+          statusMessage: '',
+          tags: <String>['中文'],
+        ),
+      ]
+      ..state = LoadState.ready;
+    final tasks = TasksController(api);
+    final settings = SettingsController(api);
+    addTearDown(() {
+      auth.dispose();
+      library.dispose();
+      sources.dispose();
+      tasks.dispose();
+      settings.dispose();
+      api.close();
+      appState.dispose();
+    });
+
+    await tester.pumpWidget(
+      FluentApp(
+        theme: buildQingJuanTheme(Brightness.light),
+        home: MediaQuery(
+          data: const MediaQueryData(size: Size(1280, 800)),
+          child: UiPlatformScope(
+            platform: TargetPlatform.windows,
+            child: AppScope(
+              appState: appState,
+              api: api,
+              backend: backend,
+              auth: auth,
+              library: library,
+              sources: sources,
+              tasks: tasks,
+              settings: settings,
+              child: const SourcesPage(),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('共享书源'), findsOneWidget);
+    expect(find.text('导入网址'), findsNothing);
+    expect(find.text('粘贴配置'), findsNothing);
+    final toggle = tester.widget<ToggleSwitch>(
+      find.byKey(const ValueKey<String>('source-rule-toggle-source-1')),
+    );
+    expect(toggle.onChanged, isNull);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('plugin settings toggles a backend-owned site module',
       (tester) async {
@@ -143,6 +237,7 @@ void main() {
               appState: appState,
               api: api,
               backend: backend,
+              auth: AuthController.localAdministrator(api),
               library: library,
               sources: sources,
               tasks: tasks,
@@ -482,6 +577,7 @@ Future<SourcesController> _pumpPluginPage(
             appState: appState,
             api: api,
             backend: backend,
+            auth: AuthController.localAdministrator(api),
             library: library,
             sources: sources,
             tasks: tasks,

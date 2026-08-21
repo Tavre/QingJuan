@@ -46,10 +46,7 @@ def canonical_mangacopy_book_url(path_word: str) -> str:
 
 
 def canonical_mangacopy_chapter_url(path_word: str, chapter_id: str) -> str:
-    return (
-        f"{MANGACOPY_ORIGIN}/comic/{quote(path_word, safe='-_')}"
-        f"/chapter/{quote(chapter_id, safe='-')}"
-    )
+    return f"{MANGACOPY_ORIGIN}/comic/{quote(path_word, safe='-_')}/chapter/{quote(chapter_id, safe='-')}"
 
 
 def is_allowed_mangacopy_image_url(url: str) -> bool:
@@ -79,7 +76,11 @@ def _parse_api_response(response: httpx.Response, stage: str) -> Any:
     except ValueError as exc:
         raise CopyMangaError(f"拷贝漫画{stage}返回了无效 JSON") from exc
     if not isinstance(payload, dict) or payload.get("code") != 200:
-        message = str(payload.get("message") or "上游返回业务错误") if isinstance(payload, dict) else "上游返回格式异常"
+        message = (
+            str(payload.get("message") or "上游返回业务错误")
+            if isinstance(payload, dict)
+            else "上游返回格式异常"
+        )
         raise CopyMangaError(f"拷贝漫画{stage}失败：{message}")
     return payload.get("results")
 
@@ -105,11 +106,7 @@ async def request_mangacopy_api(
             return _parse_api_response(response, stage)
         except (httpx.HTTPError, CopyMangaError) as exc:
             last_error = exc
-            if (
-                isinstance(exc, CopyMangaError)
-                and response is not None
-                and response.status_code < 500
-            ):
+            if isinstance(exc, CopyMangaError) and response is not None and response.status_code < 500:
                 raise
     raise CopyMangaError(f"拷贝漫画{stage}请求失败：所有公开 API 节点均不可用") from last_error
 
@@ -180,10 +177,7 @@ async def get_mangacopy_chapter(
 ) -> dict[str, Any]:
     result = await request_mangacopy_api(
         client,
-        (
-            f"/api/v3/comic/{quote(path_word, safe='-_')}"
-            f"/chapter/{quote(chapter_id, safe='-')}"
-        ),
+        (f"/api/v3/comic/{quote(path_word, safe='-_')}/chapter/{quote(chapter_id, safe='-')}"),
         stage="章节内容",
     )
     if not isinstance(result, dict):

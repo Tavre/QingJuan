@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr
 
+from .multi_user import DEFAULT_ADMIN_USER_ID
+
 BookKind = Literal["长小说", "轻小说", "漫画"]
 Language = Literal["中文", "英文", "日文"]
 TaskType = Literal["download", "translate"]
@@ -19,6 +21,8 @@ DevicePlatform = Literal["android", "windows", "linux", "macos", "ios", "other"]
 MangaTextDirection = Literal["vertical", "horizontal"]
 MangaRegionShape = Literal["ellipse", "roundrect", "rect"]
 MangaRenderMode = Literal["ocr_pipeline", "image_edit_fallback"]
+UserRole = Literal["admin", "user"]
+UserStatus = Literal["active", "disabled"]
 
 
 class ServiceMetaResponse(BaseModel):
@@ -27,6 +31,24 @@ class ServiceMetaResponse(BaseModel):
     apiVersion: str
     instanceId: str
     capabilities: dict[str, bool] = Field(default_factory=dict)
+
+
+class UserRecord(BaseModel):
+    id: str
+    username: str
+    email: str | None = None
+    displayName: str
+    role: UserRole = "user"
+    status: UserStatus = "active"
+    createdAt: str
+    lastLoginAt: str | None = None
+
+
+class AdminUserRecord(UserRecord):
+    bookCount: int = 0
+    isDefaultAdmin: bool = False
+    githubLogin: str | None = None
+    twoFactorEnabled: bool = False
 
 
 class DeviceRecord(BaseModel):
@@ -115,6 +137,7 @@ class PreviewResponse(BaseModel):
 
 
 class BookRecord(BaseModel):
+    ownerId: str = Field(default=DEFAULT_ADMIN_USER_ID, exclude=True)
     id: str
     title: str
     sourceUrl: str
@@ -223,6 +246,7 @@ class PublicChapterRecord(BaseModel):
 
 
 class ReadingProgressRecord(BaseModel):
+    ownerId: str = Field(default=DEFAULT_ADMIN_USER_ID, exclude=True)
     bookId: str
     lastChapterIndex: int = 0
     lastScrollRatio: float = 0
@@ -280,6 +304,7 @@ class ChapterExportResponse(BaseModel):
 
 
 class TaskRecord(BaseModel):
+    ownerId: str = Field(default=DEFAULT_ADMIN_USER_ID, exclude=True)
     id: str
     bookId: str
     taskType: TaskType

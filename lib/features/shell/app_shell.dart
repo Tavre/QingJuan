@@ -53,7 +53,8 @@ class AppShell extends StatelessWidget {
     AppSection.tasks,
   };
 
-  Widget _page(AppState app, AppSection section) {
+  Widget _page(AppScope scope, AppSection section) {
+    final app = scope.appState;
     if (section == AppSection.plugins && !app.clientPluginManagementAvailable) {
       return const SettingsPage();
     }
@@ -63,6 +64,16 @@ class AppShell extends StatelessWidget {
         label: _label(section),
         icon: _icon(section),
         onOpenSettings: () => _selectSection(app, AppSection.settings),
+      );
+    }
+    if (_backendSections.contains(section) &&
+        scope.backend.multiUserEnabled &&
+        !scope.auth.canAccessWorkspace) {
+      return _AuthenticationRequiredPage(
+        section: section,
+        label: _label(section),
+        icon: _icon(section),
+        onOpenAccount: () => _selectSection(app, AppSection.settings),
       );
     }
     return switch (section) {
@@ -122,9 +133,10 @@ class AppShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final app = AppScope.of(context).appState;
+    final scope = AppScope.of(context);
+    final app = scope.appState;
     return AnimatedBuilder(
-      animation: app,
+      animation: Listenable.merge(<Listenable>[app, scope.auth]),
       builder: (context, _) {
         final theme = FluentTheme.of(context);
         final dark = theme.brightness == Brightness.dark;
@@ -135,7 +147,7 @@ class AppShell extends StatelessWidget {
         final content = mobile
             ? _MobileShell(
                 section: app.section,
-                page: _page(app, app.section),
+                page: _page(scope, app.section),
                 primarySections: _mobileSections,
                 labelFor: _mobileLabel,
                 iconFor: _mobileIcon,
@@ -143,7 +155,7 @@ class AppShell extends StatelessWidget {
               )
             : _DesktopShell(
                 section: app.section,
-                pageFor: (section) => _page(app, section),
+                pageFor: (section) => _page(scope, section),
                 primarySections: desktopSections,
                 labelFor: _label,
                 iconFor: _icon,
@@ -170,6 +182,45 @@ class AppShell extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class _AuthenticationRequiredPage extends StatelessWidget {
+  const _AuthenticationRequiredPage({
+    required this.section,
+    required this.label,
+    required this.icon,
+    required this.onOpenAccount,
+  });
+
+  final AppSection section;
+  final String label;
+  final IconData icon;
+  final VoidCallback onOpenAccount;
+
+  @override
+  Widget build(BuildContext context) {
+    final visibleLabel = usesMobileUi(context)
+        ? switch (section) {
+            AppSection.sources => '书源',
+            _ => label,
+          }
+        : label;
+    return PageFrame(
+      key: ValueKey<String>('auth-required-${section.name}'),
+      title: visibleLabel,
+      subtitle: '登录后加载你的个人工作区。',
+      child: EmptyView(
+        icon: icon,
+        title: '请先登录 Linux 后端',
+        message: '每个用户拥有独立书架、阅读进度和任务记录。',
+        action: FilledButton(
+          key: const ValueKey('auth-required-open-account'),
+          onPressed: onOpenAccount,
+          child: const Text('前往“我的”登录'),
+        ),
+      ),
     );
   }
 }

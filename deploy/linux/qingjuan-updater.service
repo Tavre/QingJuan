@@ -1,0 +1,31 @@
+[Unit]
+Description=QingJuan controlled backend updater
+Documentation=https://github.com/Tavre/QingJuan
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/sbin/qingjuan-update-runner
+TimeoutStartSec=45min
+UMask=0077
+Environment=PIP_NO_CACHE_DIR=1
+StateDirectory=qingjuan-updater
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/opt/qingjuan /etc/qingjuan /etc/systemd/system /usr/local/sbin
+ReadWritePaths=/var/lib/qingjuan /var/lib/qingjuan-updater /run/lock
+ReadWritePaths=-/run/qingjuan
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qingjuan-updater

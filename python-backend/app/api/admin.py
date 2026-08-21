@@ -7,7 +7,7 @@ from collections import deque
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..admin_auth import (
     ADMIN_CSRF_HEADER,
@@ -16,17 +16,46 @@ from ..admin_auth import (
     AdminSession,
     admin_cookie_secure,
     create_admin_session,
+    hash_admin_password,
     require_admin_session,
     validate_admin_auth_configuration,
+    validate_admin_password,
     verify_admin_password,
+)
+from ..backend_update import (
+    BackendUpdateConflict,
+    BackendUpdateDispatchError,
+    BackendUpdateStartPayload,
+    BackendUpdateStartResponse,
+    BackendUpdateStatus,
+    BackendUpdateUnsupported,
+    check_for_backend_update,
+    get_backend_update_status,
+    queue_backend_update,
 )
 from ..connection_token import (
     ConnectionTokenUnavailable,
     get_connection_token_state,
     read_connection_token,
 )
+from ..db import (
+    get_user,
+    list_users,
+    revoke_user_sessions,
+    update_user_password,
+    update_user_profile,
+)
+from ..models import AdminUserRecord, UserRole
+from ..multi_user import DEFAULT_ADMIN_USER_ID
+from ..registration import (
+    RegistrationSettingsPayload,
+    RegistrationSettingsView,
+    registration_settings_view,
+    update_registration_settings,
+)
 from ..runtime_logs import RuntimeLogBatch, RuntimeLogReadError, read_runtime_logs
 from ..service_diagnostics import ServiceDiagnosticsResponse, build_service_diagnostics
+from ..user_auth import normalize_display_name, register_user, require_multi_user_mode
 
 router = APIRouter(prefix="/admin/api", tags=["admin"])
 
@@ -55,6 +84,32 @@ class ConnectionTokenStatusResponse(BaseModel):
 
 class ConnectionTokenRevealResponse(BaseModel):
     token: str
+
+
+class AdminUserCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=1, max_length=32)
+    displayName: str | None = Field(default=None, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class AdminUserUpdatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    displayName: str | None = Field(default=None, max_length=64)
+    status: str | None = Field(default=None, pattern="^(active|disabled)$")
+    role: UserRole | None = None
+
+
+class AdminUserPasswordPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: str = Field(min_length=1, max_length=256)
+
+
+class SessionsRevokedResponse(BaseModel):
+    revoked: int
 
 
 class LoginAttemptLimiter:
@@ -188,6 +243,186 @@ async def get_service_diagnostics(
     return await asyncio.to_thread(build_service_diagnostics, request.app)
 
 
+@router.get("/backend-update", response_model=BackendUpdateStatus)
+async def get_backend_update(
+    request: Request,
+    response: Response,
+) -> BackendUpdateStatus:
+    require_admin_session(request)
+    _no_store(response)
+    return await asyncio.to_thread(get_backend_update_status)
+
+
+@router.post("/backend-update/check", response_model=BackendUpdateStatus)
+async def post_backend_update_check(
+    request: Request,
+    response: Response,
+) -> BackendUpdateStatus:
+    require_admin_session(request, require_csrf=True)
+    _no_store(response)
+    try:
+        return await asyncio.to_thread(check_for_backend_update)
+    except BackendUpdateUnsupported as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except BackendUpdateConflict as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+
+@router.post(
+    "/backend-update",
+    response_model=BackendUpdateStartResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def post_backend_update(
+    payload: BackendUpdateStartPayload,
+    request: Request,
+    response: Response,
+) -> BackendUpdateStartResponse:
+    require_admin_session(request, require_csrf=True)
+    _no_store(response)
+    try:
+        result, _ = await asyncio.to_thread(queue_backend_update, payload)
+    except BackendUpdateUnsupported as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except BackendUpdateConflict as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except BackendUpdateDispatchError as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+    response.headers["Location"] = "/admin/api/backend-update"
+    response.headers["Retry-After"] = "2"
+    return result
+
+
+@router.get("/users", response_model=list[AdminUserRecord])
+async def get_users(request: Request, response: Response) -> list[AdminUserRecord]:
+    require_multi_user_mode()
+    require_admin_session(request)
+    _no_store(response)
+    return list_users()
+
+
+@router.get("/registration-settings", response_model=RegistrationSettingsView)
+async def get_registration_settings(
+    request: Request,
+    response: Response,
+) -> RegistrationSettingsView:
+    require_multi_user_mode()
+    require_admin_session(request)
+    _no_store(response)
+    return await asyncio.to_thread(registration_settings_view)
+
+
+@router.put("/registration-settings", response_model=RegistrationSettingsView)
+async def put_registration_settings(
+    payload: RegistrationSettingsPayload,
+    request: Request,
+    response: Response,
+) -> RegistrationSettingsView:
+    require_multi_user_mode()
+    require_admin_session(request, require_csrf=True)
+    _no_store(response)
+    try:
+        return await asyncio.to_thread(update_registration_settings, payload)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.post("/users", response_model=AdminUserRecord, status_code=status.HTTP_201_CREATED)
+async def post_user(
+    payload: AdminUserCreatePayload,
+    request: Request,
+    response: Response,
+) -> AdminUserRecord:
+    require_multi_user_mode()
+    require_admin_session(request, require_csrf=True)
+    _no_store(response)
+    try:
+        user = register_user(
+            username=payload.username,
+            display_name=payload.displayName,
+            password=payload.password,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    return user
+
+
+@router.patch("/users/{user_id}", response_model=AdminUserRecord)
+async def patch_user(
+    user_id: str,
+    payload: AdminUserUpdatePayload,
+    request: Request,
+    response: Response,
+) -> AdminUserRecord:
+    require_multi_user_mode()
+    require_admin_session(request, require_csrf=True)
+    _no_store(response)
+    current = get_user(user_id)
+    if current is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    display_name = payload.displayName
+    if display_name is not None:
+        try:
+            display_name = normalize_display_name(display_name, fallback=current.username)
+        except ValueError as error:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    try:
+        updated = update_user_profile(
+            user_id,
+            display_name=display_name,
+            role=payload.role,
+            status=payload.status,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    return updated
+
+
+@router.put("/users/{user_id}/password", status_code=status.HTTP_204_NO_CONTENT)
+async def put_user_password(
+    user_id: str,
+    payload: AdminUserPasswordPayload,
+    request: Request,
+) -> Response:
+    require_multi_user_mode()
+    require_admin_session(request, require_csrf=True)
+    if get_user(user_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    if user_id == DEFAULT_ADMIN_USER_ID:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="默认管理员密码请使用 qingjuan-password 修改",
+        )
+    try:
+        validate_admin_password(payload.password)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    update_user_password(
+        user_id,
+        hash_admin_password(payload.password),
+        revoke_sessions=True,
+    )
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    _no_store(response)
+    return response
+
+
+@router.post("/users/{user_id}/sessions/revoke", response_model=SessionsRevokedResponse)
+async def post_revoke_user_sessions(
+    user_id: str,
+    request: Request,
+    response: Response,
+) -> SessionsRevokedResponse:
+    require_multi_user_mode()
+    require_admin_session(request, require_csrf=True)
+    _no_store(response)
+    if get_user(user_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    return SessionsRevokedResponse(revoked=revoke_user_sessions(user_id))
+
+
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(request: Request) -> Response:
     require_admin_session(request, require_csrf=True)
@@ -214,9 +449,7 @@ def _login_limiter(request: Request) -> LoginAttemptLimiter:
 
 
 def _session_response(session: AdminSession) -> AdminSessionResponse:
-    expires_at = datetime.fromtimestamp(session.expires_at, tz=UTC).isoformat().replace(
-        "+00:00", "Z"
-    )
+    expires_at = datetime.fromtimestamp(session.expires_at, tz=UTC).isoformat().replace("+00:00", "Z")
     return AdminSessionResponse(expiresAt=expires_at, csrfToken=session.csrf_token)
 
 

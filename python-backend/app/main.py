@@ -40,7 +40,10 @@ from PIL import Image, UnidentifiedImageError
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 try:
-    from .admin_auth import require_admin_session, validate_admin_auth_configuration
+    from .admin_auth import (
+        require_admin_write_access,
+        validate_admin_auth_configuration,
+    )
     from .api.routers import (
         API_ROUTERS,
         PUBLIC_ROUTERS,
@@ -53,6 +56,7 @@ try:
         tasks_router,
     )
     from .application import admin_web_enabled, create_application
+    from .backend_update import backend_update_supported
     from .chapter_cache import ChapterCacheCoordinator
     from .db import (
         DATA_DIR,
@@ -139,6 +143,7 @@ try:
         TranslationSettings,
         TranslationSettingsView,
     )
+    from .multi_user import DEFAULT_ADMIN_USER_ID, multi_user_enabled
     from .process_lifecycle import start_parent_process_watcher
     from .runtime_logs import configure_runtime_logging, shutdown_runtime_logging
     from .scraper import (
@@ -169,13 +174,18 @@ try:
         list_site_plugins,
         resolve_site_plugin,
     )
-    from .site_plugins.fanqie_runtime import FANQIE_RUNTIME
+    from .site_plugins.fanqie_runtime import FANQIE_RUNTIME, FanqieRuntime
     from .site_plugins.import_jobs import SitePluginImportJobStore
     from .site_plugins.qidian_client import canonical_book_url, qidian_book_id_from_url
-    from .site_plugins.qidian_runtime import QIDIAN_RUNTIME
+    from .site_plugins.qidian_runtime import QIDIAN_RUNTIME, QidianRuntime
     from .translation_model_health import reset_translation_model_check_cache
+    from .two_factor import validate_two_factor_encryption_key
+    from .user_auth import UserAccess, require_admin_user_access, require_user_access
 except ImportError:
-    from app.admin_auth import require_admin_session, validate_admin_auth_configuration
+    from app.admin_auth import (
+        require_admin_write_access,
+        validate_admin_auth_configuration,
+    )
     from app.api.routers import (
         API_ROUTERS,
         PUBLIC_ROUTERS,
@@ -188,6 +198,7 @@ except ImportError:
         tasks_router,
     )
     from app.application import admin_web_enabled, create_application
+    from app.backend_update import backend_update_supported
     from app.chapter_cache import ChapterCacheCoordinator
     from app.db import (
         DATA_DIR,
@@ -274,6 +285,7 @@ except ImportError:
         TranslationSettings,
         TranslationSettingsView,
     )
+    from app.multi_user import DEFAULT_ADMIN_USER_ID, multi_user_enabled
     from app.process_lifecycle import start_parent_process_watcher
     from app.runtime_logs import configure_runtime_logging, shutdown_runtime_logging
     from app.scraper import (
@@ -304,11 +316,13 @@ except ImportError:
         list_site_plugins,
         resolve_site_plugin,
     )
-    from app.site_plugins.fanqie_runtime import FANQIE_RUNTIME
+    from app.site_plugins.fanqie_runtime import FANQIE_RUNTIME, FanqieRuntime
     from app.site_plugins.import_jobs import SitePluginImportJobStore
     from app.site_plugins.qidian_client import canonical_book_url, qidian_book_id_from_url
-    from app.site_plugins.qidian_runtime import QIDIAN_RUNTIME
+    from app.site_plugins.qidian_runtime import QIDIAN_RUNTIME, QidianRuntime
     from app.translation_model_health import reset_translation_model_check_cache
+    from app.two_factor import validate_two_factor_encryption_key
+    from app.user_auth import UserAccess, require_admin_user_access, require_user_access
 
 LIBRARY_ROOT = DATA_DIR / "library"
 EXPORT_ROOT = DATA_DIR / "exports"
@@ -316,6 +330,7 @@ EXPORT_TTL = timedelta(hours=24)
 TASK_QUEUE: asyncio.Queue[str] = asyncio.Queue()
 LINK_JOB_STORE = LinkJobStore()
 SITE_PLUGIN_IMPORT_JOB_STORE = SitePluginImportJobStore()
+_USER_SITE_PLUGIN_RUNTIMES: dict[tuple[str, str], Any] = {}
 _RUNTIME_LOGGER = logging.getLogger("qingjuan.runtime")
 _TASK_LOGGER = logging.getLogger("qingjuan.task")
 SOURCE_CHAPTER_CACHE_AHEAD = 20
@@ -341,6 +356,8 @@ LEGADO_SEARCH_RESULT_SETTLE_TIMEOUT = 4.0
 
 
 async def _run_startup(app_instance: FastAPI) -> None:
+    if multi_user_enabled():
+        validate_two_factor_encryption_key()
     validate_admin_auth_configuration()
     configured_model_endpoint_allowlist()
     init_db()
@@ -389,6 +406,9 @@ async def _run_shutdown(app_instance: FastAPI) -> None:
 
     FANQIE_RUNTIME.logout()
     QIDIAN_RUNTIME.logout()
+    for runtime in _USER_SITE_PLUGIN_RUNTIMES.values():
+        runtime.logout()
+    _USER_SITE_PLUGIN_RUNTIMES.clear()
     SITE_PLUGIN_IMPORT_JOB_STORE.clear()
 
     chapter_cache_coordinator = getattr(app_instance.state, "chapter_cache_coordinator", None)
@@ -428,7 +448,22 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 @health_router.get("/healthz")
 @health_router.get("/health", include_in_schema=False)
 async def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "service": "qingjuan-backend",
+        "appVersion": app.version,
+        "apiVersion": API_VERSION,
+        "revision": _release_revision(),
+    }
+
+
+def _release_revision() -> str:
+    revision_path = Path(__file__).resolve().parents[3] / "REVISION"
+    try:
+        revision = revision_path.read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        return ""
+    return revision if re.fullmatch(r"[0-9a-f]{40,64}", revision) is not None else ""
 
 
 @system_router.get("/meta", response_model=ServiceMetaResponse)
@@ -440,10 +475,12 @@ async def get_service_meta() -> ServiceMetaResponse:
         instanceId=_load_or_create_instance_id(),
         capabilities={
             "adminWeb": admin_web_enabled(),
+            "multiUser": multi_user_enabled(),
             "connectionTokenReveal": admin_web_enabled(),
             "deviceRegistry": True,
             "runtimeLogs": admin_web_enabled(),
             "serviceDiagnostics": admin_web_enabled(),
+            "onlineBackendUpdate": backend_update_supported(),
             "translationModelCheck": True,
             "rapidOcr": True,
             "windowsOcr": os.name == "nt",
@@ -453,18 +490,45 @@ async def get_service_meta() -> ServiceMetaResponse:
     )
 
 
-def _site_plugin_runtime(plugin: SitePlugin) -> Any:
+def _site_plugin_runtime(
+    plugin: SitePlugin,
+    owner_id: str = DEFAULT_ADMIN_USER_ID,
+) -> Any:
+    if owner_id == DEFAULT_ADMIN_USER_ID:
+        if plugin.id == "fanqie":
+            return FANQIE_RUNTIME
+        if plugin.id == "qidian":
+            return QIDIAN_RUNTIME
+    key = (owner_id, plugin.id)
+    runtime = _USER_SITE_PLUGIN_RUNTIMES.get(key)
+    if runtime is not None:
+        return runtime
     if plugin.id == "fanqie":
-        return FANQIE_RUNTIME
-    if plugin.id == "qidian":
-        return QIDIAN_RUNTIME
-    raise HTTPException(status_code=501, detail="该站点插件尚未提供账号运行时")
+        runtime = FanqieRuntime()
+    elif plugin.id == "qidian":
+        runtime = QidianRuntime()
+    else:
+        raise HTTPException(status_code=501, detail="该站点插件尚未提供账号运行时")
+    _USER_SITE_PLUGIN_RUNTIMES[key] = runtime
+    return runtime
 
 
-def _site_plugin_view(plugin: SitePlugin, enabled: bool) -> SitePluginView:
+def _qidian_cookies_for_owner(owner_id: str, source_url: str) -> dict[str, str] | None:
+    plugin = resolve_site_plugin(source_url)
+    if plugin is None or plugin.id != "qidian":
+        return None
+    runtime = _site_plugin_runtime(plugin, owner_id)
+    return dict(runtime.cookies())
+
+
+def _site_plugin_view(
+    plugin: SitePlugin,
+    enabled: bool,
+    owner_id: str = DEFAULT_ADMIN_USER_ID,
+) -> SitePluginView:
     account_logged_in = False
     if plugin.supports_account_login:
-        account_logged_in = bool(_site_plugin_runtime(plugin).account_status()["loggedIn"])
+        account_logged_in = bool(_site_plugin_runtime(plugin, owner_id).account_status()["loggedIn"])
     return SitePluginView(
         id=plugin.id,
         name=plugin.name,
@@ -482,21 +546,35 @@ def _site_plugin_view(plugin: SitePlugin, enabled: bool) -> SitePluginView:
 
 
 @plugins_router.get("/plugins", response_model=list[SitePluginView])
-async def get_site_plugins() -> list[SitePluginView]:
+async def get_site_plugins(request: Request) -> list[SitePluginView]:
+    owner_id = _effective_owner_id(require_user_access(request))
     enabled_states = list_site_plugin_enabled_states()
     return [
-        _site_plugin_view(plugin, enabled_states.get(plugin.id, plugin.default_enabled))
+        _site_plugin_view(
+            plugin,
+            enabled_states.get(plugin.id, plugin.default_enabled),
+            owner_id,
+        )
         for plugin in list_site_plugins()
     ]
 
 
 @plugins_router.put("/plugins/{plugin_id}", response_model=SitePluginView)
-async def put_site_plugin(plugin_id: str, payload: SitePluginUpdatePayload) -> SitePluginView:
+async def put_site_plugin(
+    plugin_id: str,
+    payload: SitePluginUpdatePayload,
+    request: Request,
+) -> SitePluginView:
+    owner_id = _effective_owner_id(require_admin_user_access(request))
     plugin = get_site_plugin(plugin_id)
     if plugin is None:
         raise HTTPException(status_code=404, detail="站点插件不存在")
     save_site_plugin_enabled(plugin.id, payload.enabled)
-    return _site_plugin_view(plugin, payload.enabled)
+    return _site_plugin_view(
+        plugin,
+        payload.enabled,
+        owner_id,
+    )
 
 
 def _require_site_plugin_operation(
@@ -523,10 +601,14 @@ def _mark_plugin_private_response(response: Response) -> None:
     "/plugins/{plugin_id}/account",
     response_model=SitePluginAccountView,
 )
-async def get_site_plugin_account(plugin_id: str, response: Response) -> SitePluginAccountView:
+async def get_site_plugin_account(
+    plugin_id: str,
+    request: Request,
+    response: Response,
+) -> SitePluginAccountView:
     _mark_plugin_private_response(response)
     plugin = _require_site_plugin_operation(plugin_id, "account_login")
-    runtime = _site_plugin_runtime(plugin)
+    runtime = _site_plugin_runtime(plugin, _effective_owner_id(require_user_access(request)))
     return SitePluginAccountView.model_validate(runtime.account_status())
 
 
@@ -536,11 +618,12 @@ async def get_site_plugin_account(plugin_id: str, response: Response) -> SitePlu
 )
 async def post_site_plugin_login_qrcode(
     plugin_id: str,
+    request: Request,
     response: Response,
 ) -> SitePluginLoginQrCode:
     _mark_plugin_private_response(response)
     plugin = _require_site_plugin_operation(plugin_id, "account_login", require_enabled=True)
-    runtime = _site_plugin_runtime(plugin)
+    runtime = _site_plugin_runtime(plugin, _effective_owner_id(require_user_access(request)))
     try:
         return SitePluginLoginQrCode.model_validate(await asyncio.to_thread(runtime.start_login))
     except Exception as exc:
@@ -554,15 +637,14 @@ async def post_site_plugin_login_qrcode(
 async def get_site_plugin_login_qrcode(
     plugin_id: str,
     flow_id: str,
+    request: Request,
     response: Response,
 ) -> SitePluginLoginPoll:
     _mark_plugin_private_response(response)
     plugin = _require_site_plugin_operation(plugin_id, "account_login", require_enabled=True)
-    runtime = _site_plugin_runtime(plugin)
+    runtime = _site_plugin_runtime(plugin, _effective_owner_id(require_user_access(request)))
     try:
-        return SitePluginLoginPoll.model_validate(
-            await asyncio.to_thread(runtime.poll_login, flow_id)
-        )
+        return SitePluginLoginPoll.model_validate(await asyncio.to_thread(runtime.poll_login, flow_id))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"读取登录状态失败：{exc}") from exc
 
@@ -574,11 +656,12 @@ async def get_site_plugin_login_qrcode(
 async def post_site_plugin_login_cookies(
     plugin_id: str,
     payload: SitePluginCookieLoginPayload,
+    request: Request,
     response: Response,
 ) -> SitePluginAccountView:
     _mark_plugin_private_response(response)
     plugin = _require_site_plugin_operation(plugin_id, "cookie_login", require_enabled=True)
-    runtime = _site_plugin_runtime(plugin)
+    runtime = _site_plugin_runtime(plugin, _effective_owner_id(require_user_access(request)))
     login_cookies = getattr(runtime, "login_cookies", None)
     if not callable(login_cookies):
         raise HTTPException(status_code=501, detail="该站点插件尚未提供 Cookie 登录")
@@ -593,10 +676,14 @@ async def post_site_plugin_login_cookies(
     "/plugins/{plugin_id}/account",
     response_model=SitePluginAccountView,
 )
-async def delete_site_plugin_account(plugin_id: str, response: Response) -> SitePluginAccountView:
+async def delete_site_plugin_account(
+    plugin_id: str,
+    request: Request,
+    response: Response,
+) -> SitePluginAccountView:
     _mark_plugin_private_response(response)
     plugin = _require_site_plugin_operation(plugin_id, "account_login")
-    runtime = _site_plugin_runtime(plugin)
+    runtime = _site_plugin_runtime(plugin, _effective_owner_id(require_user_access(request)))
     runtime.logout()
     return SitePluginAccountView(loggedIn=False)
 
@@ -658,7 +745,8 @@ async def _run_site_plugin_bookshelf_import(job_id: str, plugin_id: str) -> None
     if plugin is None:
         SITE_PLUGIN_IMPORT_JOB_STORE.fail(job_id, "站点插件不存在")
         return
-    runtime = _site_plugin_runtime(plugin)
+    owner_id = SITE_PLUGIN_IMPORT_JOB_STORE.owner_for(job_id)
+    runtime = _site_plugin_runtime(plugin, owner_id)
     try:
         if not is_site_plugin_enabled(plugin.id):
             raise RuntimeError(f"站点插件“{plugin.name}”已停用")
@@ -666,7 +754,7 @@ async def _run_site_plugin_bookshelf_import(job_id: str, plugin_id: str) -> None
         SITE_PLUGIN_IMPORT_JOB_STORE.set_discovered(job_id, len(remote_books))
         existing_source_ids = {
             source_id
-            for book in list_books()
+            for book in list_books(owner_id)
             if (source_id := _site_plugin_source_id_from_url(plugin, book.sourceUrl)) is not None
         }
         for remote_book in remote_books:
@@ -703,7 +791,7 @@ async def _run_site_plugin_bookshelf_import(job_id: str, plugin_id: str) -> None
                 if payload is None:
                     raise RuntimeError("账号书架条目无法转换为导入请求")
                 preview = await preview_from_url(payload)
-                book = await _create_imported_book(payload, preview)
+                book = await _create_imported_book(payload, preview, owner_id=owner_id)
                 existing_source_ids.add(source_id)
                 SITE_PLUGIN_IMPORT_JOB_STORE.append_item(
                     job_id,
@@ -746,12 +834,13 @@ async def post_site_plugin_bookshelf_import_job(
     response: Response,
 ) -> SitePluginBookshelfImportJob:
     _mark_plugin_private_response(response)
+    owner_id = _effective_owner_id(require_user_access(request))
     plugin = _require_site_plugin_operation(plugin_id, "bookshelf_import", require_enabled=True)
-    runtime = _site_plugin_runtime(plugin)
+    runtime = _site_plugin_runtime(plugin, owner_id)
     if not runtime.account_status()["loggedIn"]:
         raise HTTPException(status_code=400, detail=f"请先登录{plugin.name}账号")
     try:
-        job = SITE_PLUGIN_IMPORT_JOB_STORE.create(plugin.id)
+        job = SITE_PLUGIN_IMPORT_JOB_STORE.create(plugin.id, owner_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     task = asyncio.create_task(_run_site_plugin_bookshelf_import(job.id, plugin.id))
@@ -769,23 +858,30 @@ async def post_site_plugin_bookshelf_import_job(
 async def get_site_plugin_bookshelf_import_job(
     plugin_id: str,
     job_id: str,
+    request: Request,
     response: Response,
 ) -> SitePluginBookshelfImportJob:
     _mark_plugin_private_response(response)
     _require_site_plugin_operation(plugin_id, "bookshelf_import")
     try:
-        return SITE_PLUGIN_IMPORT_JOB_STORE.get(job_id, plugin_id)
+        owner_id = require_user_access(request).owner_id
+        return SITE_PLUGIN_IMPORT_JOB_STORE.get(job_id, plugin_id, owner_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @sources_router.get("/sources", response_model=list[PublicBookSourceRecord])
-async def get_sources() -> list[BookSourceRecord]:
+async def get_sources(request: Request) -> list[BookSourceRecord]:
+    require_user_access(request)
     return list_book_sources()
 
 
 @sources_router.post("/sources/search", response_model=list[BookSourceSearchResult])
-async def post_source_search(payload: BookSourceSearchPayload) -> list[BookSourceSearchResult]:
+async def post_source_search(
+    payload: BookSourceSearchPayload,
+    request: Request,
+) -> list[BookSourceSearchResult]:
+    require_user_access(request)
     keyword = payload.keyword.strip()
     if not keyword:
         raise HTTPException(status_code=400, detail="搜索关键词不能为空")
@@ -830,6 +926,7 @@ async def post_source_search_stream(payload: BookSourceSearchPayload, request: R
     - {"type":"progress","done":k,"total":N,...} 已完成 k 个书源
     - {"type":"done","results":m,...}           搜索自然结束
     """
+    require_user_access(request)
     keyword = payload.keyword.strip()
     if not keyword:
         raise HTTPException(status_code=400, detail="搜索关键词不能为空")
@@ -932,7 +1029,11 @@ async def _stream_legado_search(
 
 
 @sources_router.post("/builtin-sites/search", response_model=list[BuiltinSiteSearchResult])
-async def post_builtin_site_search(payload: BuiltinSiteSearchPayload) -> list[BuiltinSiteSearchResult]:
+async def post_builtin_site_search(
+    payload: BuiltinSiteSearchPayload,
+    request: Request,
+) -> list[BuiltinSiteSearchResult]:
+    require_user_access(request)
     source = _get_source_or_404(payload.sourceId)
     keyword = payload.keyword.strip()
     if not keyword:
@@ -944,7 +1045,11 @@ async def post_builtin_site_search(payload: BuiltinSiteSearchPayload) -> list[Bu
 
 
 @sources_router.post("/sources/import-url", response_model=BookSourceImportResult)
-async def post_source_import_url(payload: BookSourceUrlImportPayload) -> BookSourceImportResult:
+async def post_source_import_url(
+    payload: BookSourceUrlImportPayload,
+    request: Request,
+) -> BookSourceImportResult:
+    require_admin_user_access(request)
     try:
         content = await _fetch_book_source_import_payload(str(payload.url))
         return _import_book_sources(content, import_url=str(payload.url))
@@ -957,7 +1062,11 @@ async def post_source_import_url(payload: BookSourceUrlImportPayload) -> BookSou
 
 
 @sources_router.post("/sources/import-text", response_model=BookSourceImportResult)
-async def post_source_import_text(payload: BookSourceTextImportPayload) -> BookSourceImportResult:
+async def post_source_import_text(
+    payload: BookSourceTextImportPayload,
+    request: Request,
+) -> BookSourceImportResult:
+    require_admin_user_access(request)
     try:
         return _import_book_sources(payload.content)
     except HTTPException:
@@ -967,7 +1076,12 @@ async def post_source_import_text(payload: BookSourceTextImportPayload) -> BookS
 
 
 @sources_router.put("/sources/{source_id}", response_model=PublicBookSourceRecord)
-async def put_source(source_id: str, payload: BookSourceRecord) -> BookSourceRecord:
+async def put_source(
+    source_id: str,
+    payload: BookSourceRecord,
+    request: Request,
+) -> BookSourceRecord:
+    require_admin_user_access(request)
     current = _get_source_or_404(source_id)
     if current.origin == "builtin":
         raise HTTPException(status_code=400, detail="内置书源不支持手动修改")
@@ -982,7 +1096,12 @@ async def put_source(source_id: str, payload: BookSourceRecord) -> BookSourceRec
 
 
 @sources_router.put("/sources/{source_id}/enabled", response_model=PublicBookSourceRecord)
-async def put_source_enabled(source_id: str, payload: BookSourceEnabledPayload) -> BookSourceRecord:
+async def put_source_enabled(
+    source_id: str,
+    payload: BookSourceEnabledPayload,
+    request: Request,
+) -> BookSourceRecord:
+    require_admin_user_access(request)
     current = _get_source_or_404(source_id)
     if current.origin == "builtin":
         raise HTTPException(status_code=400, detail="内置站点请通过插件配置接口启用或停用")
@@ -991,28 +1110,33 @@ async def put_source_enabled(source_id: str, payload: BookSourceEnabledPayload) 
 
 
 @library_router.get("/books", response_model=list[PublicBookRecord])
-async def get_books() -> list[BookRecord]:
+async def get_books(request: Request) -> list[BookRecord]:
+    owner_id = require_user_access(request).owner_id
     books: list[BookRecord] = []
-    for book in list_books():
+    for book in list_books(owner_id):
         books.append(await _hydrate_book_record_async(book))
     return books
 
 
 @tasks_router.get("/tasks", response_model=list[TaskRecord])
-async def get_tasks() -> list[TaskRecord]:
-    return list_tasks()
+async def get_tasks(request: Request) -> list[TaskRecord]:
+    return list_tasks(owner_id=require_user_access(request).owner_id)
 
 
 @library_router.get("/books/{book_id}", response_model=BookDetailResponse)
-async def get_book_detail(book_id: str) -> BookDetailResponse:
+async def get_book_detail(book_id: str, request: Request) -> BookDetailResponse:
     return _build_book_detail(
-        await _hydrate_book_record_async(_get_book_or_404(book_id), fetch_remote_metadata=True)
+        await _hydrate_book_record_async(
+            _get_book_or_404(book_id, require_user_access(request).owner_id),
+            fetch_remote_metadata=True,
+        )
     )
 
 
 @library_router.delete("/books/{book_id}")
-async def delete_book_route(book_id: str) -> dict[str, str]:
-    book = _get_book_or_404(book_id)
+async def delete_book_route(book_id: str, request: Request) -> dict[str, str]:
+    owner_id = require_user_access(request).owner_id
+    book = _get_book_or_404(book_id, owner_id)
     book_dir = _resolve_book_dir(book)
     chapter_cache_coordinator = getattr(app.state, "chapter_cache_coordinator", None)
     if isinstance(chapter_cache_coordinator, ChapterCacheCoordinator):
@@ -1021,7 +1145,7 @@ async def delete_book_route(book_id: str) -> dict[str, str]:
     deleted_book_ids: set[str] = getattr(app.state, "deleted_book_ids", set())
     deleted_book_ids.add(book.id)
     app.state.deleted_book_ids = deleted_book_ids
-    delete_book(book.id)
+    delete_book(book.id, owner_id)
     if book_dir.exists():
         shutil.rmtree(book_dir, ignore_errors=True)
     return {"status": "ok", "bookId": book.id}
@@ -1031,10 +1155,11 @@ async def delete_book_route(book_id: str) -> dict[str, str]:
 async def get_chapter_content(
     book_id: str,
     chapter_index: int,
+    request: Request,
     mode: str = Query(default="translated"),
     prefetch: bool = Query(default=False),
 ) -> ChapterContentResponse:
-    book = _get_book_or_404(book_id)
+    book = _get_book_or_404(book_id, require_user_access(request).owner_id)
     book_dir = _resolve_book_dir(book)
     manifest = _load_or_initialize_manifest(book, book_dir)
     try:
@@ -1082,8 +1207,8 @@ async def get_chapter_content(
 
 
 @library_router.get("/books/{book_id}/assets/{asset_path:path}")
-async def get_book_asset(book_id: str, asset_path: str) -> FileResponse:
-    book = _get_book_or_404(book_id)
+async def get_book_asset(book_id: str, asset_path: str, request: Request) -> FileResponse:
+    book = _get_book_or_404(book_id, require_user_access(request).owner_id)
     book_dir = _resolve_book_dir(book).resolve()
     target_path = (book_dir / asset_path).resolve()
     if not target_path.is_relative_to(book_dir):
@@ -1096,8 +1221,12 @@ async def get_book_asset(book_id: str, asset_path: str) -> FileResponse:
 
 
 @library_router.post("/books/{book_id}/export", response_model=BookExportResponse)
-async def post_book_export(book_id: str, payload: BookExportPayload) -> BookExportResponse:
-    book = _get_book_or_404(book_id)
+async def post_book_export(
+    book_id: str,
+    payload: BookExportPayload,
+    request: Request,
+) -> BookExportResponse:
+    book = _get_book_or_404(book_id, require_user_access(request).owner_id)
     export_path, chapter_count, file_count = _export_book(
         book,
         payload.format,
@@ -1126,8 +1255,9 @@ async def post_chapter_export(
     book_id: str,
     chapter_index: int,
     payload: ChapterExportPayload,
+    request: Request,
 ) -> ChapterExportResponse:
-    book = _get_book_or_404(book_id)
+    book = _get_book_or_404(book_id, require_user_access(request).owner_id)
     export_path, file_count = _export_chapter(
         book,
         chapter_index=chapter_index,
@@ -1149,8 +1279,8 @@ async def post_chapter_export(
 
 
 @library_router.get("/books/{book_id}/exports/{artifact_id}")
-async def get_book_export(book_id: str, artifact_id: str) -> FileResponse:
-    _get_book_or_404(book_id)
+async def get_book_export(book_id: str, artifact_id: str, request: Request) -> FileResponse:
+    _get_book_or_404(book_id, require_user_access(request).owner_id)
     export_dir = (EXPORT_ROOT / book_id).resolve()
     if not re.fullmatch(r"[0-9a-f]{32}", artifact_id):
         raise HTTPException(status_code=400, detail="非法导出产物 ID")
@@ -1167,9 +1297,13 @@ async def get_book_export(book_id: str, artifact_id: str) -> FileResponse:
 
 
 @library_router.post("/books/{book_id}/cover", response_model=PublicBookRecord)
-async def post_book_cover(book_id: str, file: Annotated[UploadFile, File()]) -> BookRecord:
+async def post_book_cover(
+    book_id: str,
+    file: Annotated[UploadFile, File()],
+    request: Request,
+) -> BookRecord:
     try:
-        book = _get_book_or_404(book_id)
+        book = _get_book_or_404(book_id, require_user_access(request).owner_id)
         book_dir = _resolve_book_dir(book)
         if not book_dir.exists():
             raise HTTPException(status_code=404, detail="书籍目录不存在，无法保存封面")
@@ -1213,8 +1347,10 @@ async def post_book_cover(book_id: str, file: Annotated[UploadFile, File()]) -> 
 async def post_translate_image(
     file: Annotated[UploadFile, File()],
     language: Annotated[str, Form()],
+    request: Request,
     title: Annotated[str, Form()] = "",
 ) -> Response:
+    require_user_access(request)
     try:
         normalized_language = _validate_language(language)
         diagnostic_payload: dict[str, object] = {}
@@ -1263,13 +1399,18 @@ async def post_translate_image(
 
 
 @library_router.put("/books/{book_id}/progress", response_model=ReadingProgressRecord)
-async def put_reading_progress(book_id: str, payload: ReadingProgressPayload) -> ReadingProgressRecord:
-    book = _get_book_or_404(book_id)
+async def put_reading_progress(
+    book_id: str,
+    payload: ReadingProgressPayload,
+    request: Request,
+) -> ReadingProgressRecord:
+    book = _get_book_or_404(book_id, require_user_access(request).owner_id)
     chapters = _load_chapter_records(book)
     if not any(chapter.index == payload.chapterIndex for chapter in chapters):
         raise HTTPException(status_code=404, detail=f"未找到章节：{payload.chapterIndex}")
 
     progress = ReadingProgressRecord(
+        ownerId=book.ownerId,
         bookId=book.id,
         lastChapterIndex=payload.chapterIndex,
         lastScrollRatio=_clamp_unit_float(payload.scrollRatio),
@@ -1282,14 +1423,19 @@ async def put_reading_progress(book_id: str, payload: ReadingProgressPayload) ->
 
 
 @tasks_router.get("/books/{book_id}/tasks", response_model=list[TaskRecord])
-async def get_book_tasks(book_id: str) -> list[TaskRecord]:
-    _get_book_or_404(book_id)
-    return list_tasks(book_id)
+async def get_book_tasks(book_id: str, request: Request) -> list[TaskRecord]:
+    owner_id = require_user_access(request).owner_id
+    _get_book_or_404(book_id, owner_id)
+    return list_tasks(book_id, owner_id)
 
 
 @tasks_router.get("/tasks/{task_id}/logs", response_model=list[TaskLogRecord])
-async def get_task_logs(task_id: str, after: int = Query(default=0, ge=0)) -> list[TaskLogRecord]:
-    task = get_task(task_id)
+async def get_task_logs(
+    task_id: str,
+    request: Request,
+    after: int = Query(default=0, ge=0),
+) -> list[TaskLogRecord]:
+    task = get_task(task_id, require_user_access(request).owner_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"未找到任务：{task_id}")
     return list_task_logs(task.id, after)
@@ -1301,12 +1447,14 @@ async def get_task_logs(task_id: str, after: int = Query(default=0, ge=0)) -> li
 )
 async def get_task_page_results(
     task_id: str,
+    request: Request,
     after: int = Query(default=0, ge=0),
 ) -> list[TaskPageResultRecord]:
-    task = get_task(task_id)
+    owner_id = require_user_access(request).owner_id
+    task = get_task(task_id, owner_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"未找到任务：{task_id}")
-    book = _get_book_or_404(task.bookId)
+    book = _get_book_or_404(task.bookId, owner_id)
     if task.taskType != "translate" or book.bookKind != "漫画":
         return []
 
@@ -1362,28 +1510,37 @@ async def get_task_page_results(
 
 
 @tasks_router.post("/books/{book_id}/chapters/download", response_model=TaskRecord)
-async def post_download_chapters(book_id: str, payload: ChapterActionPayload) -> TaskRecord:
-    book = _get_book_or_404(book_id)
+async def post_download_chapters(
+    book_id: str,
+    payload: ChapterActionPayload,
+    request: Request,
+) -> TaskRecord:
+    book = _get_book_or_404(book_id, require_user_access(request).owner_id)
     _load_or_initialize_manifest(book, _resolve_book_dir(book))
     return _enqueue_task(book, "download", payload)
 
 
 @tasks_router.post("/books/{book_id}/chapters/translate", response_model=TaskRecord)
-async def post_translate_chapters(book_id: str, payload: ChapterActionPayload) -> TaskRecord:
-    book = _get_book_or_404(book_id)
+async def post_translate_chapters(
+    book_id: str,
+    payload: ChapterActionPayload,
+    request: Request,
+) -> TaskRecord:
+    book = _get_book_or_404(book_id, require_user_access(request).owner_id)
     _load_or_initialize_manifest(book, _resolve_book_dir(book))
     return _enqueue_task(book, "translate", payload)
 
 
 @tasks_router.post("/tasks/{task_id}/retry", response_model=TaskRecord)
-async def post_retry_task(task_id: str) -> TaskRecord:
-    task = get_task(task_id)
+async def post_retry_task(task_id: str, request: Request) -> TaskRecord:
+    owner_id = require_user_access(request).owner_id
+    task = get_task(task_id, owner_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"未找到任务：{task_id}")
     if task.status != "failed":
         raise HTTPException(status_code=400, detail="只有失败任务才能重试")
 
-    _get_book_or_404(task.bookId)
+    _get_book_or_404(task.bookId, owner_id)
     task.status = "queued"
     task.completedCount = 0
     task.progress = 0
@@ -1396,7 +1553,8 @@ async def post_retry_task(task_id: str) -> TaskRecord:
 
 
 @library_router.post("/books/preview", response_model=PreviewResponse)
-async def post_preview(payload: AddBookPayload) -> PreviewResponse:
+async def post_preview(payload: AddBookPayload, request: Request) -> PreviewResponse:
+    require_user_access(request)
     try:
         return await preview_from_url(payload)
     except Exception as exc:
@@ -1407,22 +1565,34 @@ def _uses_manifest_only_import(payload: AddBookPayload) -> bool:
     if payload.sourceId:
         return True
     plugin = resolve_site_plugin(str(payload.sourceUrl))
-    return (
-        payload.downloadMode == "on_demand"
-        and plugin is not None
-        and plugin.supports_on_demand
-    )
+    return payload.downloadMode == "on_demand" and plugin is not None and plugin.supports_on_demand
 
 
-async def _create_imported_book(payload: AddBookPayload, preview: PreviewResponse) -> BookRecord:
+async def _create_imported_book(
+    payload: AddBookPayload,
+    preview: PreviewResponse,
+    *,
+    owner_id: str = DEFAULT_ADMIN_USER_ID,
+) -> BookRecord:
     lightweight_import = _uses_manifest_only_import(payload)
-    result = (
-        await create_book_manifest_only(payload, preview, LIBRARY_ROOT)
-        if lightweight_import
-        else await download_book(payload, preview, LIBRARY_ROOT)
-    )
+    book_id = f"book-{uuid4()}"
+    owner_library_root = LIBRARY_ROOT / owner_id / book_id
+    if lightweight_import:
+        result = await create_book_manifest_only(payload, preview, owner_library_root)
+    else:
+        qidian_cookies = _qidian_cookies_for_owner(owner_id, str(payload.sourceUrl))
+        if qidian_cookies is None:
+            result = await download_book(payload, preview, owner_library_root)
+        else:
+            result = await download_book(
+                payload,
+                preview,
+                owner_library_root,
+                qidian_cookies=qidian_cookies,
+            )
     record = BookRecord(
-        id=f"book-{uuid4()}",
+        ownerId=owner_id,
+        id=book_id,
         title=result.title,
         sourceUrl=str(payload.sourceUrl),
         bookKind=preview.bookKind,
@@ -1473,6 +1643,7 @@ async def _run_link_job_stage(
 async def _run_link_job(job_id: str) -> None:
     request = LINK_JOB_STORE.get(job_id)
     payload = LINK_JOB_STORE.payload_for(job_id)
+    owner_id = LINK_JOB_STORE.owner_for(job_id)
     LINK_JOB_STORE.start(job_id, "开始识别作品链接")
     LINK_JOB_STORE.append_log(job_id, "info", f"已提交链接：{payload.sourceUrl}", progress=5)
     try:
@@ -1506,7 +1677,7 @@ async def _run_link_job(job_id: str) -> None:
         LINK_JOB_STORE.append_log(job_id, "info", import_start_message, progress=68)
         book = await _run_link_job_stage(
             job_id,
-            asyncio.create_task(_create_imported_book(payload, preview)),
+            asyncio.create_task(_create_imported_book(payload, preview, owner_id=owner_id)),
             message=import_wait_message,
             start_progress=68,
             end_progress=98,
@@ -1524,8 +1695,9 @@ async def _run_link_job(job_id: str) -> None:
 
 
 @library_router.post("/books/link-jobs", response_model=PublicLinkJobRecord)
-async def post_link_job(request: LinkJobStartPayload) -> LinkJobRecord:
-    job = LINK_JOB_STORE.create(request.mode, request.payload)
+async def post_link_job(payload: LinkJobStartPayload, request: Request) -> LinkJobRecord:
+    owner_id = _effective_owner_id(require_user_access(request))
+    job = LINK_JOB_STORE.create(payload.mode, payload.payload, owner_id)
     task = asyncio.create_task(_run_link_job(job.id))
     link_job_tasks: set[asyncio.Task[Any]] = getattr(app.state, "link_job_tasks", set())
     link_job_tasks.add(task)
@@ -1535,18 +1707,25 @@ async def post_link_job(request: LinkJobStartPayload) -> LinkJobRecord:
 
 
 @library_router.get("/books/link-jobs/{job_id}", response_model=PublicLinkJobRecord)
-async def get_link_job(job_id: str) -> LinkJobRecord:
+async def get_link_job(job_id: str, request: Request) -> LinkJobRecord:
     try:
-        return LINK_JOB_STORE.get(job_id)
+        return LINK_JOB_STORE.get(job_id, require_user_access(request).owner_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @library_router.post("/books/import", response_model=PublicBookRecord)
-async def post_import(payload: AddBookPayload) -> BookRecord:
+async def post_import(payload: AddBookPayload, request: Request) -> BookRecord:
+    owner_id = _effective_owner_id(require_user_access(request))
     try:
         preview = await preview_from_url(payload)
-        return await _create_imported_book(payload, preview)
+        return await _create_imported_book(
+            payload,
+            preview,
+            owner_id=owner_id,
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"导入失败：{exc}") from exc
 
@@ -1556,12 +1735,15 @@ async def post_import_local(
     file: Annotated[UploadFile, File()],
     bookKind: Annotated[str, Form()],
     language: Annotated[str, Form()],
+    request: Request,
     needTranslation: Annotated[bool, Form()] = False,
     title: Annotated[str, Form()] = "",
 ) -> BookRecord:
     book_dir: Path | None = None
     temp_path: Path | None = None
     try:
+        owner_id = _effective_owner_id(require_user_access(request))
+        book_id = f"book-{uuid4()}"
         requested_book_kind = _validate_book_kind(bookKind)
         normalized_language = _validate_language(language)
         original_name = _normalize_form_text(file.filename or "")
@@ -1579,14 +1761,19 @@ async def post_import_local(
             or "未命名本地作品"
         )
         normalized_book_kind = plan.book_kind
-        book_dir = _allocate_book_dir(LIBRARY_ROOT, normalized_language, imported_title)
+        book_dir = _allocate_book_dir(
+            LIBRARY_ROOT / owner_id / book_id,
+            normalized_language,
+            imported_title,
+        )
         book_dir.mkdir(parents=True, exist_ok=False)
         chapter_manifest = await asyncio.to_thread(write_local_document, plan, temp_path, book_dir)
         synopsis = (
             plan.synopsis.strip() or f"从本地 {plan.source_format} 文件导入，共 {len(chapter_manifest)} 章"
         )
         record = BookRecord(
-            id=f"book-{uuid4()}",
+            ownerId=owner_id,
+            id=book_id,
             title=imported_title,
             sourceUrl="",
             bookKind=normalized_book_kind,
@@ -1637,13 +1824,14 @@ async def post_import_local(
 
 
 @settings_router.get("/settings", response_model=TranslationSettingsView)
-async def get_settings() -> TranslationSettingsView:
+async def get_settings(request: Request) -> TranslationSettingsView:
+    require_user_access(request)
     return _settings_view(load_settings())
 
 
 @settings_router.put("/settings", response_model=TranslationSettingsView)
 async def put_settings(payload: TranslationSettings, request: Request) -> TranslationSettingsView:
-    require_admin_session(request, require_csrf=authentication_enabled())
+    require_admin_write_access(request)
     _validate_model_endpoint_settings(payload)
     current = load_settings()
     merged = payload.model_copy(deep=True)
@@ -1856,8 +2044,12 @@ def main() -> None:
     server.run()
 
 
-def _get_book_or_404(book_id: str) -> BookRecord:
-    book = get_book(book_id)
+def _effective_owner_id(access: UserAccess) -> str:
+    return access.owner_id or DEFAULT_ADMIN_USER_ID
+
+
+def _get_book_or_404(book_id: str, owner_id: str | None = None) -> BookRecord:
+    book = get_book(book_id, owner_id)
     if book is None:
         raise HTTPException(status_code=404, detail=f"未找到书籍：{book_id}")
     return book
@@ -3291,10 +3483,17 @@ async def _cache_source_chapter_by_id(book_id: str, chapter_index: int) -> None:
             return
         manifest_snapshot = copy.deepcopy(manifest)
 
-    payload = await download_chapter_payload(book_dir, manifest_snapshot, chapter_index)
-    commit_task = asyncio.create_task(
-        _commit_source_chapter_payload(book, book_dir, payload, manifest_lock)
-    )
+    qidian_cookies = _qidian_cookies_for_owner(book.ownerId, book.sourceUrl)
+    if qidian_cookies is None:
+        payload = await download_chapter_payload(book_dir, manifest_snapshot, chapter_index)
+    else:
+        payload = await download_chapter_payload(
+            book_dir,
+            manifest_snapshot,
+            chapter_index,
+            qidian_cookies=qidian_cookies,
+        )
+    commit_task = asyncio.create_task(_commit_source_chapter_payload(book, book_dir, payload, manifest_lock))
     try:
         await asyncio.shield(commit_task)
     except asyncio.CancelledError:
@@ -3330,9 +3529,7 @@ async def _ensure_source_chapter_cached(
     current_needs_cache = _chapter_needs_source_cache(book_dir, lookup.get(chapter_index))
     next_index = chapter_index + 1
     read_ahead_indexes = (
-        [next_index]
-        if prepare_next and _chapter_needs_source_cache(book_dir, lookup.get(next_index))
-        else []
+        [next_index] if prepare_next and _chapter_needs_source_cache(book_dir, lookup.get(next_index)) else []
     )
     if not current_needs_cache:
         if read_ahead_indexes:
@@ -3545,11 +3742,12 @@ def _build_book_detail(book: BookRecord) -> BookDetailResponse:
     chapters = _load_chapter_records(book)
     manifest = _load_or_initialize_manifest(book, _resolve_book_dir(book))
     refreshed_book = _hydrate_book_record(_refresh_book_state(book, chapters))
-    progress = load_reading_progress(book.id)
+    progress = load_reading_progress(book.id, book.ownerId)
     max_index = chapters[-1].index if chapters else 0
     if progress.lastChapterIndex > max_index:
         progress = save_reading_progress(
             ReadingProgressRecord(
+                ownerId=book.ownerId,
                 bookId=book.id,
                 lastChapterIndex=max_index,
                 lastScrollRatio=0,
@@ -4277,6 +4475,7 @@ def _enqueue_task(book: BookRecord, task_type: str, payload: ChapterActionPayloa
     chapter_indexes = _normalize_chapter_indexes(payload.chapterIndexes)
     now = _now()
     task = TaskRecord(
+        ownerId=book.ownerId,
         id=f"task-{uuid4()}",
         bookId=book.id,
         taskType=task_type,  # type: ignore[arg-type]
@@ -4349,7 +4548,7 @@ async def _run_task(task_id: str) -> None:
     if task is None or task.status not in {"queued", "running"}:
         return
 
-    book = _get_book_or_404(task.bookId)
+    book = _get_book_or_404(task.bookId, task.ownerId)
     task.status = "running"
     task.attempts += 1
     task.error = None
@@ -4408,12 +4607,17 @@ async def _process_download_task(task: TaskRecord, book: BookRecord) -> None:
         task.updatedAt = _now()
         save_task(task)
 
+    download_kwargs: dict[str, Any] = {}
+    qidian_cookies = _qidian_cookies_for_owner(book.ownerId, book.sourceUrl)
+    if qidian_cookies is not None:
+        download_kwargs["qidian_cookies"] = qidian_cookies
     await download_selected_chapters(
         book_dir=book_dir,
         manifest=manifest,
         chapter_indexes=task.chapterIndexes,
         concurrency=concurrency,
         progress_callback=on_progress,
+        **download_kwargs,
     )
 
 

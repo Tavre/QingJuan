@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +8,47 @@ import 'package:qingjuan/core/api/api_client.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
 
 void main() {
+  test('session reset prevents an older shelf response from refilling books',
+      () async {
+    final firstResponse = Completer<http.Response>();
+    var requestCount = 0;
+    var userToken = 'user-one-token';
+    final api = ApiClient(
+      () => 'https://qingjuan.example.test',
+      token: () => 'connection-token',
+      userToken: () => userToken,
+      client: MockClient((request) async {
+        requestCount += 1;
+        if (requestCount == 1) return firstResponse.future;
+        expect(request.headers['X-QingJuan-User-Token'], 'user-two-token');
+        return _jsonResponse(<Map<String, Object?>>[
+          <String, Object?>{..._book, 'id': 'book-user-two'},
+        ]);
+      }),
+    );
+    final controller = LibraryController(api);
+    addTearDown(() {
+      controller.dispose();
+      api.close();
+    });
+
+    final oldLoad = controller.load();
+    await Future<void>.delayed(Duration.zero);
+    controller.resetForBackendSwitch();
+    userToken = 'user-two-token';
+    await controller.load();
+    expect(controller.books.single.id, 'book-user-two');
+
+    firstResponse.complete(
+      _jsonResponse(<Map<String, Object?>>[
+        <String, Object?>{..._book, 'id': 'book-user-one'},
+      ]),
+    );
+    await oldLoad;
+
+    expect(controller.books.single.id, 'book-user-two');
+  });
+
   test('search import uses an asynchronous link job instead of sync import',
       () async {
     final requests = <http.Request>[];

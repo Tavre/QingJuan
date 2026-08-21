@@ -401,9 +401,7 @@ def test_server_managed_cache_queues_every_missing_chapter_in_order(
     ]
     (tmp_path / "0002-chapter.txt").write_text("已缓存", encoding="utf-8")
     queued: list[tuple[str, list[int]]] = []
-    coordinator = SimpleNamespace(
-        schedule=lambda book_id, indexes: queued.append((book_id, list(indexes)))
-    )
+    coordinator = SimpleNamespace(schedule=lambda book_id, indexes: queued.append((book_id, list(indexes))))
     book = BookRecord(
         id="book-linux",
         title="Linux 顺序缓存",

@@ -9,6 +9,7 @@ import '../../shared/feedback_widgets.dart';
 import '../../shared/motion.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
+import '../../shared/smooth_scroll.dart';
 import '../detail/book_detail_page.dart';
 import 'import_book_dialog.dart';
 import 'library_controller.dart';
@@ -210,21 +211,25 @@ class LibraryPage extends StatelessWidget {
                     title: '没有匹配结果',
                     message: '试试更短的书名或作者关键词。',
                   ),
-                _ => GridView.builder(
-                    itemCount: books.length,
-                    gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 352,
-                      mainAxisExtent: 164 + scaleAllowance,
-                      crossAxisSpacing: 16,
-                      mainAxisSpacing: 16,
+                _ => QjScrollControllerBuilder(
+                    debugLabel: 'desktop-library',
+                    builder: (context, scrollController) => GridView.builder(
+                      controller: scrollController,
+                      itemCount: books.length,
+                      gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                        maxCrossAxisExtent: 352,
+                        mainAxisExtent: 164 + scaleAllowance,
+                        crossAxisSpacing: 16,
+                        mainAxisSpacing: 16,
+                      ),
+                      itemBuilder: (context, index) {
+                        final book = books[index];
+                        return BookCard(
+                          book: book,
+                          onOpen: () => _openBook(context, book),
+                        );
+                      },
                     ),
-                    itemBuilder: (context, index) {
-                      final book = books[index];
-                      return BookCard(
-                        book: book,
-                        onOpen: () => _openBook(context, book),
-                      );
-                    },
                   ),
               },
             ),

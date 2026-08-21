@@ -18,7 +18,7 @@ import { taskStatusLabel, taskStatusColor } from "./TasksPage";
 type OverviewPageProps = {
   data: DashboardData;
   bookTitles: Map<string, string>;
-  onNavigate: (key: "devices" | "library" | "tasks" | "diagnostics" | "settings") => void;
+  onNavigate: (key: "devices" | "library" | "tasks" | "diagnostics" | "upgrade" | "settings") => void;
 };
 
 export function OverviewPage({ data, bookTitles, onNavigate }: OverviewPageProps) {
@@ -108,6 +108,7 @@ export function OverviewPage({ data, bookTitles, onNavigate }: OverviewPageProps
               <Button onClick={() => onNavigate("devices")}>管理设备</Button>
               <Button onClick={() => onNavigate("library")}>管理书库</Button>
               <Button onClick={() => onNavigate("diagnostics")}>系统诊断</Button>
+              <Button onClick={() => onNavigate("upgrade")}>后端升级</Button>
               <Button onClick={() => onNavigate("settings")}>模型设置</Button>
             </Space>
           </Card>

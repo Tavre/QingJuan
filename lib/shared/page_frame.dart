@@ -1,6 +1,7 @@
 import 'package:fluent_ui/fluent_ui.dart';
 
 import 'responsive.dart';
+import 'smooth_scroll.dart';
 
 class PageFrame extends StatelessWidget {
   const PageFrame({
@@ -64,7 +65,15 @@ class PageFrame extends StatelessWidget {
         ),
       ),
     );
-    return scrollable ? SingleChildScrollView(child: body) : body;
+    return scrollable
+        ? QjScrollControllerBuilder(
+            debugLabel: 'page-frame',
+            builder: (context, controller) => SingleChildScrollView(
+              controller: controller,
+              child: body,
+            ),
+          )
+        : body;
   }
 }
 

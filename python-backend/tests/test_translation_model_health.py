@@ -301,9 +301,14 @@ def test_model_check_endpoint_requires_backend_auth_and_returns_safe_dto(
 
 def test_trusted_windows_loopback_can_force_model_check_without_admin_web(
     monkeypatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setenv(TRUST_LOCAL_ADMIN_ENV, "1")
     monkeypatch.delenv("QINGJUAN_AUTH_TOKEN_SHA256", raising=False)
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "qingjuan.db")
+    monkeypatch.setattr(db, "_DATA_DIR_READY", True)
+    db.init_db()
     force_values: list[bool] = []
 
     async def fake_check(

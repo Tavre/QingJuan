@@ -99,7 +99,7 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
         </div>
       </section>
 
-      <footer className="login-footer">单用户管理入口 · 请仅通过私有网络或 HTTPS 访问</footer>
+      <footer className="login-footer">服务管理入口 · 用户账号与管理密码相互独立</footer>
     </main>
   );
 }

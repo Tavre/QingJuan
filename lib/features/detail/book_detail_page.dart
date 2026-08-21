@@ -9,6 +9,7 @@ import '../../shared/mobile_sheet.dart';
 import '../../shared/motion.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
+import '../../shared/smooth_scroll.dart';
 import '../audiobook/audiobook_page.dart';
 import '../library/widgets/book_card.dart';
 import '../reader/reader_page.dart';
@@ -23,7 +24,9 @@ class BookDetailPage extends StatefulWidget {
 }
 
 class _BookDetailPageState extends State<BookDetailPage> {
-  final ScrollController _chapterScrollController = ScrollController();
+  final ScrollController _chapterScrollController = QjScrollController(
+    debugLabel: 'book-detail-chapters',
+  );
   final ExportFileService _exportFiles = ExportFileService();
   late AppScope _scope;
   BookDetail? _detail;
@@ -967,7 +970,9 @@ class _ScrollableSynopsis extends StatefulWidget {
 }
 
 class _ScrollableSynopsisState extends State<_ScrollableSynopsis> {
-  final ScrollController _controller = ScrollController();
+  final ScrollController _controller = QjScrollController(
+    debugLabel: 'book-synopsis',
+  );
 
   @override
   void dispose() {

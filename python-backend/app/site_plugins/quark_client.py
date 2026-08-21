@@ -350,11 +350,7 @@ async def get_quark_catalog(
             if response.status_code not in _QUARK_TRANSIENT_PAGE_STATUSES:
                 break
             if attempt < 2:
-                delay = (
-                    8 * (attempt + 1)
-                    if response.status_code == 429
-                    else 2 * (attempt + 1)
-                )
+                delay = 8 * (attempt + 1) if response.status_code == 429 else 2 * (attempt + 1)
                 await asyncio.sleep(delay)
         if response is None or response.status_code == 429:
             raise QuarkBookError("夸克小说目录请求过于频繁，请稍后重试")

@@ -72,9 +72,9 @@ sudo qingjuan-info
 随机管理密码、FastAPI 地址和连接 Token。管理密码只显示一次；公网服务器请使用
 `--url https://你的域名` 指定已配置反向代理的 HTTPS 地址。
 
-浏览器打开终端显示的管理界面地址，即可查看服务概览、连接设备、系统诊断、后端 API 密钥、任务和服务器运行日志，
-以及书库、书源、插件和模型设置。系统诊断可下载不含凭据和服务器路径的脱敏报告；API 密钥默认遮挡，只在管理员主动点击后
-短暂显示。Linux 后端的翻译模型在管理界面配置并支持自检；Windows / Android 远程连接后会自动检查服务端模型，
+浏览器打开终端显示的管理界面地址，即可查看服务概览、连接设备、用户、注册设置、系统诊断、后端升级、后端 API 密钥、任务和服务器运行日志，
+以及书库、书源、插件和模型设置。管理员可创建或停用用户、编辑账号显示资料、重置密码、提权或降权，并撤销登录会话；内置 `admin` 始终保留管理员权限。提权后的客户端账号可以维护服务级配置，但浏览器管理界面继续使用独立管理密码。系统诊断可下载不含凭据和服务器路径的脱敏报告；API 密钥默认遮挡，只在管理员主动点击后
+短暂显示。注册设置可独立启用邮箱验证码和固定身份牌，两项同时启用时新用户必须全部通过；自主注册始终要求唯一邮箱，SMTP 密码、身份牌和验证码不会由管理接口回显。管理员还可配置 GitHub OAuth App Device Flow；已注册用户可自行绑定 GitHub，并可选择启用基于验证器应用的 TOTP 两步验证与一次性恢复码。GitHub 不会自动创建本地账号，也不会获得邮箱或仓库权限。Linux 后端的翻译模型在管理界面配置并支持自检；Windows / Android 远程连接后会自动检查服务端模型，
 不在客户端保存模型密钥或直连模型供应商。忘记管理密码时运行：
 
 ```bash
@@ -87,7 +87,9 @@ sudo qingjuan-password --generate
 
 - Windows 本机模式：选择“本机后端”并保存，应用会按需启动安装包内的后端，无需 Token；本机后端不启动浏览器管理界面，
   翻译模型、API 密钥、系统提示词和外部 OCR 直接在客户端“设置 → 翻译服务”中配置。
-- Windows 远程模式或 Android：填写服务器显示的“FastAPI 地址”和“连接 Token”，再保存连接。
+- Windows 远程模式或 Android：填写服务器显示的“FastAPI 地址”和“连接 Token”，保存连接后在“我的”中注册或登录。Linux
+  后端会按用户隔离书架、阅读进度和任务；`admin` 可使用服务器管理密码登录默认管理员账号。书源、插件和模型属于服务级配置，
+  普通用户可使用，只有管理员能修改；Bika 登录凭据也按服务级配置共享，不属于用户书架账号。
 
 远程 FastAPI 地址不要添加 `/api/v1`。公网访问必须使用 HTTPS，不要直接暴露公网 HTTP 端口；远程连接失败时不会
 自动回退本机。切换模式会切换到另一套后端数据，但会保留安全存储中的远程连接信息。
@@ -104,12 +106,20 @@ sudo journalctl -u qingjuan-backend -f
 # 更新后端
 sudo bash /opt/qingjuan/app/deploy/linux/update.sh
 
+# 查看在线升级任务日志
+sudo journalctl -u qingjuan-updater -n 100 --no-pager
+
 # 修改管理界面密码
 sudo qingjuan-password
 
-# 卸载并保留书库数据
+# 卸载并保留书库数据与 2FA 解密配置
 sudo qingjuan-uninstall
 ```
+
+新版安装会启用受控的 systemd 在线升级器。之后可在管理界面的“后端升级”中检查并安装固定部署仓库的上游版本；
+页面不接受仓库地址、分支或命令参数。升级器在独立服务中运行，下载、安装依赖和预检期间后端保持在线，只在最终切换时
+短暂重启，客户端会显示恢复状态并自动重新探测。若从不含在线升级器的旧版本迁移，第一次命令更新完成后管理页仍提示
+“尚未启用在线升级”时，再执行一次上面的更新命令完成一次性引导，之后即可使用管理界面升级。
 
 需要连同书库一起永久删除时，直接运行
 `sudo qingjuan-uninstall --purge-data`，不要先执行普通卸载。
@@ -118,8 +128,11 @@ sudo qingjuan-uninstall
 
 - Windows 本机数据保存在完整解压目录的 `backend/data/`
 - Linux 数据保存在 `/var/lib/qingjuan`
-- Android 以及 Windows 远程模式只在设备上保存界面偏好和平台安全存储保护的连接 Token
-- Windows 本机数据与 Linux 数据不会自动同步；更新或迁移前请备份当前使用的数据目录
+- Linux 用户启用 2FA 后，备份或迁移必须同时保存 `/var/lib/qingjuan` 与受限的
+  `/etc/qingjuan/backend.env`；其中的独立 2FA 密钥与数据库缺一不可。普通卸载会同时保留两者，
+  `--purge-data` 才会永久删除
+- Android 以及 Windows 远程模式只在设备上保存界面偏好，以及平台安全存储保护的连接 Token 和用户会话 Token
+- Windows 本机数据与 Linux 数据不会自动同步；更新或迁移前请备份当前使用的数据及其配套密钥
 - 不要公开连接 Token、翻译 API 密钥、Cookie、数据库和下载内容
 - 不要公开管理密码；终端改密后，原有管理界面会话会自动退出
 - 连接建议使用局域网、Tailscale / WireGuard；公网访问必须使用 HTTPS
@@ -139,5 +152,5 @@ sudo qingjuan-uninstall
 
 本项目使用 [GNU GPL v3](./LICENSE) 许可证。
 
-感谢[所有贡献者](https://github.com/Tavre/QingJuan/graphs/contributors)，以及 Flutter、FastAPI、RapidOCR、
+感谢[所有贡献者](https://github.com/Tavre/QingJuan/graphs/contributors)，包括[Linux do](https://linux.do) 社区，以及Flutter、FastAPI、RapidOCR、
 `fluent_ui`、[fanqie-assistant](https://github.com/naiyQAQ/fanqie-assistant) 等开源项目。

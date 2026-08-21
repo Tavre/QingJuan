@@ -1,17 +1,23 @@
 import hashlib
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
-from fastapi import APIRouter
+import pytest
+from fastapi import APIRouter, Request
 from fastapi.testclient import TestClient
 
+import app.admin_auth as admin_auth
 from app.admin_auth import (
     ADMIN_CSRF_HEADER,
     ADMIN_PASSWORD_HASH_ENV,
     ADMIN_SESSION_SECRET_ENV,
+    LOCAL_ADMIN_REQUEST_HEADER,
     TRUST_LOCAL_ADMIN_ENV,
     create_admin_session,
     hash_admin_password,
     parse_admin_session,
+    require_admin_write_access,
     verify_admin_password,
 )
 from app.admin_password import ensure_admin_session_secret, update_backend_environment
@@ -107,8 +113,42 @@ def test_tampered_admin_session_is_rejected(monkeypatch) -> None:
     assert parse_admin_session("v1.1.2.非ASCII.signature") is None
 
 
+def test_admin_cookie_write_requires_csrf_even_without_connection_auth(monkeypatch) -> None:
+    _configure_admin(monkeypatch)
+    protected = APIRouter()
+
+    @protected.post("/admin-write")
+    async def admin_write(request: Request) -> dict[str, str]:
+        require_admin_write_access(request)
+        return {"status": "ok"}
+
+    application = create_application(
+        routers=[protected],
+        public_routers=[admin_router],
+        api_prefix=API_PREFIX,
+    )
+    with TestClient(application) as client:
+        session = client.post(
+            "/admin/api/login",
+            json={"password": "correct-admin-password"},
+        ).json()
+        rejected = client.post(f"{API_PREFIX}/admin-write")
+        accepted = client.post(
+            f"{API_PREFIX}/admin-write",
+            headers={ADMIN_CSRF_HEADER: session["csrfToken"]},
+        )
+
+    assert rejected.status_code == 403
+    assert accepted.status_code == 200
+
+
 def test_explicit_desktop_mode_trusts_only_loopback_admin_requests(monkeypatch) -> None:
     monkeypatch.setenv(TRUST_LOCAL_ADMIN_ENV, "1")
+    monkeypatch.setattr(
+        admin_auth,
+        "os",
+        SimpleNamespace(name="nt", getenv=os.getenv),
+    )
     application = create_application(routers=[], public_routers=[admin_router])
 
     with TestClient(
@@ -118,10 +158,17 @@ def test_explicit_desktop_mode_trusts_only_loopback_admin_requests(monkeypatch) 
     ) as local_client:
         session_response = local_client.get("/admin/api/session")
         session = session_response.json()
-        missing_csrf = local_client.post("/admin/api/logout")
+        cross_site_form = local_client.post("/admin/api/logout")
+        missing_csrf = local_client.post(
+            "/admin/api/logout",
+            headers={LOCAL_ADMIN_REQUEST_HEADER: "1"},
+        )
         accepted = local_client.post(
             "/admin/api/logout",
-            headers={ADMIN_CSRF_HEADER: session["csrfToken"]},
+            headers={
+                ADMIN_CSRF_HEADER: session["csrfToken"],
+                LOCAL_ADMIN_REQUEST_HEADER: "1",
+            },
         )
 
     with TestClient(application, client=("192.0.2.10", 50000)) as remote_client:
@@ -135,10 +182,39 @@ def test_explicit_desktop_mode_trusts_only_loopback_admin_requests(monkeypatch) 
     assert session_response.status_code == 200
     assert session["authenticated"] is True
     assert session["csrfToken"]
+    assert cross_site_form.status_code == 401
     assert missing_csrf.status_code == 403
     assert accepted.status_code == 204
     assert rejected.status_code == 401
     assert rebound_rejected.status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "multi_user_value"),
+    [("posix", "0"), ("nt", "1")],
+)
+def test_local_admin_trust_is_rejected_outside_windows_single_user_mode(
+    monkeypatch,
+    platform_name: str,
+    multi_user_value: str,
+) -> None:
+    monkeypatch.setenv(TRUST_LOCAL_ADMIN_ENV, "1")
+    monkeypatch.setenv("QINGJUAN_MULTI_USER", multi_user_value)
+    monkeypatch.setattr(
+        admin_auth,
+        "os",
+        SimpleNamespace(name=platform_name, getenv=os.getenv),
+    )
+    application = create_application(routers=[], public_routers=[admin_router])
+
+    with TestClient(
+        application,
+        base_url="http://127.0.0.1",
+        client=("127.0.0.1", 50000),
+    ) as local_client:
+        response = local_client.get("/admin/api/session")
+
+    assert response.status_code == 401
 
 
 def test_session_secret_rotation_invalidates_existing_session(monkeypatch) -> None:
@@ -162,9 +238,7 @@ def test_login_attempt_limiter_recovers_after_window() -> None:
 def test_password_update_preserves_environment_and_rotates_sessions(tmp_path: Path) -> None:
     backend_env = tmp_path / "backend.env"
     backend_env.write_text(
-        "QINGJUAN_PORT=19453\n"
-        f"{ADMIN_PASSWORD_HASH_ENV}=old-hash\n"
-        f"{ADMIN_SESSION_SECRET_ENV}={'22' * 32}\n",
+        f"QINGJUAN_PORT=19453\n{ADMIN_PASSWORD_HASH_ENV}=old-hash\n{ADMIN_SESSION_SECRET_ENV}={'22' * 32}\n",
         encoding="utf-8",
     )
 
@@ -208,8 +282,7 @@ def test_connection_token_reveal_requires_admin_csrf_and_never_returns_by_defaul
     connection_token = "0123456789abcdef" * 4
     token_file = tmp_path / "client.env"
     token_file.write_text(
-        f"QINGJUAN_BACKEND_URL=https://qingjuan.example\n"
-        f"QINGJUAN_CONNECTION_TOKEN={connection_token}\n",
+        f"QINGJUAN_BACKEND_URL=https://qingjuan.example\nQINGJUAN_CONNECTION_TOKEN={connection_token}\n",
         encoding="utf-8",
     )
     monkeypatch.setenv(

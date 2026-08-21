@@ -357,9 +357,7 @@ async def test_fanqie_network_retries_successful_pages_without_ssr_state(
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal attempts
         attempts += 1
-        text = (
-            "<html>temporary verification page</html>" if attempts == 1 else _book_html()
-        )
+        text = "<html>temporary verification page</html>" if attempts == 1 else _book_html()
         return httpx.Response(200, request=request, text=text)
 
     async def no_wait(_: object) -> None:

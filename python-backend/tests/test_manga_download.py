@@ -320,8 +320,8 @@ def test_manga_render_compresses_translation_when_it_cannot_fit(tmp_path) -> Non
         ],
     )
 
-    translated_bytes, page_translation, diagnostics = (
-        scraper._render_translated_manga_page_to_image(source, payload)
+    translated_bytes, page_translation, diagnostics = scraper._render_translated_manga_page_to_image(
+        source, payload
     )
 
     assert page_translation == full_translation
@@ -376,9 +376,7 @@ def test_manga_render_skips_effectively_unchanged_text(tmp_path) -> None:
     assert diagnostics["skipped_unchanged_region_count"] == 1
     assert diagnostics["source_text_erased_region_count"] == 0
     with Image.open(BytesIO(translated_bytes)) as translated:
-        assert list(translated.convert("RGB").get_flattened_data()) == list(
-            image.get_flattened_data()
-        )
+        assert list(translated.convert("RGB").get_flattened_data()) == list(image.get_flattened_data())
 
 
 def test_manga_render_skips_region_when_ink_mask_covers_most_of_artwork(tmp_path) -> None:
@@ -412,9 +410,7 @@ def test_manga_render_skips_region_when_ink_mask_covers_most_of_artwork(tmp_path
     assert diagnostics["skipped_unsafe_cleanup_region_count"] == 1
     assert diagnostics["source_text_erased_region_count"] == 0
     with Image.open(BytesIO(translated_bytes)) as translated:
-        assert list(translated.convert("RGB").get_flattened_data()) == list(
-            image.get_flattened_data()
-        )
+        assert list(translated.convert("RGB").get_flattened_data()) == list(image.get_flattened_data())
 
 
 def test_manga_cleanup_safety_allows_dense_glyphs_but_rejects_opaque_masks() -> None:
@@ -451,9 +447,7 @@ def test_manga_render_skips_large_single_glyph_sound_effect(tmp_path) -> None:
     assert diagnostics["rendered_region_count"] == 0
     assert diagnostics["skipped_nonlinguistic_region_count"] == 1
     with Image.open(BytesIO(translated_bytes)) as translated:
-        assert list(translated.convert("RGB").get_flattened_data()) == list(
-            image.get_flattened_data()
-        )
+        assert list(translated.convert("RGB").get_flattened_data()) == list(image.get_flattened_data())
 
 
 def test_manga_render_removes_unsupported_music_symbols() -> None:
@@ -697,16 +691,12 @@ def test_hybrid_manga_ocr_does_not_match_equal_text_across_distant_regions() -> 
     model_payload = MangaOcrPagePayload(
         page_number=1,
         image_size=(720, 1024),
-        regions=[
-            MangaOcrRegion(order=1, bbox=(619, 429, 653, 439), source_text="0 0")
-        ],
+        regions=[MangaOcrRegion(order=1, bbox=(619, 429, 653, 439), source_text="0 0")],
     )
     windows_payload = MangaOcrPagePayload(
         page_number=1,
         image_size=(720, 1024),
-        regions=[
-            MangaOcrRegion(order=1, bbox=(304, 74, 430, 249), source_text="M0.00")
-        ],
+        regions=[MangaOcrRegion(order=1, bbox=(304, 74, 430, 249), source_text="M0.00")],
     )
 
     merged = scraper._merge_hybrid_manga_ocr_payloads(model_payload, windows_payload)
@@ -1316,9 +1306,7 @@ async def test_deepseek_v4_translation_disables_thinking_and_retries_exhausted_o
             "choices": [
                 {
                     "finish_reason": "stop",
-                    "message": {
-                        "content": '{"translations":[{"order":1,"translation":"你好世界"}]}'
-                    },
+                    "message": {"content": '{"translations":[{"order":1,"translation":"你好世界"}]}'},
                 }
             ]
         }
@@ -1675,6 +1663,23 @@ async def test_bika_api_retries_retryable_http_status(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_multi_user_bika_never_auto_registers_or_persists_credentials(monkeypatch) -> None:
+    settings = TranslationSettings()
+
+    async def unexpected_registration(*_: object) -> tuple[str, str]:
+        raise AssertionError("多用户请求不得自动注册全局 Bika 账号")
+
+    monkeypatch.setattr(scraper, "multi_user_enabled", lambda: True)
+    monkeypatch.setattr(scraper, "_register_bika_account", unexpected_registration)
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(ValueError, match="请管理员先在模型设置中填写"):
+            await scraper._ensure_bika_credentials(client, settings)
+
+    assert settings.bika.email == ""
+    assert settings.bika.password == ""
+
+
+@pytest.mark.asyncio
 async def test_supported_manga_failure_is_propagated(monkeypatch) -> None:
     async def fail(*_: object) -> scraper.ChapterFetchResult:
         raise ValueError("JM 图片接口暂时不可用")
@@ -1972,8 +1977,13 @@ async def test_retry_requeues_the_same_task(monkeypatch, tmp_path) -> None:
     saved: list[TaskRecord] = []
     queue: asyncio.Queue[str] = asyncio.Queue()
 
-    monkeypatch.setattr(main, "get_task", lambda _: task)
-    monkeypatch.setattr(main, "_get_book_or_404", lambda _: object())
+    monkeypatch.setattr(main, "get_task", lambda _, __: task)
+    monkeypatch.setattr(main, "_get_book_or_404", lambda _, __: object())
+    monkeypatch.setattr(
+        main,
+        "require_user_access",
+        lambda _: SimpleNamespace(owner_id="user-admin"),
+    )
     monkeypatch.setattr(main, "save_task", lambda value: saved.append(value.model_copy(deep=True)))
     monkeypatch.setattr(main, "TASK_QUEUE", queue)
     monkeypatch.setattr(
@@ -1982,7 +1992,7 @@ async def test_retry_requeues_the_same_task(monkeypatch, tmp_path) -> None:
         lambda *_: pytest.fail("重试不应创建新的任务记录"),
     )
 
-    retried = await main.post_retry_task(task.id)
+    retried = await main.post_retry_task(task.id, object())  # type: ignore[arg-type]
 
     assert retried.id == "task-original"
     assert retried.status == "queued"

@@ -11,6 +11,7 @@ import 'package:qingjuan/core/api/api_client.dart';
 import 'package:qingjuan/core/backend/backend_connection_manager.dart';
 import 'package:qingjuan/core/models/task.dart';
 import 'package:qingjuan/core/state/load_state.dart';
+import 'package:qingjuan/features/auth/auth_controller.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
 import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/sources/sources_controller.dart';
@@ -208,6 +209,7 @@ class _Harness {
       appState: appState,
       api: api,
       backend: BackendConnectionManager(api, isConfigured: () => false),
+      auth: AuthController.localAdministrator(api),
       library: LibraryController(api),
       sources: SourcesController(api),
       tasks: tasks,

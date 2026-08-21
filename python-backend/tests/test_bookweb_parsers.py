@@ -55,9 +55,7 @@ def test_kakuyomu_graphql_payload_builds_public_catalog() -> None:
     assert work.author == "活动名"
     assert work.synopsis == "一句话简介\n\n完整简介"
     assert work.cover == "https://cdn.example.test/cover.jpg"
-    assert [(episode.id, episode.title) for episode in work.episodes] == [
-        ("101", "第一部 - 第一话")
-    ]
+    assert [(episode.id, episode.title) for episode in work.episodes] == [("101", "第一部 - 第一话")]
 
 
 def test_kakuyomu_episode_parser_preserves_blank_lines_ruby_and_images() -> None:
@@ -256,9 +254,7 @@ async def test_yanmaga_chapter_registers_public_viewer_pages(monkeypatch) -> Non
         scraper,
         "decode_speedbinb_table",
         lambda _cid, _key, encrypted: (
-            ["=2-2+0-ABABBADC"] * 8
-            if encrypted == "content-table"
-            else ["=2-2-0-ABABABCD"] * 8
+            ["=2-2+0-ABABBADC"] * 8 if encrypted == "content-table" else ["=2-2-0-ABABABCD"] * 8
         ),
     )
     scraper._YANMAGA_PAGE_KEYS.clear()

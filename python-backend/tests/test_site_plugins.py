@@ -305,10 +305,12 @@ async def test_source_enabled_update_preserves_imported_rule_payload(monkeypatch
 
     monkeypatch.setattr(main, "_get_source_or_404", lambda source_id: source)
     monkeypatch.setattr(main, "save_book_source", capture)
+    monkeypatch.setattr(main, "require_admin_user_access", lambda request: None)
 
     updated = await main.put_source_enabled(
         source.id,
         BookSourceEnabledPayload(enabled=False),
+        object(),  # type: ignore[arg-type]
     )
 
     assert updated.enabled is False

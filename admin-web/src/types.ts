@@ -27,6 +27,41 @@ export type Device = {
   online: boolean;
 };
 
+export type UserRole = "admin" | "user";
+
+export type UserStatus = "active" | "disabled";
+
+export type UserAdminView = {
+  id: string;
+  username: string;
+  email: string | null;
+  githubLogin: string | null;
+  twoFactorEnabled: boolean;
+  displayName: string;
+  role: UserRole;
+  isDefaultAdmin: boolean;
+  status: UserStatus;
+  createdAt: string;
+  lastLoginAt: string | null;
+  bookCount: number;
+};
+
+export type UserCreatePayload = {
+  username: string;
+  displayName: string;
+  password: string;
+};
+
+export type UserUpdatePayload = {
+  displayName?: string;
+  role?: UserRole;
+  status?: UserStatus;
+};
+
+export type UserPasswordPayload = {
+  password: string;
+};
+
 export type ConnectionTokenStatus = {
   configured: boolean;
   revealAvailable: boolean;
@@ -50,6 +85,98 @@ export type RuntimeLogBatch = {
 };
 
 export type DiagnosticStatus = "healthy" | "warning" | "error";
+
+export type BackendUpdateState =
+  | "idle"
+  | "checking"
+  | "up_to_date"
+  | "available"
+  | "queued"
+  | "updating"
+  | "restarting"
+  | "verifying"
+  | "completed"
+  | "failed"
+  | "unsupported";
+
+export type BackendUpdateStatus = {
+  schemaVersion: number;
+  state: BackendUpdateState;
+  supported: boolean;
+  canUpdate: boolean;
+  currentVersion: string;
+  targetVersion: string | null;
+  candidateId: string | null;
+  jobId: string | null;
+  checkedAt: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  message: string;
+  blockedReason: string | null;
+  error: string | null;
+};
+
+export type BackendUpdateStartPayload = {
+  candidateId: string;
+  requestId: string;
+};
+
+export type BackendUpdateStartResponse = {
+  accepted: true;
+  jobId: string;
+  fromVersion: string;
+  targetVersion: string | null;
+  disconnectExpected: true;
+};
+
+export type SmtpSecurity = "none" | "starttls" | "ssl";
+
+export type RegistrationSettings = {
+  registration: {
+    emailRequired: true;
+    emailVerificationRequired: boolean;
+    identityBadgeRequired: boolean;
+    identityBadgeConfigured: boolean;
+  };
+  smtp: {
+    host: string;
+    port: number;
+    security: SmtpSecurity;
+    username: string;
+    fromAddress: string;
+    fromName: string;
+    passwordConfigured: boolean;
+    configured: boolean;
+  };
+  github: {
+    enabled: boolean;
+    clientId: string;
+    configured: boolean;
+  };
+};
+
+export type SecretUpdateAction = "keep" | "replace" | "clear";
+
+export type RegistrationSettingsUpdate = {
+  emailVerificationRequired: boolean;
+  identityBadgeRequired: boolean;
+  smtp: {
+    host: string;
+    port: number;
+    security: SmtpSecurity;
+    username: string;
+    fromAddress: string;
+    fromName: string;
+  };
+  github: {
+    enabled: boolean;
+    clientId: string;
+  };
+  smtpPassword?: string;
+  smtpPasswordAction: SecretUpdateAction;
+  identityBadge?: string;
+  identityBadgeAction: SecretUpdateAction;
+};
 
 export type TranslationModelCheck = {
   enabled: boolean;

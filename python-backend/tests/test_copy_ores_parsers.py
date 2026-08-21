@@ -159,11 +159,7 @@ async def test_copymanga_uses_returned_images_even_when_upstream_marks_vip() -> 
                     "is_lock": True,
                     "is_login": True,
                     "is_vip": True,
-                    "chapter": {
-                        "contents": [
-                            {"url": "https://sg.mangafunb.fun/t/test-comic/vip-001.jpg"}
-                        ]
-                    },
+                    "chapter": {"contents": [{"url": "https://sg.mangafunb.fun/t/test-comic/vip-001.jpg"}]},
                 },
             },
             request=request,
@@ -213,15 +209,12 @@ def _comicores_post() -> dict:
         "title": {"rendered": "[作者甲] 测试作品"},
         "content": {
             "rendered": (
-                "<p>公开作品简介</p>"
-                "<div class='su-members'>您需要登录来查看全部内容。受保护下载信息</div>"
+                "<p>公开作品简介</p><div class='su-members'>您需要登录来查看全部内容。受保护下载信息</div>"
             )
         },
         "_embedded": {
             "wp:featuredmedia": [{"source_url": "https://img.comicores.cc/cover.png"}],
-            "wp:term": [
-                [{"name": "作者甲", "link": "https://www.comicores.cc/category/mangaka/a"}]
-            ],
+            "wp:term": [[{"name": "作者甲", "link": "https://www.comicores.cc/category/mangaka/a"}]],
         },
     }
 

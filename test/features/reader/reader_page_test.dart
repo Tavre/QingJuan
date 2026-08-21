@@ -12,6 +12,7 @@ import 'package:qingjuan/app/app_theme.dart';
 import 'package:qingjuan/core/api/api_client.dart';
 import 'package:qingjuan/core/backend/backend_connection_manager.dart';
 import 'package:qingjuan/core/models/book.dart';
+import 'package:qingjuan/features/auth/auth_controller.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
 import 'package:qingjuan/features/reader/reader_page.dart';
 import 'package:qingjuan/features/settings/settings_controller.dart';
@@ -150,6 +151,113 @@ void main() {
     expect(controller.page, closeTo(1, 0.01));
   });
 
+  testWidgets('rapid volume presses queue every paged navigation',
+      (tester) async {
+    final harness = await _Harness.create(
+      MockClient((request) async {
+        if (request.method == 'PUT') return http.Response('{}', 200);
+        return http.Response(
+          jsonEncode(_longChapterPayloadFor(1)),
+          200,
+          headers: const <String, String>{
+            'content-type': 'application/json; charset=utf-8',
+          },
+        );
+      }),
+      volumeKeyReadingEnabled: true,
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+
+    final pageView = tester.widget<PageView>(find.byType(PageView));
+    final controller = pageView.controller!;
+
+    await _sendReaderVolumeKey('down');
+    await _sendReaderVolumeKey('down');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 180));
+    await tester.pump(const Duration(milliseconds: 180));
+
+    expect(controller.page, closeTo(2, 0.01));
+  });
+
+  testWidgets(
+      'rapid volume presses wait for pagination after crossing a chapter',
+      (tester) async {
+    final harness = await _Harness.create(
+      MockClient((request) async {
+        if (request.method == 'PUT') return http.Response('{}', 200);
+        final chapterIndex = int.parse(request.url.pathSegments.last);
+        final payload = chapterIndex == 2
+            ? _longChapterPayloadFor(chapterIndex)
+            : _chapterPayloadFor(chapterIndex);
+        return http.Response(
+          jsonEncode(payload),
+          200,
+          headers: const <String, String>{
+            'content-type': 'application/json; charset=utf-8',
+          },
+        );
+      }),
+      detail: _threeChapterDetail,
+      volumeKeyReadingEnabled: true,
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+
+    await _sendReaderVolumeKey('down');
+    await _sendReaderVolumeKey('down');
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 180));
+    await tester.pump(const Duration(milliseconds: 180));
+
+    expect(find.text('第 2 / 3 章'), findsOneWidget);
+    final pageView = tester.widget<PageView>(find.byType(PageView));
+    expect(pageView.controller!.page, closeTo(1, 0.01));
+  });
+
+  testWidgets('opening the directory discards queued volume navigation',
+      (tester) async {
+    final harness = await _Harness.create(
+      MockClient((request) async {
+        if (request.method == 'PUT') return http.Response('{}', 200);
+        return http.Response(
+          jsonEncode(_longChapterPayloadFor(1)),
+          200,
+          headers: const <String, String>{
+            'content-type': 'application/json; charset=utf-8',
+          },
+        );
+      }),
+      volumeKeyReadingEnabled: true,
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+
+    final pageView = tester.widget<PageView>(find.byType(PageView));
+    final controller = pageView.controller!;
+    await _sendReaderVolumeKey('down');
+    await _sendReaderVolumeKey('down');
+    await tester.tap(
+      find.byKey(const ValueKey('reader-directory-button')).hitTestable(),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 320));
+
+    expect(find.byKey(const ValueKey('reader-chapter-dialog')), findsOneWidget);
+    expect(controller.page, closeTo(1, 0.01));
+  });
+
   testWidgets('volume keys move up and down in continuous reading mode',
       (tester) async {
     final harness = await _Harness.create(
@@ -192,6 +300,43 @@ void main() {
     await tester.pump(const Duration(milliseconds: 240));
 
     expect(controller.offset, lessThan(afterDown));
+  });
+
+  testWidgets('rapid volume presses queue continuous page scrolling',
+      (tester) async {
+    final harness = await _Harness.create(
+      MockClient((request) async {
+        if (request.method == 'PUT') return http.Response('{}', 200);
+        return http.Response(
+          jsonEncode(_longChapterPayloadFor(1)),
+          200,
+          headers: const <String, String>{
+            'content-type': 'application/json; charset=utf-8',
+          },
+        );
+      }),
+      flowMode: ReaderFlowMode.continuous,
+      volumeKeyReadingEnabled: true,
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+
+    final list = tester.widget<ListView>(
+      find.byKey(const ValueKey('reader-continuous-translated')),
+    );
+    final controller = list.controller!;
+    final viewport = controller.position.viewportDimension;
+
+    await _sendReaderVolumeKey('down');
+    await _sendReaderVolumeKey('down');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 180));
+    await tester.pump(const Duration(milliseconds: 180));
+
+    expect(controller.offset, greaterThan(viewport * 1.5));
   });
 
   testWidgets(
@@ -875,6 +1020,7 @@ class _Harness {
           appState: appState,
           api: api,
           backend: backend,
+          auth: AuthController.localAdministrator(api),
           library: library,
           sources: sources,
           tasks: tasks,

@@ -22,13 +22,16 @@ class LibraryController extends ChangeNotifier {
   Timer? _linkJobPoller;
   bool _linkJobLoadInProgress = false;
   bool _disposed = false;
+  int _contextGeneration = 0;
   double? importProgress;
 
   bool get hasActiveLinkJob => linkJob?.isActive ?? false;
 
   void resetForBackendSwitch() {
+    _contextGeneration += 1;
     _linkJobPoller?.cancel();
     _linkJobPoller = null;
+    _linkJobLoadInProgress = false;
     books = const [];
     query = '';
     error = null;
@@ -52,19 +55,23 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> load({bool silent = false}) async {
+    final generation = _contextGeneration;
     if (!silent) {
       state = LoadState.loading;
       error = null;
       notifyListeners();
     }
     try {
-      books = await api.fetchBooks();
+      final loadedBooks = await api.fetchBooks();
+      if (_disposed || generation != _contextGeneration) return;
+      books = loadedBooks;
       state = books.isEmpty ? LoadState.empty : LoadState.ready;
     } catch (exception) {
+      if (_disposed || generation != _contextGeneration) return;
       error = '$exception';
       state = LoadState.error;
     }
-    notifyListeners();
+    if (!_disposed && generation == _contextGeneration) notifyListeners();
   }
 
   void setQuery(String value) {
@@ -77,10 +84,12 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> startLinkJob(String mode, JsonMap payload) async {
     if (hasActiveLinkJob) return;
+    final generation = _contextGeneration;
     linkJobConnectionError = null;
     linkJobPayload = Map<String, dynamic>.from(payload);
-    linkJob = await api.startLinkJob(mode, payload);
-    if (_disposed) return;
+    final startedJob = await api.startLinkJob(mode, payload);
+    if (_disposed || generation != _contextGeneration) return;
+    linkJob = startedJob;
     notifyListeners();
     _updateLinkJobPolling();
     await refreshLinkJob();
@@ -90,9 +99,10 @@ class LibraryController extends ChangeNotifier {
     final current = linkJob;
     if (current == null || _linkJobLoadInProgress || _disposed) return;
     _linkJobLoadInProgress = true;
+    final generation = _contextGeneration;
     try {
       final next = await api.fetchLinkJob(current.id);
-      if (_disposed) return;
+      if (_disposed || generation != _contextGeneration) return;
       linkJob = next;
       linkJobConnectionError = null;
       _updateLinkJobPolling();
@@ -102,11 +112,13 @@ class LibraryController extends ChangeNotifier {
         notifyListeners();
       }
     } catch (exception) {
-      if (_disposed) return;
+      if (_disposed || generation != _contextGeneration) return;
       linkJobConnectionError = '$exception';
       notifyListeners();
     } finally {
-      _linkJobLoadInProgress = false;
+      if (generation == _contextGeneration) {
+        _linkJobLoadInProgress = false;
+      }
     }
   }
 
@@ -133,7 +145,9 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<Book> import(JsonMap payload) async {
+    final generation = _contextGeneration;
     final book = await api.importBook(payload);
+    if (_disposed || generation != _contextGeneration) return book;
     await load(silent: true);
     return book;
   }
@@ -187,6 +201,7 @@ class LibraryController extends ChangeNotifier {
     required bool translate,
     String? title,
   }) async {
+    final generation = _contextGeneration;
     importProgress = 0;
     notifyListeners();
     try {
@@ -197,21 +212,31 @@ class LibraryController extends ChangeNotifier {
         translate: translate,
         title: title,
         onProgress: (sentBytes, totalBytes) {
-          if (_disposed || totalBytes <= 0) return;
+          if (_disposed ||
+              generation != _contextGeneration ||
+              totalBytes <= 0) {
+            return;
+          }
           importProgress = sentBytes / totalBytes;
           notifyListeners();
         },
       );
-      await load(silent: true);
+      if (!_disposed && generation == _contextGeneration) {
+        await load(silent: true);
+      }
       return book;
     } finally {
-      importProgress = null;
-      if (!_disposed) notifyListeners();
+      if (!_disposed && generation == _contextGeneration) {
+        importProgress = null;
+        notifyListeners();
+      }
     }
   }
 
   Future<void> delete(String bookId) async {
+    final generation = _contextGeneration;
     await api.deleteBook(bookId);
+    if (_disposed || generation != _contextGeneration) return;
     books = books.where((book) => book.id != bookId).toList();
     state = books.isEmpty ? LoadState.empty : LoadState.ready;
     notifyListeners();

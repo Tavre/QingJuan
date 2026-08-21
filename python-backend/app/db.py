@@ -8,10 +8,13 @@ import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from .admin_auth import configured_admin_password_hash
 from .models import (
+    AdminUserRecord,
     BookRecord,
     BookSourceRecord,
     ComicSourceConfig,
@@ -23,12 +26,33 @@ from .models import (
     TaskLogRecord,
     TaskRecord,
     TranslationSettings,
+    UserRecord,
 )
+from .multi_user import DEFAULT_ADMIN_USER_ID
 from .site_plugins import get_site_plugin, list_site_plugins
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LEGACY_DATA_DIR = BASE_DIR / "data"
 APP_DIR_NAME = "QingJuan"
+
+
+@dataclass(frozen=True, slots=True)
+class UserSecurityState:
+    user: UserRecord
+    password_hash: str
+    github_user_id: str | None
+    github_login: str | None
+    totp_secret_encrypted: str | None
+    totp_last_counter: int | None
+    auth_epoch: int
+
+
+class AuthenticationStateConflict(RuntimeError):
+    pass
+
+
+class GitHubConfigurationConflict(RuntimeError):
+    pass
 
 
 def _resolve_platform_data_dirs() -> list[Path]:
@@ -340,7 +364,107 @@ def init_db() -> None:
     with get_connection() as conn:
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                username_key TEXT NOT NULL UNIQUE,
+                email TEXT,
+                email_key TEXT,
+                github_user_id TEXT,
+                github_login TEXT,
+                totp_secret_encrypted TEXT,
+                totp_last_counter INTEGER,
+                auth_epoch INTEGER NOT NULL DEFAULT 0,
+                display_name TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
+                status TEXT NOT NULL CHECK (status IN ('active', 'disabled')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_login_at TEXT
+            )
+            """
+        )
+        _ensure_user_role_column(conn)
+        _ensure_user_email_columns(conn)
+        _ensure_user_security_columns(conn)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                auth_epoch INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+            )
+            """
+        )
+        _ensure_user_session_columns(conn)
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_user_sessions_user_expiry
+            ON user_sessions (user_id, expires_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS registration_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                email_verification_required INTEGER NOT NULL DEFAULT 0,
+                identity_badge_required INTEGER NOT NULL DEFAULT 0,
+                smtp_host TEXT NOT NULL DEFAULT '',
+                smtp_port INTEGER NOT NULL DEFAULT 587,
+                smtp_security TEXT NOT NULL DEFAULT 'starttls',
+                smtp_username TEXT NOT NULL DEFAULT '',
+                smtp_password TEXT NOT NULL DEFAULT '',
+                smtp_from_address TEXT NOT NULL DEFAULT '',
+                smtp_from_name TEXT NOT NULL DEFAULT '青卷',
+                identity_badge_hash TEXT NOT NULL DEFAULT '',
+                github_enabled INTEGER NOT NULL DEFAULT 0,
+                github_client_id TEXT NOT NULL DEFAULT '',
+                github_config_revision INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        _ensure_registration_settings_columns(conn)
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO registration_settings (id, updated_at)
+            VALUES (1, ?)
+            """,
+            (_datetime_text(datetime.now(UTC)),),
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_verification_codes (
+                email_key TEXT PRIMARY KEY,
+                code_hash TEXT NOT NULL,
+                code_salt TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                attempts_remaining INTEGER NOT NULL,
+                last_sent_at TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_recovery_codes (
+                user_id TEXT NOT NULL,
+                code_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, code_hash),
+                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+            )
+            """
+        )
+        _seed_default_admin_user(conn)
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS books (
+                owner_id TEXT NOT NULL DEFAULT 'user-admin',
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 source_url TEXT NOT NULL,
@@ -366,6 +490,7 @@ def init_db() -> None:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS reading_progress (
+                owner_id TEXT NOT NULL DEFAULT 'user-admin',
                 book_id TEXT PRIMARY KEY,
                 last_chapter_index INTEGER NOT NULL,
                 last_scroll_ratio REAL NOT NULL DEFAULT 0,
@@ -380,6 +505,7 @@ def init_db() -> None:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS tasks (
+                owner_id TEXT NOT NULL DEFAULT 'user-admin',
                 id TEXT PRIMARY KEY,
                 book_id TEXT NOT NULL,
                 task_type TEXT NOT NULL,
@@ -394,6 +520,25 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
+            """
+        )
+        _ensure_owner_columns(conn)
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_books_owner_updated
+            ON books (owner_id, updated_at DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_tasks_owner_updated
+            ON tasks (owner_id, updated_at DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_reading_progress_owner_book
+            ON reading_progress (owner_id, book_id)
             """
         )
         conn.execute(
@@ -490,6 +635,776 @@ def _ensure_reading_progress_columns(conn: sqlite3.Connection) -> None:
     for column_name, statement in required_columns.items():
         if column_name not in existing_columns:
             conn.execute(statement)
+
+
+def _ensure_user_role_column(conn: sqlite3.Connection) -> None:
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "role" not in existing_columns:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user'))"
+        )
+    conn.execute("UPDATE users SET role = 'user' WHERE role NOT IN ('admin', 'user') OR role IS NULL")
+    conn.execute(
+        "UPDATE users SET role = 'admin' WHERE id = ?",
+        (DEFAULT_ADMIN_USER_ID,),
+    )
+
+
+def _ensure_user_email_columns(conn: sqlite3.Connection) -> None:
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "email" not in existing_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
+    if "email_key" not in existing_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN email_key TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_key ON users (email_key) "
+        "WHERE email_key IS NOT NULL"
+    )
+
+
+def _ensure_user_security_columns(conn: sqlite3.Connection) -> None:
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    required_columns = {
+        "github_user_id": "ALTER TABLE users ADD COLUMN github_user_id TEXT",
+        "github_login": "ALTER TABLE users ADD COLUMN github_login TEXT",
+        "totp_secret_encrypted": "ALTER TABLE users ADD COLUMN totp_secret_encrypted TEXT",
+        "totp_last_counter": "ALTER TABLE users ADD COLUMN totp_last_counter INTEGER",
+        "auth_epoch": "ALTER TABLE users ADD COLUMN auth_epoch INTEGER NOT NULL DEFAULT 0",
+    }
+    for column_name, statement in required_columns.items():
+        if column_name not in existing_columns:
+            conn.execute(statement)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_github_user_id "
+        "ON users (github_user_id) WHERE github_user_id IS NOT NULL"
+    )
+
+
+def _ensure_user_session_columns(conn: sqlite3.Connection) -> None:
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(user_sessions)").fetchall()}
+    if "auth_epoch" not in existing_columns:
+        conn.execute("ALTER TABLE user_sessions ADD COLUMN auth_epoch INTEGER NOT NULL DEFAULT 0")
+
+
+def _ensure_registration_settings_columns(conn: sqlite3.Connection) -> None:
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(registration_settings)").fetchall()}
+    if "github_enabled" not in existing_columns:
+        conn.execute("ALTER TABLE registration_settings ADD COLUMN github_enabled INTEGER NOT NULL DEFAULT 0")
+    if "github_client_id" not in existing_columns:
+        conn.execute("ALTER TABLE registration_settings ADD COLUMN github_client_id TEXT NOT NULL DEFAULT ''")
+    if "github_config_revision" not in existing_columns:
+        conn.execute(
+            "ALTER TABLE registration_settings ADD COLUMN github_config_revision INTEGER NOT NULL DEFAULT 0"
+        )
+
+
+def _ensure_owner_columns(conn: sqlite3.Connection) -> None:
+    for table_name in ("books", "reading_progress", "tasks"):
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+        if "owner_id" not in columns:
+            conn.execute(
+                f"ALTER TABLE {table_name} "
+                f"ADD COLUMN owner_id TEXT NOT NULL DEFAULT '{DEFAULT_ADMIN_USER_ID}'"
+            )
+
+
+def _seed_default_admin_user(conn: sqlite3.Connection) -> None:
+    timestamp = _datetime_text(datetime.now(UTC))
+    configured_hash = configured_admin_password_hash()
+    existing = conn.execute(
+        "SELECT password_hash, auth_epoch FROM users WHERE id = ?",
+        (DEFAULT_ADMIN_USER_ID,),
+    ).fetchone()
+    password_hash = configured_hash or "!local-desktop-only"
+    conn.execute(
+        """
+        INSERT INTO users (
+            id, username, username_key, email, email_key, display_name, password_hash,
+            role, status, created_at, updated_at, last_login_at
+        )
+        VALUES (?, 'admin', 'admin', NULL, NULL, '管理员', ?, 'admin', 'active', ?, ?, NULL)
+        ON CONFLICT(id) DO UPDATE SET
+            username = 'admin',
+            username_key = 'admin',
+            display_name = CASE
+                WHEN users.display_name = '' THEN '管理员'
+                ELSE users.display_name
+            END,
+            password_hash = CASE
+                WHEN excluded.password_hash = '!local-desktop-only' THEN users.password_hash
+                ELSE excluded.password_hash
+            END,
+            role = 'admin',
+            status = 'active',
+            updated_at = excluded.updated_at
+        """,
+        (DEFAULT_ADMIN_USER_ID, password_hash, timestamp, timestamp),
+    )
+    if configured_hash is not None and existing is not None and existing[0] != configured_hash:
+        conn.execute(
+            "UPDATE users SET auth_epoch = auth_epoch + 1 WHERE id = ?",
+            (DEFAULT_ADMIN_USER_ID,),
+        )
+        conn.execute(
+            "DELETE FROM user_sessions WHERE user_id = ?",
+            (DEFAULT_ADMIN_USER_ID,),
+        )
+
+
+def list_users() -> list[AdminUserRecord]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT u.id, u.username, u.display_name, u.role, u.status,
+                   u.created_at, u.last_login_at, COUNT(b.id), u.email,
+                   u.github_login, (u.totp_secret_encrypted IS NOT NULL)
+            FROM users u
+            LEFT JOIN books b ON b.owner_id = u.id
+            GROUP BY u.id
+            ORDER BY CASE WHEN u.role = 'admin' THEN 0 ELSE 1 END,
+                     lower(u.username), u.created_at
+            """
+        ).fetchall()
+    return [_row_to_user(row) for row in rows]
+
+
+def get_user(user_id: str) -> AdminUserRecord | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT u.id, u.username, u.display_name, u.role, u.status,
+                   u.created_at, u.last_login_at, COUNT(b.id), u.email,
+                   u.github_login, (u.totp_secret_encrypted IS NOT NULL)
+            FROM users u
+            LEFT JOIN books b ON b.owner_id = u.id
+            WHERE u.id = ?
+            GROUP BY u.id
+            """,
+            (user_id,),
+        ).fetchone()
+    return _row_to_user(row) if row is not None else None
+
+
+def get_user_credentials_by_username(username_key: str) -> tuple[UserRecord, str] | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT id, username, display_name, role, status, created_at,
+                   last_login_at, password_hash, email
+            FROM users
+            WHERE username_key = ?
+            """,
+            (username_key,),
+        ).fetchone()
+    if row is None:
+        return None
+    user = UserRecord(
+        id=row[0],
+        username=row[1],
+        email=row[8],
+        displayName=row[2],
+        role=row[3],
+        status=row[4],
+        createdAt=row[5],
+        lastLoginAt=row[6],
+    )
+    return user, str(row[7])
+
+
+def get_user_authentication_state_by_username(username_key: str) -> UserSecurityState | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT id, username, email, display_name, role, status, created_at,
+                   last_login_at, password_hash, github_user_id, github_login,
+                   totp_secret_encrypted, totp_last_counter, auth_epoch
+            FROM users
+            WHERE username_key = ?
+            """,
+            (username_key,),
+        ).fetchone()
+    return _row_to_user_security_state(row) if row is not None else None
+
+
+def get_user_security_state(user_id: str) -> UserSecurityState | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT id, username, email, display_name, role, status, created_at,
+                   last_login_at, password_hash, github_user_id, github_login,
+                   totp_secret_encrypted, totp_last_counter, auth_epoch
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+    return _row_to_user_security_state(row) if row is not None else None
+
+
+def _row_to_user_security_state(row: sqlite3.Row | tuple) -> UserSecurityState:
+    return UserSecurityState(
+        user=UserRecord(
+            id=row[0],
+            username=row[1],
+            email=row[2],
+            displayName=row[3],
+            role=row[4],
+            status=row[5],
+            createdAt=row[6],
+            lastLoginAt=row[7],
+        ),
+        password_hash=str(row[8]),
+        github_user_id=str(row[9]) if row[9] is not None else None,
+        github_login=str(row[10]) if row[10] is not None else None,
+        totp_secret_encrypted=str(row[11]) if row[11] is not None else None,
+        totp_last_counter=int(row[12]) if row[12] is not None else None,
+        auth_epoch=int(row[13]),
+    )
+
+
+def get_user_by_github_id(github_user_id: str) -> UserRecord | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM users WHERE github_user_id = ?",
+            (github_user_id,),
+        ).fetchone()
+    return get_user(str(row[0])) if row is not None else None
+
+
+def refresh_github_login(github_user_id: str, github_login: str) -> UserRecord | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, github_login FROM users WHERE github_user_id = ?",
+            (github_user_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        user_id = str(row[0])
+        if str(row[1] or "") != github_login:
+            conn.execute(
+                "UPDATE users SET github_login = ?, updated_at = ? WHERE id = ? AND github_user_id = ?",
+                (github_login, _datetime_text(datetime.now(UTC)), user_id, github_user_id),
+            )
+    return get_user(user_id)
+
+
+def bind_github_identity(
+    user_id: str,
+    github_user_id: str,
+    github_login: str,
+    *,
+    expected_auth_epoch: int | None = None,
+    expected_config_revision: int | None = None,
+    expected_client_id: str | None = None,
+    keep_session_hash: str | None = None,
+) -> UserRecord | None:
+    timestamp = _datetime_text(datetime.now(UTC))
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _require_github_configuration(
+            conn,
+            expected_revision=expected_config_revision,
+            expected_client_id=expected_client_id,
+        )
+        current_epoch = _current_auth_epoch(conn, user_id)
+        if current_epoch is None:
+            return None
+        if expected_auth_epoch is not None and current_epoch != expected_auth_epoch:
+            raise AuthenticationStateConflict("用户认证状态已变更")
+        cursor = conn.execute(
+            """
+            UPDATE users
+            SET github_user_id = ?, github_login = ?, auth_epoch = auth_epoch + 1,
+                updated_at = ?
+            WHERE id = ? AND github_user_id IS NULL AND auth_epoch = ?
+            """,
+            (github_user_id, github_login, timestamp, user_id, current_epoch),
+        )
+        if cursor.rowcount == 1:
+            _synchronize_sessions_after_auth_change(
+                conn,
+                user_id,
+                current_epoch + 1,
+                keep_session_hash,
+            )
+    return get_user(user_id) if cursor.rowcount == 1 else None
+
+
+def unbind_github_identity(
+    user_id: str,
+    *,
+    expected_auth_epoch: int | None = None,
+    keep_session_hash: str | None = None,
+) -> bool:
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        current_epoch = _current_auth_epoch(conn, user_id)
+        if current_epoch is None:
+            return False
+        if expected_auth_epoch is not None and current_epoch != expected_auth_epoch:
+            raise AuthenticationStateConflict("用户认证状态已变更")
+        cursor = conn.execute(
+            """
+            UPDATE users
+            SET github_user_id = NULL, github_login = NULL,
+                auth_epoch = auth_epoch + 1, updated_at = ?
+            WHERE id = ? AND github_user_id IS NOT NULL AND auth_epoch = ?
+            """,
+            (_datetime_text(datetime.now(UTC)), user_id, current_epoch),
+        )
+        if cursor.rowcount == 1:
+            _synchronize_sessions_after_auth_change(
+                conn,
+                user_id,
+                current_epoch + 1,
+                keep_session_hash,
+            )
+    return cursor.rowcount == 1
+
+
+def enable_user_two_factor(
+    user_id: str,
+    *,
+    encrypted_secret: str,
+    accepted_counter: int,
+    recovery_code_hashes: list[str],
+    keep_session_hash: str | None,
+    expected_auth_epoch: int | None = None,
+) -> bool:
+    timestamp = _datetime_text(datetime.now(UTC))
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        current_epoch = _current_auth_epoch(conn, user_id)
+        if current_epoch is None:
+            return False
+        if expected_auth_epoch is not None and current_epoch != expected_auth_epoch:
+            raise AuthenticationStateConflict("用户认证状态已变更")
+        cursor = conn.execute(
+            """
+            UPDATE users
+            SET totp_secret_encrypted = ?, totp_last_counter = ?,
+                auth_epoch = auth_epoch + 1, updated_at = ?
+            WHERE id = ? AND totp_secret_encrypted IS NULL AND auth_epoch = ?
+            """,
+            (encrypted_secret, accepted_counter, timestamp, user_id, current_epoch),
+        )
+        if cursor.rowcount != 1:
+            return False
+        conn.execute("DELETE FROM user_recovery_codes WHERE user_id = ?", (user_id,))
+        conn.executemany(
+            """
+            INSERT INTO user_recovery_codes (user_id, code_hash, created_at)
+            VALUES (?, ?, ?)
+            """,
+            [(user_id, code_hash, timestamp) for code_hash in recovery_code_hashes],
+        )
+        _synchronize_sessions_after_auth_change(
+            conn,
+            user_id,
+            current_epoch + 1,
+            keep_session_hash,
+        )
+    return True
+
+
+def disable_user_two_factor(
+    user_id: str,
+    *,
+    keep_session_hash: str | None,
+    expected_auth_epoch: int | None = None,
+) -> bool:
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        current_epoch = _current_auth_epoch(conn, user_id)
+        if current_epoch is None:
+            return False
+        if expected_auth_epoch is not None and current_epoch != expected_auth_epoch:
+            raise AuthenticationStateConflict("用户认证状态已变更")
+        cursor = conn.execute(
+            """
+            UPDATE users
+            SET totp_secret_encrypted = NULL, totp_last_counter = NULL,
+                auth_epoch = auth_epoch + 1, updated_at = ?
+            WHERE id = ? AND totp_secret_encrypted IS NOT NULL AND auth_epoch = ?
+            """,
+            (_datetime_text(datetime.now(UTC)), user_id, current_epoch),
+        )
+        if cursor.rowcount == 1:
+            conn.execute("DELETE FROM user_recovery_codes WHERE user_id = ?", (user_id,))
+            _synchronize_sessions_after_auth_change(
+                conn,
+                user_id,
+                current_epoch + 1,
+                keep_session_hash,
+            )
+    return cursor.rowcount == 1
+
+
+def _synchronize_sessions_after_auth_change(
+    conn: sqlite3.Connection,
+    user_id: str,
+    auth_epoch: int,
+    keep_session_hash: str | None,
+) -> None:
+    if keep_session_hash is None:
+        conn.execute("DELETE FROM user_sessions WHERE user_id = ?", (user_id,))
+        return
+    conn.execute(
+        "UPDATE user_sessions SET auth_epoch = ? WHERE user_id = ? AND token_hash = ?",
+        (auth_epoch, user_id, keep_session_hash),
+    )
+    conn.execute(
+        "DELETE FROM user_sessions WHERE user_id = ? AND token_hash != ?",
+        (user_id, keep_session_hash),
+    )
+
+
+def _current_auth_epoch(conn: sqlite3.Connection, user_id: str) -> int | None:
+    row = conn.execute("SELECT auth_epoch FROM users WHERE id = ?", (user_id,)).fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def _require_github_configuration(
+    conn: sqlite3.Connection,
+    *,
+    expected_revision: int | None,
+    expected_client_id: str | None,
+) -> None:
+    if expected_revision is None and expected_client_id is None:
+        return
+    row = conn.execute(
+        """
+        SELECT github_enabled, github_client_id, github_config_revision
+        FROM registration_settings WHERE id = 1
+        """
+    ).fetchone()
+    if (
+        row is None
+        or not bool(row[0])
+        or str(row[1] or "") != expected_client_id
+        or int(row[2] or 0) != expected_revision
+    ):
+        raise GitHubConfigurationConflict("GitHub 登录配置已变更")
+
+
+def accept_user_totp_counter(user_id: str, counter: int) -> bool:
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE users
+            SET totp_last_counter = ?, updated_at = ?
+            WHERE id = ? AND totp_secret_encrypted IS NOT NULL
+              AND (totp_last_counter IS NULL OR totp_last_counter < ?)
+            """,
+            (counter, _datetime_text(datetime.now(UTC)), user_id, counter),
+        )
+    return cursor.rowcount == 1
+
+
+def replace_user_recovery_codes(
+    user_id: str,
+    recovery_code_hashes: list[str],
+    *,
+    expected_auth_epoch: int | None = None,
+    keep_session_hash: str | None = None,
+) -> bool:
+    timestamp = _datetime_text(datetime.now(UTC))
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        enabled = conn.execute(
+            "SELECT auth_epoch FROM users WHERE id = ? AND totp_secret_encrypted IS NOT NULL",
+            (user_id,),
+        ).fetchone()
+        if enabled is None:
+            return False
+        current_epoch = int(enabled[0])
+        if expected_auth_epoch is not None and current_epoch != expected_auth_epoch:
+            raise AuthenticationStateConflict("用户认证状态已变更")
+        conn.execute("DELETE FROM user_recovery_codes WHERE user_id = ?", (user_id,))
+        conn.executemany(
+            """
+            INSERT INTO user_recovery_codes (user_id, code_hash, created_at)
+            VALUES (?, ?, ?)
+            """,
+            [(user_id, code_hash, timestamp) for code_hash in recovery_code_hashes],
+        )
+        cursor = conn.execute(
+            "UPDATE users SET auth_epoch = auth_epoch + 1, updated_at = ? "
+            "WHERE id = ? AND auth_epoch = ? AND totp_secret_encrypted IS NOT NULL",
+            (timestamp, user_id, current_epoch),
+        )
+        if cursor.rowcount != 1:
+            raise AuthenticationStateConflict("用户认证状态已变更")
+        _synchronize_sessions_after_auth_change(
+            conn,
+            user_id,
+            current_epoch + 1,
+            keep_session_hash,
+        )
+    return True
+
+
+def consume_user_recovery_code(user_id: str, code_hash: str) -> bool:
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "DELETE FROM user_recovery_codes WHERE user_id = ? AND code_hash = ?",
+            (user_id, code_hash),
+        )
+    return cursor.rowcount == 1
+
+
+def count_user_recovery_codes(user_id: str) -> int:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM user_recovery_codes WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def get_user_by_email_key(email_key: str) -> UserRecord | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT u.id, u.username, u.display_name, u.role, u.status,
+                   u.created_at, u.last_login_at,
+                   (SELECT COUNT(*) FROM books b WHERE b.owner_id = u.id), u.email,
+                   u.github_login, (u.totp_secret_encrypted IS NOT NULL)
+            FROM users u
+            WHERE u.email_key = ?
+            """,
+            (email_key,),
+        ).fetchone()
+    return _row_to_user(row) if row is not None else None
+
+
+def create_user(
+    *,
+    user_id: str,
+    username: str,
+    username_key: str,
+    email: str | None = None,
+    email_key: str | None = None,
+    display_name: str,
+    password_hash: str,
+    role: str = "user",
+) -> UserRecord:
+    timestamp = _datetime_text(datetime.now(UTC))
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO users (
+                id, username, username_key, email, email_key, display_name, password_hash,
+                role, status, created_at, updated_at, last_login_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL)
+            """,
+            (
+                user_id,
+                username,
+                username_key,
+                email,
+                email_key,
+                display_name,
+                password_hash,
+                role,
+                timestamp,
+                timestamp,
+            ),
+        )
+    created = get_user(user_id)
+    if created is None:
+        raise RuntimeError("用户创建失败")
+    return created
+
+
+def update_user_profile(
+    user_id: str,
+    *,
+    display_name: str | None = None,
+    role: str | None = None,
+    status: str | None = None,
+) -> UserRecord | None:
+    if role is not None and role not in {"admin", "user"}:
+        raise ValueError("用户角色无效")
+    if status is not None and status not in {"active", "disabled"}:
+        raise ValueError("用户状态无效")
+    assignments: list[str] = []
+    values: list[object] = []
+    for column, value in (
+        ("display_name", display_name),
+        ("role", role),
+        ("status", status),
+    ):
+        if value is not None:
+            assignments.append(f"{column} = ?")
+            values.append(value)
+    if not assignments:
+        return get_user(user_id)
+    assignments.append("updated_at = ?")
+    values.append(_datetime_text(datetime.now(UTC)))
+    values.append(user_id)
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT role, status FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if current is None:
+            return None
+        current_role = str(current[0])
+        current_status = str(current[1])
+        next_role = role if role is not None else current_role
+        next_status = status if status is not None else current_status
+        if user_id == DEFAULT_ADMIN_USER_ID:
+            if next_role != "admin":
+                raise ValueError("内置管理员不能降权")
+            if next_status != "active":
+                raise ValueError("内置管理员不能停用")
+        if (
+            role == "admin"
+            and current_role != "admin"
+            and (current_status != "active" or next_status != "active")
+        ):
+            raise ValueError("请先启用用户，再授予管理员角色")
+        removes_active_admin = (
+            current_role == "admin"
+            and current_status == "active"
+            and (next_role != "admin" or next_status != "active")
+        )
+        if removes_active_admin:
+            active_admin_count = conn.execute(
+                "SELECT COUNT(*) FROM users WHERE id != ? AND role = 'admin' AND status = 'active'",
+                (user_id,),
+            ).fetchone()[0]
+            if int(active_admin_count) == 0:
+                raise ValueError("必须保留至少一个已启用的管理员")
+        cursor = conn.execute(
+            f"UPDATE users SET {', '.join(assignments)} WHERE id = ?",
+            tuple(values),
+        )
+        if cursor.rowcount == 0:
+            return None
+        if next_status != current_status or next_role != current_role:
+            conn.execute(
+                "UPDATE users SET auth_epoch = auth_epoch + 1 WHERE id = ?",
+                (user_id,),
+            )
+            conn.execute("DELETE FROM user_sessions WHERE user_id = ?", (user_id,))
+    return get_user(user_id)
+
+
+def update_user_password(
+    user_id: str,
+    password_hash: str,
+    *,
+    revoke_sessions: bool = False,
+) -> bool:
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        cursor = conn.execute(
+            "UPDATE users SET password_hash = ?, auth_epoch = auth_epoch + 1, updated_at = ? WHERE id = ?",
+            (password_hash, _datetime_text(datetime.now(UTC)), user_id),
+        )
+        if cursor.rowcount > 0 and revoke_sessions:
+            conn.execute("DELETE FROM user_sessions WHERE user_id = ?", (user_id,))
+    return cursor.rowcount > 0
+
+
+def mark_user_login(user_id: str, login_at: str) -> UserRecord | None:
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?",
+            (login_at, login_at, user_id),
+        )
+        if cursor.rowcount == 0:
+            return None
+    return get_user(user_id)
+
+
+def create_user_session(
+    *,
+    token_hash: str,
+    user_id: str,
+    created_at: str,
+    expires_at: str,
+    expected_auth_epoch: int,
+    expected_two_factor_enabled: bool,
+    login_at: str | None = None,
+    github_config_revision: int | None = None,
+    github_client_id: str | None = None,
+) -> bool:
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _require_github_configuration(
+            conn,
+            expected_revision=github_config_revision,
+            expected_client_id=github_client_id,
+        )
+        conn.execute("DELETE FROM user_sessions WHERE expires_at <= ?", (created_at,))
+        cursor = conn.execute(
+            """
+            INSERT INTO user_sessions (
+                token_hash, user_id, created_at, expires_at, auth_epoch
+            )
+            SELECT ?, id, ?, ?, auth_epoch
+            FROM users
+            WHERE id = ? AND status = 'active' AND auth_epoch = ?
+              AND (totp_secret_encrypted IS NOT NULL) = ?
+            """,
+            (
+                token_hash,
+                created_at,
+                expires_at,
+                user_id,
+                expected_auth_epoch,
+                int(expected_two_factor_enabled),
+            ),
+        )
+        if cursor.rowcount != 1:
+            return False
+        if login_at is not None:
+            conn.execute(
+                "UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ? AND auth_epoch = ?",
+                (login_at, login_at, user_id, expected_auth_epoch),
+            )
+    return True
+
+
+def get_user_by_session_hash(token_hash: str, *, now: str) -> UserRecord | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT u.id, u.username, u.display_name, u.role, u.status,
+                   u.created_at, u.last_login_at,
+                   (SELECT COUNT(*) FROM books b WHERE b.owner_id = u.id), u.email,
+                   u.github_login, (u.totp_secret_encrypted IS NOT NULL)
+            FROM user_sessions s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.token_hash = ? AND s.expires_at > ?
+              AND s.auth_epoch = u.auth_epoch
+            """,
+            (token_hash, now),
+        ).fetchone()
+        if row is None:
+            conn.execute("DELETE FROM user_sessions WHERE token_hash = ?", (token_hash,))
+            return None
+    return _row_to_user(row)
+
+
+def delete_user_session(token_hash: str) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM user_sessions WHERE token_hash = ?", (token_hash,))
+
+
+def revoke_user_sessions(user_id: str) -> int:
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE users SET auth_epoch = auth_epoch + 1, updated_at = ? WHERE id = ?",
+            (_datetime_text(datetime.now(UTC)), user_id),
+        )
+        cursor = conn.execute("DELETE FROM user_sessions WHERE user_id = ?", (user_id,))
+    return max(0, int(cursor.rowcount))
 
 
 def _ensure_book_source_columns(conn: sqlite3.Connection) -> None:
@@ -604,34 +1519,42 @@ def set_device_banned(
     return next((device for device in list_devices() if device.id == device_id), None)
 
 
-def list_books() -> list[BookRecord]:
+def list_books(owner_id: str | None = None) -> list[BookRecord]:
+    where_clause = "WHERE b.owner_id = ?" if owner_id is not None else ""
+    params: tuple[str, ...] = (owner_id,) if owner_id is not None else ()
     with get_connection() as conn:
         rows = conn.execute(
-            """
-            SELECT b.id, b.title, b.source_url, b.book_kind, b.language, b.status,
+            f"""
+            SELECT b.owner_id, b.id, b.title, b.source_url, b.book_kind, b.language, b.status,
                    b.chapter_count, b.translated, b.local_path, b.updated_at, b.synopsis,
                    COALESCE(rp.last_chapter_index, 0), rp.last_read_at
             FROM books b
-            LEFT JOIN reading_progress rp ON rp.book_id = b.id
+            LEFT JOIN reading_progress rp
+              ON rp.book_id = b.id AND rp.owner_id = b.owner_id
+            {where_clause}
             ORDER BY b.updated_at DESC
-            """
+            """,
+            params,
         ).fetchall()
 
     return [_row_to_book(row) for row in rows]
 
 
-def get_book(book_id: str) -> BookRecord | None:
+def get_book(book_id: str, owner_id: str | None = None) -> BookRecord | None:
+    owner_clause = " AND b.owner_id = ?" if owner_id is not None else ""
+    params = (book_id, owner_id) if owner_id is not None else (book_id,)
     with get_connection() as conn:
         row = conn.execute(
-            """
-            SELECT b.id, b.title, b.source_url, b.book_kind, b.language, b.status,
+            f"""
+            SELECT b.owner_id, b.id, b.title, b.source_url, b.book_kind, b.language, b.status,
                    b.chapter_count, b.translated, b.local_path, b.updated_at, b.synopsis,
                    COALESCE(rp.last_chapter_index, 0), rp.last_read_at
             FROM books b
-            LEFT JOIN reading_progress rp ON rp.book_id = b.id
-            WHERE b.id = ?
+            LEFT JOIN reading_progress rp
+              ON rp.book_id = b.id AND rp.owner_id = b.owner_id
+            WHERE b.id = ?{owner_clause}
             """,
-            (book_id,),
+            params,
         ).fetchone()
 
     if row is None:
@@ -644,12 +1567,25 @@ def save_book(book: BookRecord) -> None:
     with get_connection() as conn:
         conn.execute(
             """
-            INSERT OR REPLACE INTO books (
-                id, title, source_url, book_kind, language, status,
+            INSERT INTO books (
+                owner_id, id, title, source_url, book_kind, language, status,
                 chapter_count, translated, local_path, updated_at, synopsis
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                owner_id = excluded.owner_id,
+                title = excluded.title,
+                source_url = excluded.source_url,
+                book_kind = excluded.book_kind,
+                language = excluded.language,
+                status = excluded.status,
+                chapter_count = excluded.chapter_count,
+                translated = excluded.translated,
+                local_path = excluded.local_path,
+                updated_at = excluded.updated_at,
+                synopsis = excluded.synopsis
             """,
             (
+                book.ownerId,
                 book.id,
                 book.title,
                 book.sourceUrl,
@@ -665,8 +1601,12 @@ def save_book(book: BookRecord) -> None:
         )
 
 
-def delete_book(book_id: str) -> None:
+def delete_book(book_id: str, owner_id: str | None = None) -> bool:
     with get_connection() as conn:
+        owner_clause = " AND owner_id = ?" if owner_id is not None else ""
+        params = (book_id, owner_id) if owner_id is not None else (book_id,)
+        if conn.execute(f"SELECT 1 FROM books WHERE id = ?{owner_clause}", params).fetchone() is None:
+            return False
         conn.execute(
             """
             DELETE FROM task_logs
@@ -677,6 +1617,7 @@ def delete_book(book_id: str) -> None:
         conn.execute("DELETE FROM tasks WHERE book_id = ?", (book_id,))
         conn.execute("DELETE FROM reading_progress WHERE book_id = ?", (book_id,))
         conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
+    return True
 
 
 def list_book_sources() -> list[BookSourceRecord]:
@@ -840,11 +1781,17 @@ def save_site_plugin_enabled(plugin_id: str, enabled: bool) -> None:
             _SITE_PLUGIN_STATE_CACHE = (DB_PATH, states)
 
 
-def load_reading_progress(book_id: str) -> ReadingProgressRecord:
+def load_reading_progress(
+    book_id: str,
+    owner_id: str | None = None,
+) -> ReadingProgressRecord:
+    owner_clause = " AND owner_id = ?" if owner_id is not None else ""
+    params = (book_id, owner_id) if owner_id is not None else (book_id,)
     with get_connection() as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT
+                owner_id,
                 book_id,
                 last_chapter_index,
                 last_scroll_ratio,
@@ -853,22 +1800,28 @@ def load_reading_progress(book_id: str) -> ReadingProgressRecord:
                 last_anchor_offset_ratio,
                 last_read_at
             FROM reading_progress
-            WHERE book_id = ?
+            WHERE book_id = ?{owner_clause}
             """,
-            (book_id,),
+            params,
         ).fetchone()
 
     if row is None:
-        return ReadingProgressRecord(bookId=book_id, lastChapterIndex=0, lastReadAt=None)
+        return ReadingProgressRecord(
+            ownerId=owner_id or DEFAULT_ADMIN_USER_ID,
+            bookId=book_id,
+            lastChapterIndex=0,
+            lastReadAt=None,
+        )
 
     return ReadingProgressRecord(
-        bookId=row[0],
-        lastChapterIndex=row[1],
-        lastScrollRatio=row[2],
-        lastAnchorType=row[3],
-        lastAnchorIndex=row[4],
-        lastAnchorOffsetRatio=row[5],
-        lastReadAt=row[6],
+        ownerId=row[0],
+        bookId=row[1],
+        lastChapterIndex=row[2],
+        lastScrollRatio=row[3],
+        lastAnchorType=row[4],
+        lastAnchorIndex=row[5],
+        lastAnchorOffsetRatio=row[6],
+        lastReadAt=row[7],
     )
 
 
@@ -877,6 +1830,7 @@ def save_reading_progress(progress: ReadingProgressRecord) -> ReadingProgressRec
         conn.execute(
             """
             INSERT INTO reading_progress (
+                owner_id,
                 book_id,
                 last_chapter_index,
                 last_scroll_ratio,
@@ -885,8 +1839,9 @@ def save_reading_progress(progress: ReadingProgressRecord) -> ReadingProgressRec
                 last_anchor_offset_ratio,
                 last_read_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(book_id) DO UPDATE SET
+                owner_id = excluded.owner_id,
                 last_chapter_index = excluded.last_chapter_index,
                 last_scroll_ratio = excluded.last_scroll_ratio,
                 last_anchor_type = excluded.last_anchor_type,
@@ -895,6 +1850,7 @@ def save_reading_progress(progress: ReadingProgressRecord) -> ReadingProgressRec
                 last_read_at = excluded.last_read_at
             """,
             (
+                progress.ownerId,
                 progress.bookId,
                 progress.lastChapterIndex,
                 progress.lastScrollRatio,
@@ -912,11 +1868,12 @@ def create_task(task: TaskRecord) -> TaskRecord:
         conn.execute(
             """
             INSERT INTO tasks (
-                id, book_id, task_type, chapter_indexes, status, total_count,
+                owner_id, id, book_id, task_type, chapter_indexes, status, total_count,
                 completed_count, progress, message, error, attempts, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                task.ownerId,
                 task.id,
                 task.bookId,
                 task.taskType,
@@ -935,16 +1892,18 @@ def create_task(task: TaskRecord) -> TaskRecord:
     return task
 
 
-def get_task(task_id: str) -> TaskRecord | None:
+def get_task(task_id: str, owner_id: str | None = None) -> TaskRecord | None:
+    owner_clause = " AND owner_id = ?" if owner_id is not None else ""
+    params = (task_id, owner_id) if owner_id is not None else (task_id,)
     with get_connection() as conn:
         row = conn.execute(
-            """
-            SELECT id, book_id, task_type, chapter_indexes, status, total_count,
+            f"""
+            SELECT owner_id, id, book_id, task_type, chapter_indexes, status, total_count,
                    completed_count, progress, message, error, attempts, created_at, updated_at
             FROM tasks
-            WHERE id = ?
+            WHERE id = ?{owner_clause}
             """,
-            (task_id,),
+            params,
         ).fetchone()
 
     if row is None:
@@ -952,20 +1911,29 @@ def get_task(task_id: str) -> TaskRecord | None:
     return _row_to_task(row)
 
 
-def list_tasks(book_id: str | None = None) -> list[TaskRecord]:
+def list_tasks(
+    book_id: str | None = None,
+    owner_id: str | None = None,
+) -> list[TaskRecord]:
     query = """
-        SELECT id, book_id, task_type, chapter_indexes, status, total_count,
+        SELECT owner_id, id, book_id, task_type, chapter_indexes, status, total_count,
                completed_count, progress, message, error, attempts, created_at, updated_at
         FROM tasks
     """
-    params: tuple[str, ...] = ()
+    conditions: list[str] = []
+    params_list: list[str] = []
     if book_id:
-        query += " WHERE book_id = ?"
-        params = (book_id,)
+        conditions.append("book_id = ?")
+        params_list.append(book_id)
+    if owner_id is not None:
+        conditions.append("owner_id = ?")
+        params_list.append(owner_id)
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY updated_at DESC, created_at DESC"
 
     with get_connection() as conn:
-        rows = conn.execute(query, params).fetchall()
+        rows = conn.execute(query, tuple(params_list)).fetchall()
 
     return [_row_to_task(row) for row in rows]
 
@@ -974,7 +1942,7 @@ def list_pending_tasks() -> list[TaskRecord]:
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT id, book_id, task_type, chapter_indexes, status, total_count,
+            SELECT owner_id, id, book_id, task_type, chapter_indexes, status, total_count,
                    completed_count, progress, message, error, attempts, created_at, updated_at
             FROM tasks
             WHERE status IN ('queued', 'running')
@@ -990,10 +1958,11 @@ def save_task(task: TaskRecord) -> TaskRecord:
         conn.execute(
             """
             INSERT INTO tasks (
-                id, book_id, task_type, chapter_indexes, status, total_count,
+                owner_id, id, book_id, task_type, chapter_indexes, status, total_count,
                 completed_count, progress, message, error, attempts, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
+                owner_id = excluded.owner_id,
                 book_id = excluded.book_id,
                 task_type = excluded.task_type,
                 chapter_indexes = excluded.chapter_indexes,
@@ -1008,6 +1977,7 @@ def save_task(task: TaskRecord) -> TaskRecord:
                 updated_at = excluded.updated_at
             """,
             (
+                task.ownerId,
                 task.id,
                 task.bookId,
                 task.taskType,
@@ -1121,19 +2091,37 @@ def _normalize_settings(settings: TranslationSettings) -> TranslationSettings:
 
 def _row_to_book(row: sqlite3.Row | tuple) -> BookRecord:
     return BookRecord(
+        ownerId=row[0],
+        id=row[1],
+        title=row[2],
+        sourceUrl=row[3],
+        bookKind=_normalize_book_kind(row[4]),
+        language=_normalize_language(row[5]),
+        status=_normalize_book_status(row[6]),
+        chapterCount=row[7],
+        translated=bool(row[8]),
+        localPath=row[9],
+        updatedAt=row[10],
+        synopsis=row[11],
+        lastReadChapterIndex=row[12] if len(row) > 12 else 0,
+        lastReadAt=row[13] if len(row) > 13 else None,
+    )
+
+
+def _row_to_user(row: sqlite3.Row | tuple) -> AdminUserRecord:
+    return AdminUserRecord(
         id=row[0],
-        title=row[1],
-        sourceUrl=row[2],
-        bookKind=_normalize_book_kind(row[3]),
-        language=_normalize_language(row[4]),
-        status=_normalize_book_status(row[5]),
-        chapterCount=row[6],
-        translated=bool(row[7]),
-        localPath=row[8],
-        updatedAt=row[9],
-        synopsis=row[10],
-        lastReadChapterIndex=row[11] if len(row) > 11 else 0,
-        lastReadAt=row[12] if len(row) > 12 else None,
+        username=row[1],
+        email=row[8] if len(row) > 8 else None,
+        displayName=row[2],
+        role=row[3],
+        status=row[4],
+        createdAt=row[5],
+        lastLoginAt=row[6],
+        bookCount=int(row[7] or 0) if len(row) > 7 else 0,
+        isDefaultAdmin=str(row[0]) == DEFAULT_ADMIN_USER_ID,
+        githubLogin=row[9] if len(row) > 9 else None,
+        twoFactorEnabled=bool(row[10]) if len(row) > 10 else False,
     )
 
 
@@ -1191,19 +2179,20 @@ def _normalize_book_status(value: object) -> str:
 
 def _row_to_task(row: sqlite3.Row | tuple) -> TaskRecord:
     return TaskRecord(
-        id=row[0],
-        bookId=row[1],
-        taskType=row[2],
-        chapterIndexes=json_load_int_list(row[3]),
-        status=row[4],
-        totalCount=row[5],
-        completedCount=row[6],
-        progress=row[7],
-        message=row[8],
-        error=row[9],
-        attempts=row[10],
-        createdAt=row[11],
-        updatedAt=row[12],
+        ownerId=row[0],
+        id=row[1],
+        bookId=row[2],
+        taskType=row[3],
+        chapterIndexes=json_load_int_list(row[4]),
+        status=row[5],
+        totalCount=row[6],
+        completedCount=row[7],
+        progress=row[8],
+        message=row[9],
+        error=row[10],
+        attempts=row[11],
+        createdAt=row[12],
+        updatedAt=row[13],
     )
 
 

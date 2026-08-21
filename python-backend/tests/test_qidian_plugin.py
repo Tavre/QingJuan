@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -9,7 +10,15 @@ from fastapi.testclient import TestClient
 from app import main, scraper
 from app.api.routers import plugins_router
 from app.application import create_application
-from app.models import BookRecord, BookSourceRecord, ChapterPreview, PreviewResponse
+from app.models import (
+    AddBookPayload,
+    BookRecord,
+    BookSourceRecord,
+    ChapterPreview,
+    PreviewResponse,
+    TaskRecord,
+)
+from app.multi_user import DEFAULT_ADMIN_USER_ID
 from app.site_plugins import get_site_plugin, qidian_client, qidian_runtime
 from app.site_plugins.qidian_client import QidianApiError
 from app.site_plugins.qidian_runtime import QidianRuntime
@@ -408,7 +417,7 @@ async def test_qidian_bookshelf_import_skips_existing_and_isolates_failure(monke
         localPath="中文/已有作品",
     )
     monkeypatch.setattr(main.QIDIAN_RUNTIME, "list_bookshelf_books", lambda: remote_books)
-    monkeypatch.setattr(main, "list_books", lambda: [existing])
+    monkeypatch.setattr(main, "list_books", lambda owner_id=None: [existing])
 
     async def fake_preview(payload):
         if qidian_client.qidian_book_id_from_url(str(payload.sourceUrl)) == "3":
@@ -427,7 +436,7 @@ async def test_qidian_bookshelf_import_skips_existing_and_isolates_failure(monke
             bookKind=payload.bookKind,
         )
 
-    async def fake_create(payload, preview):
+    async def fake_create(payload, preview, *, owner_id="user-admin"):
         return BookRecord(
             id="book-new",
             title=preview.title,
@@ -451,3 +460,292 @@ async def test_qidian_bookshelf_import_skips_existing_and_isolates_failure(monke
     assert (result.importedCount, result.skippedCount, result.failedCount) == (1, 1, 1)
     assert [item.status for item in result.items] == ["skipped", "imported", "failed"]
     assert result.items[1].bookId == "book-new"
+
+
+@pytest.mark.asyncio
+async def test_qidian_chapter_fetch_uses_only_explicit_cookie_context(monkeypatch) -> None:
+    captured: list[dict[str, str]] = []
+
+    def fake_get_chapter(
+        book_id: str,
+        chapter_id: str,
+        *,
+        cookies: dict[str, str],
+    ) -> dict[str, object]:
+        assert (book_id, chapter_id) == ("1209977", "11")
+        captured.append(dict(cookies))
+        cookies["mutated"] = "inside-fetch"
+        return {"text": "正文", "accessRestricted": False}
+
+    monkeypatch.setattr(scraper, "get_qidian_chapter", fake_get_chapter)
+    admin_cookies = {"ywguid": "admin-guid", "ywkey": "admin-key"}
+    user_cookies = {"ywguid": "reader-guid", "ywkey": "reader-key"}
+
+    await scraper._fetch_qidian_chapter_data(
+        "https://m.qidian.com/chapter/1209977/11/",
+        qidian_cookies=admin_cookies,
+    )
+    await scraper._fetch_qidian_chapter_data(
+        "https://m.qidian.com/chapter/1209977/11/",
+        qidian_cookies=user_cookies,
+    )
+
+    assert captured == [admin_cookies, user_cookies]
+    assert "mutated" not in admin_cookies
+    assert "mutated" not in user_cookies
+
+
+@pytest.mark.asyncio
+async def test_qidian_incremental_downloads_forward_separate_cookie_contexts(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    captured: list[dict[str, str]] = []
+
+    async def fake_download_single(
+        client,
+        book_dir,
+        chapter_index,
+        chapter,
+        *,
+        image_download_semaphore=None,
+        qidian_cookies=None,
+    ) -> dict[str, object]:
+        captured.append(dict(qidian_cookies or {}))
+        return {
+            "index": chapter_index,
+            "file_name": "0001-test.txt",
+            "downloaded": True,
+            "illustration": False,
+            "image_urls": [],
+            "image_files": [],
+            "translated_image_files": [],
+            "page_count": 0,
+            "images_repaired": False,
+            "content_source": "qidian-mobile-web",
+            "authorization_method": "qidian-web-session",
+            "access_restricted": False,
+        }
+
+    def manifest() -> dict[str, object]:
+        return {
+            "source_url": "https://www.qidian.com/book/1209977/",
+            "chapters": [
+                {
+                    "index": 1,
+                    "title": "第一章",
+                    "url": "https://m.qidian.com/chapter/1209977/11/",
+                    "file_name": "0001-test.txt",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(scraper, "_download_single_chapter", fake_download_single)
+    admin_dir = tmp_path / "admin"
+    user_dir = tmp_path / "user"
+    admin_dir.mkdir()
+    user_dir.mkdir()
+    admin_cookies = {"ywguid": "admin-guid"}
+    user_cookies = {"ywguid": "reader-guid"}
+
+    await scraper.download_chapter_payload(
+        admin_dir,
+        manifest(),
+        1,
+        qidian_cookies=admin_cookies,
+    )
+    await scraper.download_selected_chapters(
+        user_dir,
+        manifest(),
+        [1],
+        qidian_cookies=user_cookies,
+    )
+
+    assert captured == [admin_cookies, user_cookies]
+
+
+@pytest.mark.asyncio
+async def test_qidian_full_download_forwards_cookie_without_persisting_it(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    captured: list[dict[str, str]] = []
+
+    async def fake_fetch(
+        client,
+        chapter_url: str,
+        chapter_title: str = "",
+        *,
+        qidian_cookies=None,
+    ) -> scraper.ChapterFetchResult:
+        captured.append(dict(qidian_cookies or {}))
+        return scraper.ChapterFetchResult(text=f"{chapter_title}正文", image_urls=[])
+
+    async def fake_cover(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(scraper, "_fetch_chapter_data", fake_fetch)
+    monkeypatch.setattr(scraper, "_download_cover_image", fake_cover)
+    monkeypatch.setattr(
+        scraper,
+        "_load_runtime_settings",
+        lambda: SimpleNamespace(downloadConcurrency=1),
+    )
+    cookies = {"ywguid": "private-admin-guid", "ywkey": "private-admin-key"}
+    payload = AddBookPayload(
+        sourceUrl="https://www.qidian.com/book/1209977/",
+        bookKind="长小说",
+        language="中文",
+    )
+    preview = PreviewResponse(
+        title="起点测试书",
+        chapterCount=1,
+        chapters=[
+            ChapterPreview(
+                title="第一章",
+                url="https://m.qidian.com/chapter/1209977/11/",
+            )
+        ],
+        bookKind="长小说",
+    )
+
+    result = await scraper.download_book(
+        payload,
+        preview,
+        tmp_path,
+        qidian_cookies=cookies,
+    )
+
+    assert captured == [cookies]
+    manifest_text = (result.local_path / "manifest.json").read_text(encoding="utf-8")
+    assert "private-admin-guid" not in manifest_text
+    assert "private-admin-key" not in manifest_text
+
+
+@pytest.mark.asyncio
+async def test_qidian_main_resolves_owner_cookie_for_every_download_path(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    reader_id = "user-reader"
+    cookies_by_owner = {
+        DEFAULT_ADMIN_USER_ID: {"ywguid": "admin-guid"},
+        reader_id: {"ywguid": "reader-guid"},
+    }
+
+    def fake_runtime(plugin, owner_id):
+        assert plugin.id == "qidian"
+        return SimpleNamespace(cookies=lambda: dict(cookies_by_owner[owner_id]))
+
+    import_cookies: list[dict[str, str]] = []
+
+    async def fake_download_book(
+        payload,
+        preview,
+        root_dir,
+        *,
+        qidian_cookies=None,
+    ) -> SimpleNamespace:
+        import_cookies.append(dict(qidian_cookies or {}))
+        return SimpleNamespace(
+            title=preview.title,
+            synopsis=preview.synopsis,
+            cover=None,
+            chapters=preview.chapters,
+            local_path=root_dir,
+        )
+
+    monkeypatch.setattr(main, "_site_plugin_runtime", fake_runtime)
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main, "LIBRARY_ROOT", tmp_path / "library")
+    monkeypatch.setattr(main, "download_book", fake_download_book)
+    monkeypatch.setattr(main, "save_book", lambda book: None)
+    monkeypatch.setattr(main, "_hydrate_book_record", lambda book: book)
+    payload = AddBookPayload(
+        sourceUrl="https://www.qidian.com/book/1209977/",
+        bookKind="长小说",
+        language="中文",
+    )
+    preview = PreviewResponse(
+        title="隔离测试书",
+        chapterCount=1,
+        chapters=[
+            ChapterPreview(
+                title="第一章",
+                url="https://m.qidian.com/chapter/1209977/11/",
+            )
+        ],
+        bookKind="长小说",
+    )
+    books = [
+        await main._create_imported_book(payload, preview, owner_id=owner_id)
+        for owner_id in (DEFAULT_ADMIN_USER_ID, reader_id)
+    ]
+
+    cache_cookies: list[dict[str, str]] = []
+
+    async def fake_download_chapter(
+        book_dir,
+        manifest,
+        chapter_index,
+        *,
+        qidian_cookies=None,
+    ) -> dict[str, object]:
+        cache_cookies.append(dict(qidian_cookies or {}))
+        return {"index": chapter_index}
+
+    async def fake_commit(*args, **kwargs) -> None:
+        return None
+
+    books_by_id = {book.id: book for book in books}
+    monkeypatch.setattr(main, "_is_book_deleted", lambda book_id: False)
+    monkeypatch.setattr(main, "_get_book_or_404", lambda book_id: books_by_id[book_id])
+    monkeypatch.setattr(main, "_resolve_book_dir", lambda book: tmp_path / book.id)
+    monkeypatch.setattr(
+        main,
+        "_load_or_initialize_manifest",
+        lambda book, book_dir: {
+            "source_url": book.sourceUrl,
+            "chapters": [
+                {
+                    "index": 1,
+                    "title": "第一章",
+                    "url": "https://m.qidian.com/chapter/1209977/11/",
+                    "file_name": "0001-test.txt",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(main, "_chapter_needs_source_cache", lambda book_dir, chapter: True)
+    monkeypatch.setattr(main, "download_chapter_payload", fake_download_chapter)
+    monkeypatch.setattr(main, "_commit_source_chapter_payload", fake_commit)
+    main.app.state.chapter_manifest_locks = {}
+
+    for book in books:
+        await main._cache_source_chapter_by_id(book.id, 1)
+
+    task_cookies: list[dict[str, str]] = []
+
+    async def fake_download_selected(**kwargs) -> None:
+        task_cookies.append(dict(kwargs.get("qidian_cookies") or {}))
+
+    monkeypatch.setattr(main, "download_selected_chapters", fake_download_selected)
+    monkeypatch.setattr(main, "load_settings", lambda: SimpleNamespace(downloadConcurrency=1))
+    for index, book in enumerate(books):
+        task = TaskRecord(
+            ownerId=book.ownerId,
+            id=f"task-{index}",
+            bookId=book.id,
+            taskType="download",
+            chapterIndexes=[1],
+            status="running",
+            totalCount=1,
+            createdAt="2030-01-01T00:00:00Z",
+            updatedAt="2030-01-01T00:00:00Z",
+        )
+        await main._process_download_task(task, book)
+
+    expected = [cookies_by_owner[DEFAULT_ADMIN_USER_ID], cookies_by_owner[reader_id]]
+    assert import_cookies == expected
+    assert cache_cookies == expected
+    assert task_cookies == expected

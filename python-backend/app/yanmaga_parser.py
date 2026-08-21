@@ -199,7 +199,11 @@ def decode_speedbinb_table(content_id: str, key: str, encrypted: str) -> list[st
         decoded = json.loads("".join(output))
     except json.JSONDecodeError as exc:
         raise YanmagaParseError("Yanmaga Viewer 置换表解析失败") from exc
-    if not isinstance(decoded, list) or len(decoded) < 8 or not all(isinstance(item, str) for item in decoded):
+    if (
+        not isinstance(decoded, list)
+        or len(decoded) < 8
+        or not all(isinstance(item, str) for item in decoded)
+    ):
         raise YanmagaParseError("Yanmaga Viewer 返回了无效置换表")
     return decoded
 
@@ -254,10 +258,7 @@ def _parse_speedbinb_f_key(key: str) -> dict[str, Any] | None:
     try:
         column_map = [_SPEEDBINB_VALUES[payload[index]] for index in range(columns)]
         row_map = [_SPEEDBINB_VALUES[payload[columns + index]] for index in range(rows)]
-        cell_map = [
-            _SPEEDBINB_VALUES[payload[columns + rows + index]]
-            for index in range(columns * rows)
-        ]
+        cell_map = [_SPEEDBINB_VALUES[payload[columns + rows + index]] for index in range(columns * rows)]
     except KeyError:
         return None
     return {
@@ -294,16 +295,20 @@ def _speedbinb_coordinates(
     edge_x = 2 * columns * margin
     edge_y = 2 * rows * margin
     if width < 64 + edge_x or height < 64 + edge_y or width * height < (320 + edge_x) * (320 + edge_y):
-        return [
-            {
-                "xsrc": 0,
-                "ysrc": 0,
-                "width": width,
-                "height": height,
-                "xdest": 0,
-                "ydest": 0,
-            }
-        ], width, height
+        return (
+            [
+                {
+                    "xsrc": 0,
+                    "ysrc": 0,
+                    "width": width,
+                    "height": height,
+                    "xdest": 0,
+                    "ydest": 0,
+                }
+            ],
+            width,
+            height,
+        )
 
     cropped_width = width - edge_x
     cropped_height = height - edge_y
@@ -316,10 +321,7 @@ def _speedbinb_coordinates(
     content_columns = content["column_map"]
     position_rows = position["row_map"]
     position_columns = position["column_map"]
-    mapping = [
-        content["cell_map"][position["cell_map"][index]]
-        for index in range(columns * rows)
-    ]
+    mapping = [content["cell_map"][position["cell_map"][index]] for index in range(columns * rows)]
 
     coordinates: list[dict[str, int]] = []
     for index in range(columns * rows):

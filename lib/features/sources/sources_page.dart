@@ -8,6 +8,7 @@ import '../../shared/feedback_widgets.dart';
 import '../../shared/mobile_sheet.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
+import '../../shared/smooth_scroll.dart';
 import 'sources_controller.dart';
 import 'widgets/plugin_settings_widgets.dart';
 
@@ -130,12 +131,14 @@ class SourcesPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final controller = AppScope.of(context).sources;
+    final scope = AppScope.of(context);
+    final controller = scope.sources;
+    final canManage = scope.auth.canManageServiceConfiguration;
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
         if (!usesMobileUi(context)) {
-          return _buildDesktopPage(context, controller);
+          return _buildDesktopPage(context, controller, canManage: canManage);
         }
         return PageFrame(
           title: '书源',
@@ -146,38 +149,46 @@ class SourcesPage extends StatelessWidget {
             subtitle: controller.sources.isEmpty
                 ? '连接内容来源'
                 : '${controller.sources.where((source) => source.enabled).length} 个书源已启用',
-            actions: <Widget>[
-              Tooltip(
-                message: '粘贴书源配置',
-                child: IconButton(
-                  icon: const Icon(
-                    FluentIcons.clipboard_list,
-                    semanticLabel: '粘贴书源配置',
-                  ),
-                  onPressed: () => _showImportDialog(context, fromUrl: false),
-                ),
-              ),
-              const SizedBox(width: 7),
-              FilledButton(
-                onPressed: () => _showImportDialog(context, fromUrl: true),
-                child: const Text('导入'),
-              ),
-            ],
+            actions: canManage
+                ? <Widget>[
+                    Tooltip(
+                      message: '粘贴书源配置',
+                      child: IconButton(
+                        icon: const Icon(
+                          FluentIcons.clipboard_list,
+                          semanticLabel: '粘贴书源配置',
+                        ),
+                        onPressed: () =>
+                            _showImportDialog(context, fromUrl: false),
+                      ),
+                    ),
+                    const SizedBox(width: 7),
+                    FilledButton(
+                      onPressed: () =>
+                          _showImportDialog(context, fromUrl: true),
+                      child: const Text('导入'),
+                    ),
+                  ]
+                : const <Widget>[],
           ),
-          command: Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: <Widget>[
-              Button(
-                onPressed: () => _showImportDialog(context, fromUrl: false),
-                child: const Text('粘贴配置'),
-              ),
-              FilledButton(
-                onPressed: () => _showImportDialog(context, fromUrl: true),
-                child: const Text('导入网址'),
-              ),
-            ],
-          ),
+          command: canManage
+              ? Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: <Widget>[
+                    Button(
+                      onPressed: () =>
+                          _showImportDialog(context, fromUrl: false),
+                      child: const Text('粘贴配置'),
+                    ),
+                    FilledButton(
+                      onPressed: () =>
+                          _showImportDialog(context, fromUrl: true),
+                      child: const Text('导入网址'),
+                    ),
+                  ],
+                )
+              : null,
           child: Expanded(
             child: switch (controller.state) {
               LoadState.idle ||
@@ -186,6 +197,12 @@ class SourcesPage extends StatelessWidget {
               LoadState.error => ErrorView(
                   message: controller.error ?? '未知错误',
                   onRetry: controller.load,
+                ),
+              _ when controller.sources.isEmpty && !canManage =>
+                const EmptyView(
+                  icon: FluentIcons.database,
+                  title: '暂无可用书源',
+                  message: '书源由管理员统一维护，请联系管理员添加或启用书源。',
                 ),
               _ when controller.sources.isEmpty => Column(
                   children: <Widget>[
@@ -234,8 +251,13 @@ class SourcesPage extends StatelessWidget {
                           return SourceRuleTile(
                             source: source,
                             saving: controller.isSourceSaving(source.id),
-                            onChanged: (enabled) =>
-                                _setSourceEnabled(context, source, enabled),
+                            onChanged: canManage
+                                ? (enabled) => _setSourceEnabled(
+                                      context,
+                                      source,
+                                      enabled,
+                                    )
+                                : null,
                           );
                         },
                       ),
@@ -251,27 +273,30 @@ class SourcesPage extends StatelessWidget {
 
   Widget _buildDesktopPage(
     BuildContext context,
-    SourcesController controller,
-  ) {
+    SourcesController controller, {
+    required bool canManage,
+  }) {
     return PageFrame(
       key: const ValueKey('desktop-sources-page'),
       title: '书源管理',
       subtitle: '维护内置、手动和 Legado 兼容书源。',
       scrollable: false,
-      command: Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: <Widget>[
-          Button(
-            onPressed: () => _showImportDialog(context, fromUrl: false),
-            child: const Text('粘贴配置'),
-          ),
-          FilledButton(
-            onPressed: () => _showImportDialog(context, fromUrl: true),
-            child: const Text('导入网址'),
-          ),
-        ],
-      ),
+      command: canManage
+          ? Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                Button(
+                  onPressed: () => _showImportDialog(context, fromUrl: false),
+                  child: const Text('粘贴配置'),
+                ),
+                FilledButton(
+                  onPressed: () => _showImportDialog(context, fromUrl: true),
+                  child: const Text('导入网址'),
+                ),
+              ],
+            )
+          : null,
       child: Expanded(
         child: switch (controller.state) {
           LoadState.idle ||
@@ -281,22 +306,29 @@ class SourcesPage extends StatelessWidget {
               message: controller.error ?? '未知错误',
               onRetry: controller.load,
             ),
-          _ when controller.sources.isEmpty => const EmptyView(
+          _ when controller.sources.isEmpty => EmptyView(
               icon: FluentIcons.database,
-              title: '暂无书源',
-              message: '导入书源配置后即可使用全网搜索。',
+              title: canManage ? '暂无书源' : '暂无可用书源',
+              message:
+                  canManage ? '导入书源配置后即可使用全网搜索。' : '书源由管理员统一维护，请联系管理员添加或启用书源。',
             ),
-          _ => ListView.builder(
-              itemCount: controller.sources.length,
-              itemBuilder: (context, index) {
-                final source = controller.sources[index];
-                return SourceRuleTile(
-                  source: source,
-                  saving: controller.isSourceSaving(source.id),
-                  onChanged: (enabled) =>
-                      _setSourceEnabled(context, source, enabled),
-                );
-              },
+          _ => QjScrollControllerBuilder(
+              debugLabel: 'desktop-sources',
+              builder: (context, scrollController) => ListView.builder(
+                controller: scrollController,
+                itemCount: controller.sources.length,
+                itemBuilder: (context, index) {
+                  final source = controller.sources[index];
+                  return SourceRuleTile(
+                    source: source,
+                    saving: controller.isSourceSaving(source.id),
+                    onChanged: canManage
+                        ? (enabled) =>
+                            _setSourceEnabled(context, source, enabled)
+                        : null,
+                  );
+                },
+              ),
             ),
         },
       ),

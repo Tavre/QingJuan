@@ -50,7 +50,9 @@ class FanqieRuntime:
             logged_in = bool(self._cookies)
             return {
                 "loggedIn": logged_in,
-                "expiresAt": _iso(self._account_expires_at) if logged_in and self._account_expires_at else None,
+                "expiresAt": _iso(self._account_expires_at)
+                if logged_in and self._account_expires_at
+                else None,
             }
 
     def start_login(self) -> dict[str, object]:
@@ -135,9 +137,7 @@ class FanqieRuntime:
 
     def _purge_locked(self) -> None:
         now = _now()
-        expired_flow_ids = [
-            flow_id for flow_id, flow in self._login_flows.items() if flow.expires_at <= now
-        ]
+        expired_flow_ids = [flow_id for flow_id, flow in self._login_flows.items() if flow.expires_at <= now]
         for flow_id in expired_flow_ids:
             flow = self._login_flows.pop(flow_id)
             flow.session.close()

@@ -693,6 +693,89 @@ code {
   margin-top: 20px;
 }
 
+/* Backend upgrade */
+
+.backend-upgrade-loading {
+  min-height: 420px;
+}
+
+.backend-upgrade-version-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 20px;
+  padding: 22px;
+  border: 1px solid var(--qj-border);
+  border-radius: 8px;
+  background: var(--qj-surface-muted);
+}
+
+.backend-upgrade-version-row > div:not(.backend-upgrade-version-arrow) {
+  min-width: 0;
+}
+
+.backend-upgrade-version-row h3.ant-typography {
+  margin: 5px 0 0;
+  overflow: hidden;
+  color: var(--qj-text);
+  font-size: 24px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backend-upgrade-version-arrow {
+  color: var(--qj-text-tertiary);
+  font-size: 24px;
+}
+
+.backend-upgrade-steps {
+  margin: 28px 0 24px;
+}
+
+.backend-upgrade-actions {
+  margin-top: 20px;
+}
+
+.backend-upgrade-detail-card .ant-descriptions-item-label {
+  width: 92px;
+  color: var(--qj-text-secondary);
+}
+
+.backend-upgrade-detail-card .ant-descriptions-item-content {
+  min-width: 0;
+  justify-content: flex-end;
+  color: var(--qj-text);
+  text-align: right;
+}
+
+.backend-upgrade-detail-card .ant-descriptions-item-content > .ant-typography {
+  max-width: 180px;
+}
+
+.backend-upgrade-note-card {
+  border-color: #91caff !important;
+  background: #e6f4ff !important;
+}
+
+:root[data-theme="dark"] .backend-upgrade-note-card {
+  border-color: #15325b !important;
+  background: #111a2c !important;
+}
+
+.backend-upgrade-note-icon {
+  margin-top: 3px;
+  color: #1677ff;
+  font-size: 18px;
+}
+
+:root[data-theme="dark"] .backend-upgrade-note-icon {
+  color: #69b1ff;
+}
+
+.backend-upgrade-note-card .ant-typography {
+  margin-bottom: 0;
+}
+
 .connection-token-panel {
   margin-top: 18px;
   padding-top: 18px;
@@ -825,6 +908,66 @@ code {
 
 .device-filter-row .ant-segmented {
   min-width: max-content;
+}
+
+.user-scope-alert {
+  border-color: #91caff !important;
+  background: #e6f4ff !important;
+}
+
+:root[data-theme="dark"] .user-scope-alert {
+  border-color: #15325b !important;
+  background: #111a2c !important;
+}
+
+.user-filter-row {
+  padding: 10px 16px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--qj-border);
+  background: var(--qj-surface-muted);
+}
+
+.user-filter-row .ant-segmented {
+  min-width: max-content;
+}
+
+.user-title-cell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.user-title-cell > .ant-typography:last-child {
+  max-width: 100%;
+  font-size: 12px;
+}
+
+.user-mobile-security {
+  display: none;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+
+.user-mobile-security .ant-tag {
+  max-width: 100%;
+  margin-inline-end: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-toolbar-actions {
+  justify-content: flex-end;
+}
+
+.user-row-admin > .ant-table-cell {
+  background: color-mix(in srgb, var(--qj-primary-soft) 42%, transparent);
+}
+
+.user-dialog-alert {
+  margin-bottom: 20px;
 }
 
 .plugin-scope-alert {
@@ -1229,6 +1372,96 @@ code {
   font-size: 12px;
 }
 
+/* Registration */
+
+.registration-settings-loading {
+  min-height: 420px;
+}
+
+.registration-rule-summary {
+  margin-bottom: 16px;
+}
+
+.registration-method-card {
+  height: auto;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.registration-side-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.registration-method-card.is-enabled {
+  border-color: color-mix(in srgb, var(--qj-primary) 52%, var(--qj-border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--qj-primary) 8%, transparent), var(--qj-shadow-card);
+}
+
+.registration-method-card > .ant-card-head .ant-card-head-title {
+  color: var(--qj-text);
+}
+
+.registration-method-card > .ant-card-head .anticon {
+  color: var(--qj-primary);
+}
+
+.registration-method-alert {
+  margin: 16px 0 4px;
+}
+
+.registration-secret-label {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.registration-secret-label .ant-btn {
+  height: auto;
+  padding: 0;
+}
+
+.registration-method-card .ant-form-item-label > label:has(.registration-secret-label) {
+  width: 100%;
+}
+
+.registration-security-note {
+  margin-top: 20px;
+}
+
+.registration-email-note {
+  margin-top: 0;
+}
+
+.registration-email-note .ant-typography {
+  margin-bottom: 0;
+}
+
+.registration-note-icon {
+  margin-top: 3px;
+  color: var(--qj-primary);
+  font-size: 18px;
+}
+
+.registration-save-bar {
+  position: sticky;
+  z-index: 5;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--qj-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--qj-surface) 94%, transparent);
+  box-shadow: var(--qj-shadow-float);
+  backdrop-filter: blur(12px);
+}
+
 /* Responsive */
 
 @media (max-width: 991px) {
@@ -1302,6 +1535,12 @@ code {
   }
 }
 
+@media (max-width: 767px) {
+  .user-mobile-security {
+    display: flex;
+  }
+}
+
 @media (max-width: 640px) {
   .login-main {
     place-items: start center;
@@ -1348,6 +1587,11 @@ code {
     align-self: flex-end;
   }
 
+  .user-toolbar-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
   .overview-summary-row > .ant-col {
     min-width: 100%;
   }
@@ -1371,6 +1615,25 @@ code {
     justify-content: flex-start;
   }
 
+  .backend-upgrade-version-row {
+    gap: 12px;
+    padding: 18px 14px;
+  }
+
+  .backend-upgrade-version-row h3.ant-typography {
+    font-size: 19px;
+  }
+
+  .backend-upgrade-steps .ant-steps-item-title {
+    font-size: 11px;
+  }
+
+  .backend-upgrade-actions,
+  .backend-upgrade-actions > .ant-space-item,
+  .backend-upgrade-actions .ant-btn {
+    width: 100%;
+  }
+
   .diagnostic-storage-card .ant-descriptions-item-label,
   .panel-card .ant-descriptions-item-label {
     width: 132px;
@@ -1385,6 +1648,17 @@ code {
   .runtime-log-live-control {
     flex: 1 1 auto;
   }
+
+  .registration-save-bar {
+    bottom: 8px;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .registration-save-bar .ant-btn {
+    width: 100%;
+  }
+
 }
 
 @media (max-width: 380px) {

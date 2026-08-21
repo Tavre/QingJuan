@@ -11,6 +11,7 @@ import 'package:qingjuan/core/api/api_client.dart';
 import 'package:qingjuan/core/backend/backend_connection_manager.dart';
 import 'package:qingjuan/core/models/source.dart';
 import 'package:qingjuan/core/state/load_state.dart';
+import 'package:qingjuan/features/auth/auth_controller.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
 import 'package:qingjuan/features/search/search_page.dart';
 import 'package:qingjuan/features/settings/settings_controller.dart';
@@ -142,6 +143,7 @@ void main() {
               appState: appState,
               api: api,
               backend: backend,
+              auth: AuthController.localAdministrator(api),
               library: library,
               sources: sources,
               tasks: tasks,

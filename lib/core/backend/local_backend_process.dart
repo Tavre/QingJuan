@@ -19,8 +19,10 @@ const windowsLocalBackendEnvironment = <String, String>{
   'QINGJUAN_AUTH_TOKEN_SHA256': '',
   'QINGJUAN_ADMIN_PASSWORD_HASH': '',
   'QINGJUAN_ADMIN_SESSION_SECRET': '',
+  'QINGJUAN_2FA_ENCRYPTION_KEY': '',
   'QINGJUAN_CONNECTION_TOKEN_FILE': '',
   'QINGJUAN_PUBLIC_URL': '',
+  'QINGJUAN_MULTI_USER': '0',
 };
 
 class LocalBackendException implements Exception {

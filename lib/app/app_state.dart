@@ -107,6 +107,7 @@ class AppState extends ChangeNotifier {
   late final ValueNotifier<ThemeMode> _themeModeListenable;
   BackendConnectionMode _connectionMode;
   BackendConnectionProfile _remoteBackendConnection;
+  int _backendConnectionRevision = 0;
   TtsVoice? _ttsVoice;
   TtsSpeechStyle _ttsSpeechStyle;
   ReaderFlowMode _readerFlowMode;
@@ -133,6 +134,7 @@ class AppState extends ChangeNotifier {
   String get backendToken => activeBackendConnection.token;
   String get remoteBackendUrl => _remoteBackendConnection.url;
   String get remoteBackendToken => _remoteBackendConnection.token;
+  int get backendConnectionRevision => _backendConnectionRevision;
   bool get hasBackendConnection =>
       _connectionMode == BackendConnectionMode.local
           ? _localBackendSupported
@@ -184,24 +186,74 @@ class AppState extends ChangeNotifier {
     required String url,
     required String token,
   }) async {
+    final nextConnection = _normalizeRemoteConnection(url, token);
+    await _persistRemoteBackendConnection(nextConnection);
+    final changed = _remoteBackendConnection.url != nextConnection.url ||
+        _remoteBackendConnection.token != nextConnection.token;
+    _remoteBackendConnection = nextConnection;
+    if (changed && _connectionMode == BackendConnectionMode.remote) {
+      _backendConnectionRevision += 1;
+    }
+    notifyListeners();
+  }
+
+  Future<void> applyBackendConnection({
+    required BackendConnectionMode mode,
+    String? remoteUrl,
+    String? remoteToken,
+  }) async {
+    if (mode == BackendConnectionMode.local && !_localBackendSupported) {
+      throw StateError('当前平台不支持本机后端');
+    }
+    final nextRemoteConnection = mode == BackendConnectionMode.remote
+        ? _normalizeRemoteConnection(remoteUrl ?? '', remoteToken ?? '')
+        : _remoteBackendConnection;
+
+    if (mode == BackendConnectionMode.remote) {
+      await _persistRemoteBackendConnection(nextRemoteConnection);
+    }
+    await _preferences.setString(_backendModeKey, mode.name);
+
+    final connectionChanged = _connectionMode != mode ||
+        (mode == BackendConnectionMode.remote &&
+            (_remoteBackendConnection.url != nextRemoteConnection.url ||
+                _remoteBackendConnection.token != nextRemoteConnection.token));
+    _remoteBackendConnection = nextRemoteConnection;
+    _connectionMode = mode;
+    if (!clientPluginManagementAvailable && _section == AppSection.plugins) {
+      _section = AppSection.settings;
+      _sectionListenable.value = _section;
+    }
+    if (connectionChanged) {
+      _backendConnectionRevision += 1;
+    }
+    notifyListeners();
+  }
+
+  BackendConnectionProfile _normalizeRemoteConnection(
+    String url,
+    String token,
+  ) {
     final normalized = url.trim().replaceAll(RegExp(r'/+$'), '');
-    if (normalized.isEmpty) return;
-    final normalizedToken = token.trim();
+    if (normalized.isEmpty) {
+      throw StateError('Linux 后端地址不能为空');
+    }
+    return BackendConnectionProfile(url: normalized, token: token.trim());
+  }
+
+  Future<void> _persistRemoteBackendConnection(
+    BackendConnectionProfile connection,
+  ) async {
     final secretStore = _secretStore;
     if (secretStore != null) {
-      if (normalizedToken.isEmpty) {
+      if (connection.token.isEmpty) {
         await secretStore.deleteToken();
       } else {
-        await secretStore.writeToken(normalizedToken);
+        await secretStore.writeToken(connection.token);
       }
     }
-    await _preferences.setString(_remoteBackendUrlKey, normalized);
+    await _preferences.setString(_remoteBackendUrlKey, connection.url);
     await _preferences.remove(_legacyBackendUrlKey);
-    _remoteBackendConnection = BackendConnectionProfile(
-      url: normalized,
-      token: normalizedToken,
-    );
-    notifyListeners();
   }
 
   Future<void> selectBackendMode(BackendConnectionMode mode) async {
@@ -210,6 +262,7 @@ class AppState extends ChangeNotifier {
     }
     if (_connectionMode == mode) return;
     _connectionMode = mode;
+    _backendConnectionRevision += 1;
     if (!clientPluginManagementAvailable && _section == AppSection.plugins) {
       _section = AppSection.settings;
       _sectionListenable.value = _section;

@@ -1,17 +1,20 @@
 import hashlib
 import ipaddress
 import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db, model_endpoint_security
+from app import admin_auth, db, model_endpoint_security
 from app.admin_auth import (
     ADMIN_CSRF_HEADER,
     ADMIN_PASSWORD_HASH_ENV,
     ADMIN_SESSION_SECRET_ENV,
+    LOCAL_ADMIN_REQUEST_HEADER,
     TRUST_LOCAL_ADMIN_ENV,
     hash_admin_password,
 )
@@ -304,6 +307,11 @@ def test_trusted_windows_loopback_can_force_model_check_without_admin_web(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv(TRUST_LOCAL_ADMIN_ENV, "1")
+    monkeypatch.setattr(
+        admin_auth,
+        "os",
+        SimpleNamespace(name="nt", getenv=os.getenv),
+    )
     monkeypatch.delenv("QINGJUAN_AUTH_TOKEN_SHA256", raising=False)
     monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "qingjuan.db")
@@ -342,7 +350,10 @@ def test_trusted_windows_loopback_can_force_model_check_without_admin_web(
         base_url="http://127.0.0.1",
         client=("127.0.0.1", 50000),
     ) as client:
-        response = client.post(f"{API_PREFIX}/translation-model/check?force=true")
+        response = client.post(
+            f"{API_PREFIX}/translation-model/check?force=true",
+            headers={LOCAL_ADMIN_REQUEST_HEADER: "1"},
+        )
 
     assert response.status_code == 200
     assert response.json()["model"] == "local-model"

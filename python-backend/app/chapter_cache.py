@@ -75,16 +75,8 @@ class ChapterCacheCoordinator:
         if self._closed:
             raise RuntimeError("章节缓存协调器已关闭")
 
-        read_ahead = sorted(
-            {
-                index
-                for index in read_ahead_indexes
-                if index > 0 and index != chapter_index
-            }
-        )
-        protected_keys = {
-            (book_id, index) for index in [chapter_index, *read_ahead]
-        }
+        read_ahead = sorted({index for index in read_ahead_indexes if index > 0 and index != chapter_index})
+        protected_keys = {(book_id, index) for index in [chapter_index, *read_ahead]}
         self._enter_foreground(protected_keys, preempt_background=True)
         cache_task = self._cache_task_for(book_id, chapter_index)
         self.prefetch(
@@ -144,14 +136,10 @@ class ChapterCacheCoordinator:
         if worker is not None:
             tasks.add(worker)
         tasks.update(
-            task
-            for (current_book_id, _), task in self._prefetch_tasks.items()
-            if current_book_id == book_id
+            task for (current_book_id, _), task in self._prefetch_tasks.items() if current_book_id == book_id
         )
         tasks.update(
-            task
-            for (current_book_id, _), task in self._inflight.items()
-            if current_book_id == book_id
+            task for (current_book_id, _), task in self._inflight.items() if current_book_id == book_id
         )
         for task in tasks:
             task.cancel()

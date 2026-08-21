@@ -1,18 +1,28 @@
 import {
   clearSessionSecurity,
+  checkBackendUpdate,
   checkTranslationModel,
+  createUser,
   deleteBook,
+  getUsers,
   getSitePluginBookshelfImport,
   getRuntimeLogs,
+  getRegistrationSettings,
   getServiceDiagnostics,
+  getBackendUpdateStatus,
   login,
   loginSitePluginWithCookies,
   pollSitePluginLogin,
   revealConnectionToken,
+  resetUserPassword,
+  revokeUserSessions,
   setDeviceBanned,
   setSitePluginEnabled,
   startSitePluginBookshelfImport,
   startSitePluginLogin,
+  startBackendUpdate,
+  updateUser,
+  updateRegistrationSettings,
 } from "./api";
 
 function jsonResponse(payload: unknown, status = 200): Response {
@@ -242,6 +252,241 @@ describe("admin API client", () => {
     expect(fetchMock.mock.calls[4][0]).toBe("/api/v1/translation-model/check?force=true");
     expect(modelCheckOptions.method).toBe("POST");
     expect((modelCheckOptions.headers as Headers).get("X-QingJuan-CSRF")).toBe("observability-csrf");
+    clearSessionSecurity();
+  });
+
+  it("checks and starts backend updates through the protected admin contract", async () => {
+    const updateStatus = {
+      schemaVersion: 1,
+      state: "available",
+      supported: true,
+      canUpdate: true,
+      currentVersion: "2.0.0",
+      targetVersion: "2.1.0",
+      candidateId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      jobId: null,
+      checkedAt: "2030-01-01T00:00:00Z",
+      startedAt: null,
+      finishedAt: null,
+      message: "发现新版本",
+      blockedReason: null,
+      error: null,
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        authenticated: true,
+        expiresAt: "2030-01-01T00:00:00Z",
+        csrfToken: "update-csrf",
+        csrfHeader: "X-QingJuan-CSRF",
+      }))
+      .mockResolvedValueOnce(jsonResponse(updateStatus))
+      .mockResolvedValueOnce(jsonResponse(updateStatus))
+      .mockResolvedValueOnce(jsonResponse({
+        accepted: true,
+        jobId: "update-job-1",
+        fromVersion: "2.0.0",
+        targetVersion: "2.1.0",
+        disconnectExpected: true,
+      }, 202));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await login("admin-password");
+    await getBackendUpdateStatus();
+    await checkBackendUpdate();
+    await startBackendUpdate({
+      candidateId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      requestId: "request-1",
+    });
+
+    const requests = fetchMock.mock.calls.slice(1);
+    expect(requests.map((call) => call[0])).toEqual([
+      "/admin/api/backend-update",
+      "/admin/api/backend-update/check",
+      "/admin/api/backend-update",
+    ]);
+    expect(requests.map((call) => (call[1] as RequestInit).method)).toEqual([
+      "GET",
+      "POST",
+      "POST",
+    ]);
+    expect(((requests[0][1] as RequestInit).headers as Headers).has("X-QingJuan-CSRF")).toBe(false);
+    expect(((requests[1][1] as RequestInit).headers as Headers).get("X-QingJuan-CSRF"))
+      .toBe("update-csrf");
+    expect(((requests[2][1] as RequestInit).headers as Headers).get("X-QingJuan-CSRF"))
+      .toBe("update-csrf");
+    expect((requests[2][1] as RequestInit).body).toBe(JSON.stringify({
+      candidateId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      requestId: "request-1",
+    }));
+    clearSessionSecurity();
+  });
+
+  it("uses the admin user contract and protects every user write with CSRF", async () => {
+    const adminUser = {
+      id: "user-admin",
+      username: "admin",
+      email: null,
+      githubLogin: null,
+      twoFactorEnabled: true,
+      displayName: "系统管理员",
+      role: "admin",
+      isDefaultAdmin: true,
+      status: "active",
+      createdAt: "2030-01-01T00:00:00Z",
+      lastLoginAt: null,
+      bookCount: 1,
+    } as const;
+    const createdUser = {
+      ...adminUser,
+      id: "user/a",
+      username: "reader",
+      email: "reader@example.test",
+      githubLogin: "reader-octocat",
+      twoFactorEnabled: false,
+      displayName: "阅读者",
+      role: "user",
+      isDefaultAdmin: false,
+      bookCount: 0,
+    } as const;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        authenticated: true,
+        expiresAt: "2030-01-01T00:00:00Z",
+        csrfToken: "users-csrf",
+        csrfHeader: "X-QingJuan-CSRF",
+      }))
+      .mockResolvedValueOnce(jsonResponse([adminUser]))
+      .mockResolvedValueOnce(jsonResponse(createdUser))
+      .mockResolvedValueOnce(jsonResponse({ ...createdUser, status: "disabled" }))
+      .mockResolvedValueOnce(jsonResponse({ ...createdUser, displayName: "新阅读者" }))
+      .mockResolvedValueOnce(jsonResponse({ ...createdUser, role: "admin" }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await login("admin-password");
+    await getUsers();
+    await createUser({ username: "reader", displayName: "阅读者", password: "new-user-password" });
+    await updateUser(createdUser.id, { status: "disabled" });
+    await updateUser(createdUser.id, { displayName: "新阅读者" });
+    await updateUser(createdUser.id, { role: "admin" });
+    await resetUserPassword(createdUser.id, { password: "replacement-password" });
+    await revokeUserSessions(createdUser.id);
+
+    expect(fetchMock.mock.calls.slice(1).map((call) => call[0])).toEqual([
+      "/admin/api/users",
+      "/admin/api/users",
+      "/admin/api/users/user%2Fa",
+      "/admin/api/users/user%2Fa",
+      "/admin/api/users/user%2Fa",
+      "/admin/api/users/user%2Fa/password",
+      "/admin/api/users/user%2Fa/sessions/revoke",
+    ]);
+    const options = fetchMock.mock.calls.slice(1).map((call) => call[1] as RequestInit);
+    expect(options.map((option) => option.method)).toEqual([
+      "GET",
+      "POST",
+      "PATCH",
+      "PATCH",
+      "PATCH",
+      "PUT",
+      "POST",
+    ]);
+    expect((options[0].headers as Headers).has("X-QingJuan-CSRF")).toBe(false);
+    for (const option of options.slice(1)) {
+      expect((option.headers as Headers).get("X-QingJuan-CSRF")).toBe("users-csrf");
+    }
+    expect(options[1].body).toBe(JSON.stringify({
+      username: "reader",
+      displayName: "阅读者",
+      password: "new-user-password",
+    }));
+    expect(options[2].body).toBe(JSON.stringify({ status: "disabled" }));
+    expect(options[3].body).toBe(JSON.stringify({ displayName: "新阅读者" }));
+    expect(options[4].body).toBe(JSON.stringify({ role: "admin" }));
+    expect(options[5].body).toBe(JSON.stringify({ password: "replacement-password" }));
+    clearSessionSecurity();
+  });
+
+  it("updates registration checks without placing SMTP secrets in the URL", async () => {
+    const settings = {
+      registration: {
+        emailRequired: true,
+        emailVerificationRequired: true,
+        identityBadgeRequired: true,
+        identityBadgeConfigured: true,
+      },
+      smtp: {
+        host: "smtp.example.test",
+        port: 587,
+        security: "starttls",
+        username: "mailer@example.test",
+        fromAddress: "noreply@example.test",
+        fromName: "青卷",
+        passwordConfigured: true,
+        configured: true,
+      },
+      github: {
+        enabled: true,
+        clientId: "Iv1.device-flow-client",
+        configured: true,
+      },
+    } as const;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        authenticated: true,
+        expiresAt: "2030-01-01T00:00:00Z",
+        csrfToken: "registration-csrf",
+        csrfHeader: "X-QingJuan-CSRF",
+      }))
+      .mockResolvedValueOnce(jsonResponse(settings))
+      .mockResolvedValueOnce(jsonResponse(settings));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await login("admin-password");
+    await getRegistrationSettings();
+    await updateRegistrationSettings({
+      emailVerificationRequired: true,
+      identityBadgeRequired: true,
+      smtp: {
+        host: "smtp.example.test",
+        port: 587,
+        security: "starttls",
+        username: "mailer@example.test",
+        fromAddress: "noreply@example.test",
+        fromName: "青卷",
+      },
+      github: {
+        enabled: true,
+        clientId: "Iv1.device-flow-client",
+      },
+      smtpPassword: "private-smtp-password",
+      smtpPasswordAction: "replace",
+      identityBadge: "private-identity-badge",
+      identityBadgeAction: "replace",
+    });
+
+    const readRequest = fetchMock.mock.calls[1];
+    const writeRequest = fetchMock.mock.calls[2];
+    const writeOptions = writeRequest[1] as RequestInit;
+    expect(readRequest[0]).toBe("/admin/api/registration-settings");
+    expect((readRequest[1] as RequestInit).method).toBe("GET");
+    expect(((readRequest[1] as RequestInit).headers as Headers).has("X-QingJuan-CSRF")).toBe(false);
+    expect(writeRequest[0]).toBe("/admin/api/registration-settings");
+    expect(writeOptions.method).toBe("PUT");
+    expect((writeOptions.headers as Headers).get("X-QingJuan-CSRF")).toBe("registration-csrf");
+    expect(String(writeRequest[0])).not.toContain("private-smtp-password");
+    expect(String(writeRequest[0])).not.toContain("private-identity-badge");
+    expect(JSON.parse(String(writeOptions.body))).toMatchObject({
+      smtpPasswordAction: "replace",
+      smtpPassword: "private-smtp-password",
+      identityBadgeAction: "replace",
+      identityBadge: "private-identity-badge",
+      github: {
+        enabled: true,
+        clientId: "Iv1.device-flow-client",
+      },
+    });
     clearSessionSecurity();
   });
 });

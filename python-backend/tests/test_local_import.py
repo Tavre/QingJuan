@@ -4,6 +4,7 @@ import io
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -140,12 +141,18 @@ async def test_local_import_route_persists_epub_metadata_and_removes_cache(
     monkeypatch.setattr(main_module, "LIBRARY_ROOT", library_root)
     monkeypatch.setattr(main_module, "DATA_DIR", data_dir)
     monkeypatch.setattr(main_module, "save_book", saved_records.append)
+    monkeypatch.setattr(
+        main_module,
+        "require_user_access",
+        lambda _: SimpleNamespace(owner_id="user-admin"),
+    )
     upload = UploadFile(io.BytesIO(source.read_bytes()), filename=source.name)
 
     record = await main_module.post_import_local(
         file=upload,
         bookKind="长小说",
         language="中文",
+        request=object(),  # type: ignore[arg-type]
         needTranslation=False,
         title="",
     )
@@ -286,7 +293,12 @@ async def test_book_export_route_reports_selected_chapter_and_file_counts(
     tmp_path: Path,
 ) -> None:
     book, _ = _write_export_book(tmp_path, book_kind="长小说", chapter_count=2)
-    monkeypatch.setattr(main_module, "_get_book_or_404", lambda _: book)
+    monkeypatch.setattr(main_module, "_get_book_or_404", lambda _, __: book)
+    monkeypatch.setattr(
+        main_module,
+        "require_user_access",
+        lambda _: SimpleNamespace(owner_id="user-admin"),
+    )
     monkeypatch.setattr(main_module, "EXPORT_ROOT", tmp_path / "exports")
 
     response = await main_module.post_book_export(
@@ -295,6 +307,7 @@ async def test_book_export_route_reports_selected_chapter_and_file_counts(
             format="docx",
             chapterIndexes=[2],
         ),
+        object(),  # type: ignore[arg-type]
     )
 
     assert response.artifactId

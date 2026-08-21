@@ -121,9 +121,7 @@ async def test_next_chapter_request_keeps_shared_current_background_download() -
     assert worker is not None
     await current_started.wait()
 
-    current_reader = asyncio.create_task(
-        coordinator.ensure("book-1", 1, read_ahead_indexes=[2])
-    )
+    current_reader = asyncio.create_task(coordinator.ensure("book-1", 1, read_ahead_indexes=[2]))
     await next_started.wait()
     next_reader = asyncio.create_task(coordinator.ensure("book-1", 2))
     await asyncio.sleep(0)
@@ -155,9 +153,7 @@ async def test_reader_starts_current_and_next_chapter_together() -> None:
             next_started.set()
 
     coordinator = ChapterCacheCoordinator(cache_chapter)
-    reader = asyncio.create_task(
-        coordinator.ensure("book-1", 9, read_ahead_indexes=[10])
-    )
+    reader = asyncio.create_task(coordinator.ensure("book-1", 9, read_ahead_indexes=[10]))
 
     await current_started.wait()
     await next_started.wait()

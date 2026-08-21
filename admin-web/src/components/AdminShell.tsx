@@ -3,6 +3,7 @@ import {
   AppstoreOutlined,
   ApiOutlined,
   BookOutlined,
+  CloudDownloadOutlined,
   DatabaseOutlined,
   DashboardOutlined,
   FileTextOutlined,
@@ -11,38 +12,55 @@ import {
   MenuOutlined,
   ReloadOutlined,
   SettingOutlined,
+  TeamOutlined,
   UnorderedListOutlined,
+  UserAddOutlined,
 } from "@ant-design/icons";
 import { Alert, App, Badge, Button, Layout, Menu, Space, Spin, Tooltip, Typography } from "antd";
 
 import * as api from "../api";
 import { ThemeToggle } from "../theme";
 import type { DashboardData, SessionInfo, SettingsUpdate, Task } from "../types";
+import { BackendUpgradePage } from "./BackendUpgradePage";
 import { DevicesPage } from "./DevicesPage";
 import { DiagnosticsPage } from "./DiagnosticsPage";
 import { LibraryPage } from "./LibraryPage";
 import { LogsPage } from "./LogsPage";
 import { OverviewPage } from "./OverviewPage";
 import { PluginsPage } from "./PluginsPage";
+import { RegistrationSettingsPage } from "./RegistrationSettingsPage";
 import { SettingsPage } from "./SettingsPage";
 import { SourcesPage } from "./SourcesPage";
 import { TasksPage } from "./TasksPage";
+import { UsersPage } from "./UsersPage";
 
 const { Header, Content, Sider } = Layout;
 
-export type NavigationKey = "overview" | "devices" | "library" | "tasks" | "diagnostics" | "logs" | "sources" | "plugins" | "settings";
+export type NavigationKey = "overview" | "devices" | "users" | "registration" | "library" | "tasks" | "diagnostics" | "upgrade" | "logs" | "sources" | "plugins" | "settings";
 
 const navigationKeys: readonly NavigationKey[] = [
   "overview",
   "devices",
+  "users",
+  "registration",
   "library",
   "tasks",
   "diagnostics",
+  "upgrade",
   "logs",
   "sources",
   "plugins",
   "settings",
 ];
+
+const multiUserNavigationKeys = new Set<NavigationKey>(["users", "registration"]);
+
+export function navigationAvailable(
+  key: NavigationKey,
+  capabilities: Record<string, boolean> | null | undefined,
+): boolean {
+  return !multiUserNavigationKeys.has(key) || capabilities?.multiUser === true;
+}
 
 export function navigationFromHash(hash: string): NavigationKey {
   const candidate = hash.replace(/^#\/?/, "");
@@ -54,9 +72,12 @@ export function navigationFromHash(hash: string): NavigationKey {
 const navigation = [
   { key: "overview", icon: <AppstoreOutlined />, label: "服务概览" },
   { key: "devices", icon: <LaptopOutlined />, label: "设备管理" },
+  { key: "users", icon: <TeamOutlined />, label: "用户管理" },
+  { key: "registration", icon: <UserAddOutlined />, label: "注册设置" },
   { key: "library", icon: <BookOutlined />, label: "书库管理" },
   { key: "tasks", icon: <UnorderedListOutlined />, label: "任务中心" },
   { key: "diagnostics", icon: <DashboardOutlined />, label: "系统诊断" },
+  { key: "upgrade", icon: <CloudDownloadOutlined />, label: "后端升级" },
   { key: "logs", icon: <FileTextOutlined />, label: "运行日志" },
   { key: "sources", icon: <DatabaseOutlined />, label: "书源状态" },
   { key: "plugins", icon: <ApiOutlined />, label: "插件管理" },
@@ -66,9 +87,12 @@ const navigation = [
 const pageTitles: Record<NavigationKey, { title: string; subtitle: string }> = {
   overview: { title: "服务概览", subtitle: "快速掌握后端、书库和任务运行情况" },
   devices: { title: "设备管理", subtitle: "查看连接此后端的客户端，并控制设备访问" },
+  users: { title: "用户管理", subtitle: "管理 Linux 后端用户及其登录状态" },
+  registration: { title: "注册设置", subtitle: "配置新用户注册判断、邮箱验证码与身份牌" },
   library: { title: "书库管理", subtitle: "查看当前服务保存的作品并处理无用内容" },
   tasks: { title: "任务中心", subtitle: "跟踪下载与翻译任务，查看诊断日志" },
   diagnostics: { title: "系统诊断", subtitle: "检查服务健康、资源容量与近期异常" },
+  upgrade: { title: "后端升级", subtitle: "检查、安装并验证 Linux 后端更新" },
   logs: { title: "运行日志", subtitle: "查看后端服务、任务程序与抓取器的详细输出" },
   sources: { title: "书源状态", subtitle: "确认已启用书源及最近连接状态" },
   plugins: { title: "插件管理", subtitle: "管理当前 Linux 后端的内置站点解析器" },
@@ -134,6 +158,12 @@ export function AdminShell({ session, onLogout }: AdminShellProps) {
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
+
+  useEffect(() => {
+    if (data && !navigationAvailable(selected, data.meta.capabilities)) {
+      navigate("overview");
+    }
+  }, [data, navigate, selected]);
 
   const hasActiveTasks = data?.tasks.some((task) => ["queued", "running"].includes(task.status));
   useEffect(() => {
@@ -221,6 +251,10 @@ export function AdminShell({ session, onLogout }: AdminShellProps) {
   const currentPage = data ? {
     overview: <OverviewPage data={data} bookTitles={bookTitles} onNavigate={navigate} />,
     devices: <DevicesPage devices={data.devices} onSetBanned={setDeviceBanned} />,
+    users: navigationAvailable("users", data.meta.capabilities) ? <UsersPage /> : null,
+    registration: navigationAvailable("registration", data.meta.capabilities)
+      ? <RegistrationSettingsPage />
+      : null,
     library: <LibraryPage books={data.books} onDelete={deleteBook} />,
     tasks: (
       <TasksPage
@@ -235,6 +269,11 @@ export function AdminShell({ session, onLogout }: AdminShellProps) {
       />
     ),
     diagnostics: <DiagnosticsPage onOpenLogs={() => navigate("logs")} />,
+    upgrade: (
+      <BackendUpgradePage
+        activeTaskCount={data.tasks.filter((task) => ["queued", "running"].includes(task.status)).length}
+      />
+    ),
     logs: <LogsPage />,
     sources: <SourcesPage sources={data.sources} />,
     plugins: (
@@ -273,7 +312,10 @@ export function AdminShell({ session, onLogout }: AdminShellProps) {
         <Menu
           mode="inline"
           selectedKeys={[selected]}
-          items={navigation}
+          items={navigation.filter((item) => navigationAvailable(
+            item.key as NavigationKey,
+            data?.meta.capabilities,
+          ))}
           onClick={({ key }) => {
             navigate(key as NavigationKey);
             if (window.matchMedia("(max-width: 991px)").matches) setCollapsed(true);

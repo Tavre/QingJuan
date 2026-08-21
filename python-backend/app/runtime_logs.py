@@ -26,9 +26,7 @@ _RUNTIME_HANDLER: RotatingFileHandler | None = None
 _HANDLER_LOCK = threading.RLock()
 
 _SENSITIVE_PATTERNS = (
-    re.compile(
-        r"(?i)(authorization\s*[:=]\s*bearer\s+)([A-Za-z0-9._~+/-]{8,}=*)"
-    ),
+    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)([A-Za-z0-9._~+/-]{8,}=*)"),
     re.compile(
         r"(?i)((?:api[_ -]?key|token|password|secret|csrf(?:token)?|cookie|"
         r"管理密码|连接\s*token|api\s*密钥)\s*[:=：]\s*[\"']?)([^\s,;，；\"'}]{4,})"

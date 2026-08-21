@@ -9,6 +9,9 @@ from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .security import API_PREFIX, authentication_enabled, require_api_authentication
@@ -61,8 +64,33 @@ def create_application(
         redoc_url=None if authentication_enabled() else "/redoc",
         openapi_url=None if authentication_enabled() else "/openapi.json",
     )
+
+    @application.exception_handler(RequestValidationError)
+    async def sanitized_validation_error(
+        _request: Request,
+        error: RequestValidationError,
+    ) -> JSONResponse:
+        # FastAPI includes the original input in its default 422 response. Registration and
+        # settings payloads contain passwords, verification codes and identity badges, so
+        # validation responses must report locations/messages without reflecting input values.
+        details = [
+            {key: value for key, value in item.items() if key not in {"input", "url"}}
+            for item in error.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(details)})
+
     request_metrics = RequestMetrics()
     application.state.request_metrics = request_metrics
+    router_prefix = api_prefix or (API_PREFIX if authenticate else "")
+    auth_prefix = f"{router_prefix}/auth" or "/auth"
+
+    @application.middleware("http")
+    async def prevent_auth_response_storage(request: Request, call_next: Callable) -> Response:
+        response = await call_next(request)
+        if request.url.path == auth_prefix or request.url.path.startswith(f"{auth_prefix}/"):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
+        return response
 
     @application.middleware("http")
     async def collect_request_metrics(request: Request, call_next: Callable) -> Response:
@@ -80,7 +108,6 @@ def create_application(
     for router in public_routers:
         application.include_router(router)
     dependencies = [Depends(require_api_authentication)] if authenticate else None
-    router_prefix = api_prefix or (API_PREFIX if authenticate else "")
     for router in routers:
         application.include_router(
             router,

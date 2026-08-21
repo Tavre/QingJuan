@@ -12,19 +12,34 @@ class SettingsController extends ChangeNotifier {
   TranslationSettings value = TranslationSettings.defaults();
   String? error;
   bool saving = false;
+  int _contextGeneration = 0;
+  bool _disposed = false;
+
+  void resetForBackendSwitch() {
+    _contextGeneration += 1;
+    state = LoadState.idle;
+    value = TranslationSettings.defaults();
+    error = null;
+    saving = false;
+    notifyListeners();
+  }
 
   Future<void> load() async {
+    final generation = _contextGeneration;
     state = LoadState.loading;
     error = null;
     notifyListeners();
     try {
-      value = await api.fetchSettings();
+      final loaded = await api.fetchSettings();
+      if (_disposed || generation != _contextGeneration) return;
+      value = loaded;
       state = LoadState.ready;
     } catch (exception) {
+      if (_disposed || generation != _contextGeneration) return;
       error = '$exception';
       state = LoadState.error;
     }
-    notifyListeners();
+    if (!_disposed && generation == _contextGeneration) notifyListeners();
   }
 
   void update(TranslationSettings next) {
@@ -33,18 +48,30 @@ class SettingsController extends ChangeNotifier {
   }
 
   Future<void> save() async {
+    final generation = _contextGeneration;
     saving = true;
     error = null;
     notifyListeners();
     try {
-      value = await api.saveSettings(value);
+      final saved = await api.saveSettings(value);
+      if (_disposed || generation != _contextGeneration) return;
+      value = saved;
       state = LoadState.ready;
     } catch (exception) {
+      if (_disposed || generation != _contextGeneration) return;
       error = '$exception';
       rethrow;
     } finally {
-      saving = false;
-      notifyListeners();
+      if (!_disposed && generation == _contextGeneration) {
+        saving = false;
+        notifyListeners();
+      }
     }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 }

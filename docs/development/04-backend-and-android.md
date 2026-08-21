@@ -38,7 +38,11 @@ HTTPS，FastAPI 不直接承担公网 TLS 终止。
 - 客户端将 Token 保存到操作系统提供的平台安全存储，普通偏好只保存根地址。
 - 设置读取不返回翻译密钥或账号密码明文，只返回是否已配置；更新使用“保留、替换、删除”语义。
 - 认证图片与导出下载遵循相同规则。客户端只向配置后端的同源 URL 附加 Token，避免泄露给第三方封面或重定向目标。
-- 当前后端是单用户服务：所有有效 Token 客户端共享书架、任务、设置和阅读进度，不提供用户隔离。
+- Linux 后端使用两层凭据：Bearer 连接 Token 保护实例入口，`X-QingJuan-User-Token` 标识当前用户。注册与登录仍须先通过连接 Token；
+  书架、任务、阅读进度、文件资源、导出和异步导入任务全部按当前用户隔离。Windows 本机模式关闭多用户能力并隐式使用管理员主体。
+- 书源目录、搜索、插件清单、脱敏设置和模型状态至少要求有效用户会话；书源导入/启停、插件启停等影响全服的写操作只允许管理员。
+  Bika 邮箱、密码与登录 Token 视为管理员配置的服务级抓取凭据，与翻译模型密钥一样由整台后端共享，不代表或同步任一用户的青卷书架；
+  多用户模式未配置凭据时必须返回可执行错误，普通搜索、预览或下载请求不得自动注册账号或写回全局设置。Windows 单用户模式可保留自动建号。
 
 ### 客户端设备登记与封禁
 
@@ -68,8 +72,11 @@ HTTPS，FastAPI 不直接承担公网 TLS 终止。
   使所有已有管理会话失效。
 - Windows 客户端自己启动的回环后端显式设置 `QINGJUAN_DISABLE_ADMIN_WEB=1` 与 `QINGJUAN_TRUST_LOCAL_ADMIN=1`。
   前者阻止挂载管理 Router 和静态站点；后者仅在网络对端与 HTTP Host 都是回环地址时允许 Flutter 通过业务 API 保存模型设置和
-  强制自检。DNS 重绑定、非回环请求、普通源码启动和 Linux 部署不得获得该信任。Windows 启动器同时清空继承的远程认证与管理凭据环境。
-- 管理界面与 Flutter 客户端访问同一业务 API 和单用户数据，不建立第二套数据库或业务规则。
+  强制自检，且所有非只读请求必须携带客户端自动添加的 `X-QingJuan-Local-Request`，使跨站 HTML 表单无法借回环信任触发副作用。
+  DNS 重绑定、非回环请求、普通源码启动和 Linux 部署不得获得该信任。Windows 启动器同时清空继承的远程认证与管理凭据环境。
+- 管理界面与 Flutter 客户端访问同一业务 API 和数据库，不建立第二套业务规则。管理会话可查看全局服务资源，编辑用户显示资料、调整用户角色并管理账号状态；内置默认管理员不可降权或停用，
+  角色变化后必须撤销该用户现有客户端会话；
+  Flutter 的管理员用户会话仍只访问该管理员自己的书架。
 - Linux 管理界面接受 `#settings` 与 `#plugins` 页面深链接：登录后分别选中“模型设置”和“插件管理”，其他未知 Hash
   回退“服务概览”。菜单内部切换同步 Hash，但不得把 API 密钥、密码、Token 或表单值写入 URL。
 - 私有网络可使用 HTTP；任何公网访问仍必须由受信反向代理提供 HTTPS。页面和 API 必须同源，禁止将管理 Cookie
@@ -286,12 +293,14 @@ SQLite、运行日志、缓存、服务 Token、模型密钥、Cookie、签名�
 APK/AAB 不得包含 Python、SQLite 生产数据、服务 Token、翻译密钥、Cookie 或下载内容。调试签名不得用于正式分发，
 正式签名材料不得提交仓库。
 
-## 9. Linux 单用户部署
+## 9. Linux 多用户部署
 
 Linux 的权威部署入口位于 `deploy/linux/`，使用原生 Python 虚拟环境与 systemd，不提供 Docker、
 Compose 或随仓库分发的反向代理配置：
 
-- 服务器从 Git 仓库拉取代码到 `/opt/qingjuan/app`，虚拟环境位于 `/opt/qingjuan/venv`。
+- `/opt/qingjuan/app` 只作为 root 管理的 Git 控制仓库；活动服务通过 `/opt/qingjuan/current` 指向
+  `/opt/qingjuan/releases/<commit>/{app,venv}`。首次安装可由 `releases/legacy` 指向原始仓库与虚拟环境，
+  第一次成功更新后即切换为不可由服务用户写入的独立 release。
 - systemd 仅运行一个 Uvicorn 进程；禁止多 worker、多实例或多个服务共享同一 SQLite 数据目录。
 - 持久化数据固定在 `/var/lib/qingjuan`，服务配置与只供管理员查看的原始连接 Token 位于
   `/etc/qingjuan`，均不得提交到仓库。
@@ -307,6 +316,21 @@ Compose 或随仓库分发的反向代理配置：
   `journalctl`，也不授予服务用户读取其他系统日志的权限。
 - 运行日志写入前和 API 返回前都执行敏感字段脱敏；连接 Token、Authorization、管理密码、Cookie、CSRF、
   会话签名密钥和模型供应商密钥不得出现在消息中。轮转上限为单文件 2 MiB、保留 2 个备份。
+- 自助注册始终要求唯一邮箱；公开策略由 `GET /api/v1/auth/registration-policy` 返回。管理员可分别启用邮箱验证码和
+  固定身份牌，两项同时启用时必须同时通过。邮箱验证码只保存 PBKDF2 摘要，绑定规范化邮箱、10 分钟过期、成功注册后
+  一次性消费，并同时执行邮箱与来源 IP 限流。注册验证在高成本哈希前执行来源 IP 限流，验证码与身份牌哈希不得阻塞
+  异步事件循环；固定身份牌长度为 8–128 个字符，且只保存带随机盐的密码摘要。
+- SMTP 与身份牌由带管理会话及 CSRF 的 `/admin/api/registration-settings` 维护。SMTP 支持 `starttls`（默认）、
+  `ssl` 和仅供无认证本地 Relay 使用的明文 `none`，明文连接不得提交认证账号或新密码；密码与身份牌使用
+  `keep` / `replace` / `clear` 更新语义，并在同一写事务内合并，避免并发保存把新密钥回滚为旧值。所有管理响应、校验响应和日志均不得
+  回显 SMTP 密码、身份牌或验证码。Windows 本机单用户模式下注册策略、验证码与注册设置接口统一返回 404。
+- GitHub 登录使用 OAuth App Device Flow，并且只请求无 scope 的公开身份。设备码、访问 Token 与轮询状态只在有界的后端内存流程中短暂保存；
+  Token 只可用于固定的 `https://api.github.com/user` 身份复验，随后立即丢弃。数据库只保存不可变的 GitHub 数字用户 ID 和当前登录名，
+  ID 建立唯一索引；未绑定身份不得登录或自动注册。绑定、解绑与 2FA 管理都要求当前用户会话，敏感操作还必须再次校验本地密码。
+- 可选 2FA 遵循 RFC 6238：HMAC-SHA1、6 位、30 秒、最多前后一个时间步，并原子保存最后一次成功计数器以拒绝重放。每用户密钥随机生成，
+  使用独立稳定的 `QINGJUAN_2FA_ENCRYPTION_KEY` 域隔离派生 AES-GCM 密钥加密保存，不随管理密码或管理会话密钥轮换。恢复码至少 128 位熵、
+  只返回一次、以该独立根密钥的另一域 HMAC 保存且原子一次性消费；登录 challenge 有效期、
+  单流程尝试次数和跨 challenge 的用户 / 来源限流都必须有界。Windows 本机模式不得挂载 GitHub 或 2FA 账号接口。
 - `sudo qingjuan-info` 从管理员连接文件读取原始 Token，并可在后续需要时再次打印；安装脚本将配置目录设为
   `0750 root:qingjuan`、连接文件设为 `0640 root:qingjuan`，服务配置文件仍保持 `0600 root:root`。
   这是供 Windows / Android 客户端配置和管理界面按需显示使用的持久化入口。
@@ -330,26 +354,39 @@ sudo qingjuan-info
 `0.0.0.0`。不会联网查询或自动暴露公网 IP；检测不到私有地址时，必须先配置私有网络，或使用
 `--url https://域名` 指定已配置 HTTPS 反向代理的地址。`--url` 不包含 `/api/v1`；只允许 SSH 隧道访问时
 使用 `--url http://127.0.0.1:19453 --bind 127.0.0.1`。
-安装脚本生成 32 字节随机 Token 和独立随机管理密码、写入服务端摘要、创建虚拟环境、安装 systemd 单实例服务，
-并将客户端连接信息、管理地址和首次管理密码打印到控制台。后续更新使用：
+安装脚本生成 32 字节随机 Token 和独立随机管理密码、写入服务端摘要、创建虚拟环境、安装 systemd 单实例服务与
+独立的 root 在线升级服务，并将客户端连接信息、管理地址和首次管理密码打印到控制台。后续既可在管理界面的
+“后端升级”中检查并安装固定上游版本，也可使用：
 
 ```bash
 sudo bash /opt/qingjuan/app/deploy/linux/update.sh
 sudo qingjuan-info
 ```
 
-卸载程序时默认保留 `/var/lib/qingjuan`：
+在线升级 API 只负责同步、原子写入固定且无命令参数的 `/run/qingjuan/update-request.json`，不得直接以 FastAPI 子进程执行
+`update.sh`，也不得接受 URL、分支、路径或 shell 参数。`qingjuan-updater.path` 触发独立 root oneshot；升级状态以
+脱敏 JSON 原子写入 `/var/lib/qingjuan/backend-update.json`，因此 FastAPI 重启后仍可查询。root 升级器只从当前分支配置的
+固定 upstream fetch 到专用 ref，并要求请求 candidate 与该 ref 完全一致；随后用 `git archive` 在独立 release 中完成
+全新 venv、静态资源、权限和 Python 导入预检。最终短暂停服并备份 SQLite，通过 `current` 符号链接原子切换，连续验证
+新 PID、版本和 commit；失败时恢复旧 current、控制仓库、全部 unit/管理命令、配置和数据库快照。回滚材料位于
+`0700 root:root` 的 `/var/lib/qingjuan-updater`，只有旧服务通过健康检查后才清理；回滚异常必须保留并报告
+`ROLLBACK_FAILED`。安装、更新、改密和卸载共用维护锁。
+
+不含在线升级器的旧部署使用旧版脚本拉取本版本后，可能需要再执行一次新版 `update.sh` 才能安装 path unit 和运行器；
+管理 API 在完成引导前必须返回 `unsupported` 和明确的终端操作提示。
+
+卸载程序时默认保留 `/var/lib/qingjuan` 以及含独立 2FA 密钥的受限 `/etc/qingjuan`：
 
 ```bash
 sudo qingjuan-uninstall
 ```
 
-需要同时永久删除书库数据时，直接执行 `qingjuan-uninstall --purge-data`。卸载脚本只允许删除固定的青卷目录，
+需要同时永久删除书库数据和密钥配置时，直接执行 `qingjuan-uninstall --purge-data`。卸载脚本只允许删除固定的青卷目录，
 并在保留数据时保留 `qingjuan` 系统用户，避免书库文件失去属主。
 
-备份必须同时覆盖 SQLite 与书籍文件。默认做法是停止 `qingjuan-backend`，备份整个
-`/var/lib/qingjuan` 后再启动；恢复到临时目录验证数据库与清单后才能替换生产目录。当前不承诺无停机
-备份、多用户隔离、集群或对象存储。
+备份必须同时覆盖 SQLite、书籍文件与 `/etc/qingjuan/backend.env` 中的独立 2FA 密钥；数据库与密钥缺一不可。默认做法是停止
+`qingjuan-backend`，配套备份整个 `/var/lib/qingjuan` 和受限配置文件后再启动；恢复到临时目录验证数据库与清单后才能替换生产目录。当前不承诺无停机
+备份、集群或对象存储。恢复后必须同时校验用户、会话摘要、书架所有权与文件目录的一致性。
 
 ## 10. 安全检查
 

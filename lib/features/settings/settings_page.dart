@@ -6,11 +6,14 @@ import '../../app/app_scope.dart';
 import '../../app/app_state.dart';
 import '../../core/backend/backend_connection_manager.dart';
 import '../../core/backend/backend_url_validator.dart';
-import '../../shared/app_surface.dart';
+import '../../shared/mobile_sheet.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
 import '../audiobook/tts_voice_service.dart';
+import '../auth/widgets/auth_account_card.dart';
 import 'widgets/backend_connection_card.dart';
+import 'widgets/mobile_my_dashboard.dart';
+import 'widgets/settings_section_card.dart';
 import 'widgets/theme_settings_card.dart';
 import 'widgets/translation_model_card.dart';
 import 'widgets/tts_voice_settings_card.dart';
@@ -60,34 +63,32 @@ class _SettingsPageState extends State<SettingsPage> {
         if (backendToken.isEmpty) {
           throw StateError('Linux 后端必须填写连接 Token');
         }
-        await scope.api.testConnection(
+        await scope.backend.testRemoteConnection(
           baseUrl: backendUrl,
           token: backendToken,
         );
       }
-      if (_connectionMode == BackendConnectionMode.remote) {
-        await scope.appState.saveRemoteBackendConnection(
-          url: backendUrl,
-          token: backendToken,
+      if (connectionChanged) {
+        await scope.appState.applyBackendConnection(
+          mode: _connectionMode,
+          remoteUrl: backendUrl,
+          remoteToken: backendToken,
         );
+        await scope.auth.clearForBackendSwitch();
       }
-      await scope.appState.selectBackendMode(_connectionMode);
       await scope.backend.ensureReady();
       if (scope.backend.status != BackendStatus.ready) {
         throw StateError(scope.backend.message);
       }
-      scope.appState.clearNotice();
-      if (connectionChanged) {
-        scope.library.resetForBackendSwitch();
-        scope.sources.resetForBackendSwitch();
-        scope.tasks.resetForBackendSwitch();
+      await scope.auth.initializeForCurrentBackend(
+        multiUser: scope.backend.multiUserEnabled,
+      );
+      if (scope.auth.canAccessWorkspace &&
+          scope.backend.capabilities['translationModelCheck'] == true &&
+          !scope.backend.translationModelCheckInProgress) {
+        await scope.backend.checkTranslationModel();
       }
-      await Future.wait<void>(<Future<void>>[
-        scope.library.load(),
-        scope.sources.load(),
-        scope.tasks.load(),
-        scope.settings.load(),
-      ]);
+      scope.appState.clearNotice();
       if (mounted) {
         final modelReady =
             scope.backend.translationModelCheck?.available == true;
@@ -130,29 +131,35 @@ class _SettingsPageState extends State<SettingsPage> {
     final settings = scope.settings;
     final compact = usesMobileUi(context);
     return AnimatedBuilder(
-      animation: Listenable.merge(<Listenable>[scope.appState, settings]),
+      animation: Listenable.merge(
+        <Listenable>[
+          scope.appState,
+          scope.auth,
+          scope.library,
+          scope.tasks,
+          settings,
+          scope.backend,
+        ],
+      ),
       builder: (context, _) => PageFrame(
         title: compact ? '我的' : '设置',
-        subtitle: '管理界面主题、设备听书、后端连接和模型服务。',
+        subtitle: '账户、阅读偏好与当前后端服务。',
         compactHeader: ReadingPageHeader(
           title: '我的',
-          subtitle: '阅读偏好与服务器连接',
+          subtitle: scope.auth.canAccessWorkspace ? '你的账户与阅读空间' : '登录后使用独立书架',
           actions: <Widget>[
-            if (scope.appState.clientPluginManagementAvailable) ...<Widget>[
-              Tooltip(
-                message: '插件配置',
-                child: IconButton(
-                  key: const ValueKey('settings-plugins-button'),
-                  icon: const Icon(
-                    FluentIcons.plug_connected,
-                    semanticLabel: '插件配置',
-                  ),
-                  onPressed: () =>
-                      scope.appState.selectSection(AppSection.plugins),
+            Tooltip(
+              message: '外观主题',
+              child: IconButton(
+                key: const ValueKey('settings-theme-button'),
+                icon: const Icon(
+                  FluentIcons.brightness,
+                  semanticLabel: '外观主题',
                 ),
+                onPressed: () => unawaited(_openThemeSettings(scope)),
               ),
-              const SizedBox(width: 7),
-            ],
+            ),
+            const SizedBox(width: 7),
             Tooltip(
               message: '关于青卷',
               child: IconButton(
@@ -165,119 +172,356 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
             const SizedBox(width: 7),
-            FilledButton(
-              onPressed: _savingConnection || settings.saving ? null : _save,
-              child: const Text('保存连接'),
-            ),
           ],
         ),
-        command: Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: <Widget>[
-            if (compact)
+        child: compact
+            ? _buildMobileDashboard(scope)
+            : _buildDesktopSettings(scope),
+      ),
+    );
+  }
+
+  Widget _buildMobileDashboard(AppScope scope) {
+    final app = scope.appState;
+    final auth = scope.auth;
+    final user = auth.user;
+    final localMode = app.connectionMode == BackendConnectionMode.local;
+    final connected = scope.backend.status == BackendStatus.ready;
+    final authenticated = auth.isAuthenticated && user != null;
+    final displayName = auth.isLocalAdministrator || localMode
+        ? '本机管理员'
+        : authenticated
+            ? user.label
+            : auth.isBusy
+                ? '正在恢复账户'
+                : '登录青卷';
+    final roleLabel = auth.isLocalAdministrator || localMode
+        ? '管理员'
+        : authenticated
+            ? user.isAdministrator
+                ? '管理员'
+                : '普通用户'
+            : auth.isBusy
+                ? '连接中'
+                : '未登录';
+    final profileSubtitle = auth.isLocalAdministrator || localMode
+        ? 'Windows 本机后端 · 当前设备专用'
+        : authenticated
+            ? '@${user.username} · Linux 独立书架'
+            : '注册或登录后使用独立书架与阅读进度';
+    final connectionLabel = connected
+        ? localMode
+            ? '本机已连接'
+            : '服务器已连接'
+        : '后端待连接';
+    final backendLabel = connected
+        ? localMode
+            ? 'Windows 本机后端'
+            : 'Linux 服务器已连接'
+        : '检查服务器连接';
+    final themeLabel = switch (app.themeMode) {
+      AppThemeMode.system => '跟随系统外观',
+      AppThemeMode.light => '浅色外观',
+      AppThemeMode.dark => '深色外观',
+    };
+    final translationLabel =
+        scope.backend.translationModelCheck?.available == true
+            ? '模型可用'
+            : scope.settings.value.translationModel.enabled
+                ? '已配置，等待检测'
+                : localMode
+                    ? '尚未启用'
+                    : '由服务器统一管理';
+    final completedTaskCount =
+        scope.tasks.tasks.where((task) => task.status == 'completed').length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        MobileMyDashboard(
+          displayName: displayName,
+          profileSubtitle: profileSubtitle,
+          roleLabel: roleLabel,
+          avatarText: _firstDisplayCharacter(displayName),
+          connectionLabel: connectionLabel,
+          connected: connected,
+          canAccessWorkspace: auth.canAccessWorkspace,
+          bookCount: scope.library.books.length,
+          activeTaskCount: scope.tasks.activeCount,
+          completedTaskCount: completedTaskCount,
+          backendLabel: backendLabel,
+          themeLabel: themeLabel,
+          voiceLabel: app.ttsVoice?.name ?? '跟随系统声音',
+          translationLabel: translationLabel,
+          inlineAccount: !auth.canAccessWorkspace && !localMode
+              ? AuthAccountCard(
+                  auth: auth,
+                  backend: scope.backend,
+                  isLocalMode: false,
+                  backendUrl: app.backendUrl,
+                  backendRevision: app.backendConnectionRevision,
+                )
+              : null,
+          onOpenAccount: () => unawaited(_openAccountSettings(scope)),
+          onOpenBackend: () => unawaited(_openBackendSettings(scope)),
+          onOpenTheme: () => unawaited(_openThemeSettings(scope)),
+          onOpenVoice: () => unawaited(_openVoiceSettings(scope)),
+          onOpenTranslation: () => unawaited(_openTranslationSettings(scope)),
+          onOpenTasks: () => app.selectSection(AppSection.tasks),
+          onOpenPlugins: app.clientPluginManagementAvailable
+              ? () => app.selectSection(AppSection.plugins)
+              : null,
+          onOpenAbout: () => app.selectSection(AppSection.about),
+        ),
+        if (scope.settings.error case final error?) ...<Widget>[
+          const SizedBox(height: 16),
+          InfoBar(
+            title: const Text('设置服务不可用'),
+            content: Text(error),
+            severity: InfoBarSeverity.warning,
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildDesktopSettings(AppScope scope) {
+    final settings = scope.settings;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        const SectionTitle('账户概览'),
+        AuthAccountCard(
+          auth: scope.auth,
+          backend: scope.backend,
+          isLocalMode:
+              scope.appState.connectionMode == BackendConnectionMode.local,
+          backendUrl: scope.appState.backendUrl,
+          backendRevision: scope.appState.backendConnectionRevision,
+        ),
+        const SizedBox(height: 30),
+        const SectionTitle('后端连接'),
+        BackendConnectionCard(
+          backend: scope.backend,
+          activeMode: scope.appState.connectionMode,
+          draftMode: _connectionMode,
+          localBackendSupported: scope.appState.localBackendSupported,
+          backendUrlController: _backendController,
+          backendTokenController: _backendTokenController,
+          onModeChanged: (mode) => setState(() => _connectionMode = mode),
+        ),
+        const SizedBox(height: 12),
+        Align(
+          alignment: AlignmentDirectional.centerEnd,
+          child: FilledButton(
+            key: const ValueKey('save-backend-connection'),
+            onPressed: _savingConnection || settings.saving ? null : _save,
+            child: Text(_savingConnection ? '正在保存' : '保存连接'),
+          ),
+        ),
+        const SizedBox(height: 30),
+        const SectionTitle('界面主题'),
+        ThemeSettingsCard(
+          themeMode: scope.appState.themeMode,
+          onChanged: (mode) => unawaited(scope.appState.setThemeMode(mode)),
+        ),
+        const SizedBox(height: 30),
+        const SectionTitle('听书声音'),
+        TtsVoiceSettingsCard(
+          appState: scope.appState,
+          compact: false,
+          voiceService: widget.voiceService,
+        ),
+        const SizedBox(height: 30),
+        const SectionTitle('翻译服务'),
+        TranslationModelCard(
+          backend: scope.backend,
+          settings: settings,
+          localConfiguration:
+              scope.appState.connectionMode == BackendConnectionMode.local,
+          checking: _modelChecking,
+          onCheck: (force) => _checkTranslationModel(scope, force: force),
+        ),
+        if (settings.error case final error?) ...<Widget>[
+          const SizedBox(height: 16),
+          InfoBar(
+            title: const Text('设置服务不可用'),
+            content: Text(error),
+            severity: InfoBarSeverity.warning,
+          ),
+        ],
+        const SizedBox(height: 30),
+        const SectionTitle('关于'),
+        SettingsSectionCard(
+          icon: FluentIcons.info,
+          child: Row(
+            children: <Widget>[
+              const Expanded(child: Text('版本信息、项目许可与开发说明。')),
+              const SizedBox(width: 12),
               Button(
-                key: const ValueKey('settings-about-button'),
+                key: const ValueKey('settings-about-card-button'),
                 onPressed: () => scope.appState.selectSection(AppSection.about),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    Icon(FluentIcons.info, size: 16),
-                    SizedBox(width: 8),
-                    Text('关于青卷'),
-                  ],
-                ),
+                child: const Text('关于青卷'),
               ),
-            FilledButton(
-              onPressed: _savingConnection || settings.saving ? null : _save,
-              child: const Text('保存连接'),
-            ),
-          ],
+            ],
+          ),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            if (compact) ...<Widget>[
-              FeatureHero(
-                icon: FluentIcons.contact,
-                title: '设备与服务',
-                message: scope.appState.localBackendSupported
-                    ? '界面与设备偏好保存在本机，书架和任务由当前选择的后端管理。'
-                    : '界面与设备偏好保存在手机，连接、书架和任务数据由 Linux 后端统一管理。',
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: <Widget>[
-                    StatusPill(
-                      switch (scope.appState.themeMode) {
-                        AppThemeMode.system => '跟随系统',
-                        AppThemeMode.light => '浅色外观',
-                        AppThemeMode.dark => '深色外观',
-                      },
-                      accented: true,
-                      icon: FluentIcons.color,
-                    ),
-                    StatusPill(
-                      scope.backend.status == BackendStatus.ready
-                          ? scope.appState.connectionMode ==
-                                  BackendConnectionMode.local
-                              ? '本机后端已连接'
-                              : '服务器已连接'
-                          : '后端待检查',
-                      icon: scope.backend.status == BackendStatus.ready
-                          ? FluentIcons.plug_connected
-                          : FluentIcons.warning,
-                    ),
-                  ],
-                ),
+      ],
+    );
+  }
+
+  Future<void> _openAccountSettings(AppScope scope) => _showSettingsSheet(
+        title: '账号管理',
+        subtitle: '登录、注册或查看当前账户',
+        animation: Listenable.merge(
+          <Listenable>[scope.appState, scope.auth, scope.backend],
+        ),
+        childBuilder: () => AuthAccountCard(
+          auth: scope.auth,
+          backend: scope.backend,
+          isLocalMode:
+              scope.appState.connectionMode == BackendConnectionMode.local,
+          backendUrl: scope.appState.backendUrl,
+          backendRevision: scope.appState.backendConnectionRevision,
+        ),
+      );
+
+  Future<void> _openThemeSettings(AppScope scope) => _showSettingsSheet(
+        title: '外观主题',
+        subtitle: '选择青卷在当前设备上的显示方式',
+        animation: scope.appState,
+        childBuilder: () => ThemeSettingsCard(
+          themeMode: scope.appState.themeMode,
+          onChanged: (mode) => unawaited(scope.appState.setThemeMode(mode)),
+        ),
+      );
+
+  Future<void> _openVoiceSettings(AppScope scope) => _showSettingsSheet(
+        title: '听书声音',
+        subtitle: '选择系统声音并试听',
+        animation: scope.appState,
+        childBuilder: () => TtsVoiceSettingsCard(
+          appState: scope.appState,
+          compact: true,
+          voiceService: widget.voiceService,
+        ),
+      );
+
+  Future<void> _openTranslationSettings(AppScope scope) {
+    var checking = false;
+    return showMobileSheet<void>(
+      context: context,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setSheetState) => AnimatedBuilder(
+          animation: Listenable.merge(
+            <Listenable>[scope.settings, scope.backend],
+          ),
+          builder: (context, _) => MobileSheet(
+            title: '翻译服务',
+            subtitle: '查看模型配置与连接状态',
+            onClose: () => Navigator.of(sheetContext).pop(),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: TranslationModelCard(
+                backend: scope.backend,
+                settings: scope.settings,
+                localConfiguration: scope.appState.connectionMode ==
+                    BackendConnectionMode.local,
+                checking: checking,
+                onCheck: (force) async {
+                  setSheetState(() => checking = true);
+                  await _checkTranslationModel(scope, force: force);
+                  if (sheetContext.mounted) {
+                    setSheetState(() => checking = false);
+                  }
+                },
               ),
-              const SizedBox(height: 28),
-            ],
-            const SectionTitle('界面主题'),
-            ThemeSettingsCard(
-              themeMode: scope.appState.themeMode,
-              onChanged: (mode) => unawaited(scope.appState.setThemeMode(mode)),
             ),
-            const SizedBox(height: 30),
-            const SectionTitle('听书声音'),
-            TtsVoiceSettingsCard(
-              appState: scope.appState,
-              compact: compact,
-              voiceService: widget.voiceService,
-            ),
-            const SizedBox(height: 30),
-            const SectionTitle('后端连接'),
-            BackendConnectionCard(
-              backend: scope.backend,
-              activeMode: scope.appState.connectionMode,
-              draftMode: _connectionMode,
-              localBackendSupported: scope.appState.localBackendSupported,
-              backendUrlController: _backendController,
-              backendTokenController: _backendTokenController,
-              onModeChanged: (mode) => setState(() => _connectionMode = mode),
-            ),
-            const SizedBox(height: 30),
-            const SectionTitle('翻译服务'),
-            TranslationModelCard(
-              backend: scope.backend,
-              settings: settings,
-              localConfiguration:
-                  scope.appState.connectionMode == BackendConnectionMode.local,
-              checking: _modelChecking,
-              onCheck: (force) => _checkTranslationModel(scope, force: force),
-            ),
-            if (settings.error != null) ...<Widget>[
-              const SizedBox(height: 16),
-              InfoBar(
-                title: const Text('设置服务不可用'),
-                content: Text(settings.error!),
-                severity: InfoBarSeverity.warning,
-              ),
-            ],
-          ],
+          ),
         ),
       ),
     );
+  }
+
+  Future<void> _openBackendSettings(AppScope scope) {
+    var draftMode = _connectionMode;
+    var saving = false;
+    return showMobileSheet<void>(
+      context: context,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setSheetState) => AnimatedBuilder(
+          animation: Listenable.merge(
+            <Listenable>[scope.appState, scope.settings, scope.backend],
+          ),
+          builder: (context, _) => MobileSheet(
+            title: '后端连接',
+            subtitle: '选择本机或 Linux 服务器',
+            onClose: () => Navigator.of(sheetContext).pop(),
+            actions: <Widget>[
+              FilledButton(
+                key: const ValueKey('save-backend-connection'),
+                onPressed: saving || scope.settings.saving
+                    ? null
+                    : () async {
+                        setSheetState(() => saving = true);
+                        _connectionMode = draftMode;
+                        await _save();
+                        if (sheetContext.mounted) {
+                          setSheetState(() => saving = false);
+                        }
+                      },
+                child: Text(saving ? '正在保存' : '保存连接'),
+              ),
+            ],
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: BackendConnectionCard(
+                backend: scope.backend,
+                activeMode: scope.appState.connectionMode,
+                draftMode: draftMode,
+                localBackendSupported: scope.appState.localBackendSupported,
+                backendUrlController: _backendController,
+                backendTokenController: _backendTokenController,
+                onModeChanged: (mode) {
+                  draftMode = mode;
+                  _connectionMode = mode;
+                  setSheetState(() {});
+                },
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showSettingsSheet({
+    required String title,
+    required String subtitle,
+    required Listenable animation,
+    required Widget Function() childBuilder,
+  }) {
+    return showMobileSheet<void>(
+      context: context,
+      builder: (sheetContext) => AnimatedBuilder(
+        animation: animation,
+        builder: (context, _) => MobileSheet(
+          title: title,
+          subtitle: subtitle,
+          onClose: () => Navigator.of(sheetContext).pop(),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: childBuilder(),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _firstDisplayCharacter(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return '青';
+    return String.fromCharCode(trimmed.runes.first);
   }
 
   Future<void> _checkTranslationModel(

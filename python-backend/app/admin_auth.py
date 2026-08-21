@@ -13,12 +13,15 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, status
 
+from .multi_user import multi_user_enabled
+
 ADMIN_PASSWORD_HASH_ENV = "QINGJUAN_ADMIN_PASSWORD_HASH"
 ADMIN_SESSION_SECRET_ENV = "QINGJUAN_ADMIN_SESSION_SECRET"
 ADMIN_SESSION_COOKIE = "qingjuan_admin_session"
 ADMIN_CSRF_HEADER = "X-QingJuan-CSRF"
 ADMIN_SESSION_TTL_SECONDS = 12 * 60 * 60
 TRUST_LOCAL_ADMIN_ENV = "QINGJUAN_TRUST_LOCAL_ADMIN"
+LOCAL_ADMIN_REQUEST_HEADER = "X-QingJuan-Local-Request"
 PASSWORD_HASH_ITERATIONS = 600_000
 
 _PASSWORD_HASH_ALGORITHM = "pbkdf2_sha256"
@@ -104,9 +107,7 @@ def validate_admin_auth_configuration() -> bool:
     password_hash = configured_admin_password_hash()
     session_secret = configured_admin_session_secret()
     if (password_hash is None) != (session_secret is None):
-        raise RuntimeError(
-            f"{ADMIN_PASSWORD_HASH_ENV} 与 {ADMIN_SESSION_SECRET_ENV} 必须同时配置"
-        )
+        raise RuntimeError(f"{ADMIN_PASSWORD_HASH_ENV} 与 {ADMIN_SESSION_SECRET_ENV} 必须同时配置")
     return password_hash is not None
 
 
@@ -114,15 +115,21 @@ def verify_admin_password(password: str) -> bool:
     configured = configured_admin_password_hash()
     if configured is None:
         return False
+    return verify_password_hash(password, configured)
+
+
+def verify_password_hash(password: str, password_hash: str) -> bool:
+    """Verify a password against QingJuan's PBKDF2 password-hash format."""
+
     try:
-        algorithm, iterations, salt, expected = _parse_password_hash(configured)
+        algorithm, iterations, salt, expected = _parse_password_hash(password_hash)
         actual = hashlib.pbkdf2_hmac(
             "sha256",
             password.encode("utf-8"),
             salt,
             iterations,
         )
-    except (UnicodeError, ValueError):
+    except (RuntimeError, UnicodeError, ValueError):
         return False
     return algorithm == _PASSWORD_HASH_ALGORITHM and hmac.compare_digest(actual, expected)
 
@@ -205,18 +212,28 @@ def require_admin_session(request: Request, *, require_csrf: bool = False) -> Ad
     return session
 
 
+def require_admin_write_access(request: Request) -> AdminSession:
+    session = require_admin_session(request)
+    if session.token == "local-desktop":
+        return session
+    return require_admin_session(request, require_csrf=True)
+
+
 def _trusted_local_admin_session(
     request: Request,
     *,
     now: int | None = None,
 ) -> AdminSession | None:
-    if os.getenv(TRUST_LOCAL_ADMIN_ENV, "").strip() != "1":
+    if os.name != "nt" or multi_user_enabled() or os.getenv(TRUST_LOCAL_ADMIN_ENV, "").strip() != "1":
         return None
     client = request.client
     if client is None:
         return None
-    if not _is_loopback_address(client.host) or not _is_loopback_address(
-        request.url.hostname or ""
+    if not _is_loopback_address(client.host) or not _is_loopback_address(request.url.hostname or ""):
+        return None
+    if (
+        request.method.upper() not in {"GET", "HEAD", "OPTIONS"}
+        and request.headers.get(LOCAL_ADMIN_REQUEST_HEADER, "") != "1"
     ):
         return None
     issued_at = int(time.time() if now is None else now)
@@ -271,9 +288,7 @@ def _sign(secret: bytes, value: str) -> str:
 
 
 def _csrf_token(secret: bytes, session_token: str) -> str:
-    return _base64url_encode(
-        hmac.digest(secret, f"csrf:{session_token}".encode("ascii"), "sha256")
-    )
+    return _base64url_encode(hmac.digest(secret, f"csrf:{session_token}".encode("ascii"), "sha256"))
 
 
 def _base64url_encode(value: bytes) -> str:

@@ -48,10 +48,14 @@ $previousDataDir = $env:QINGJUAN_DATA_DIR
 $previousTrustLocalAdmin = $env:QINGJUAN_TRUST_LOCAL_ADMIN
 $previousDisableAdminWeb = $env:QINGJUAN_DISABLE_ADMIN_WEB
 $previousAuthTokenDigest = $env:QINGJUAN_AUTH_TOKEN_SHA256
+$previousMultiUser = $env:QINGJUAN_MULTI_USER
+$previousTwoFactorEncryptionKey = $env:QINGJUAN_2FA_ENCRYPTION_KEY
 $env:QINGJUAN_DATA_DIR = Join-Path $smokeRoot "data"
 $env:QINGJUAN_TRUST_LOCAL_ADMIN = "1"
 $env:QINGJUAN_DISABLE_ADMIN_WEB = "1"
 $env:QINGJUAN_AUTH_TOKEN_SHA256 = ""
+$env:QINGJUAN_MULTI_USER = "0"
+$env:QINGJUAN_2FA_ENCRYPTION_KEY = ""
 $stdout = Join-Path $smokeRoot "backend.stdout.log"
 $stderr = Join-Path $smokeRoot "backend.stderr.log"
 $process = Start-Process -FilePath $backendPath -ArgumentList @(
@@ -97,6 +101,93 @@ try {
         }
     }
 
+    foreach ($hiddenMultiUserPath in @(
+        "/api/v1/auth/registration-policy",
+        "/api/v1/auth/account/security",
+        "/admin/api/registration-settings",
+        "/admin/api/users"
+    )) {
+        try {
+            Invoke-WebRequest `
+                -Uri "http://127.0.0.1:$Port$hiddenMultiUserPath" `
+                -TimeoutSec 5 `
+                -UseBasicParsing | Out-Null
+            throw "Windows local backend unexpectedly exposes $hiddenMultiUserPath."
+        }
+        catch {
+            $hiddenResponse = $_.Exception.Response
+            if ($null -eq $hiddenResponse -or [int]$hiddenResponse.StatusCode -ne 404) {
+                throw
+            }
+        }
+    }
+
+    $hiddenMultiUserPosts = @(
+        @{ Path = "/api/v1/auth/email-code"; Body = @{ email = "reader@example.com" } },
+        @{
+            Path = "/api/v1/auth/register"
+            Body = @{
+                username = "reader"
+                email = "reader@example.com"
+                password = "release-smoke-password"
+            }
+        },
+        @{
+            Path = "/api/v1/auth/login"
+            Body = @{ username = "reader"; password = "release-smoke-password" }
+        },
+        @{
+            Path = "/api/v1/auth/login/2fa"
+            Body = @{ challengeToken = ("x" * 43); code = "123456" }
+        },
+        @{
+            Path = "/api/v1/auth/github/device/start"
+            Body = @{ purpose = "login" }
+        },
+        @{
+            Path = "/api/v1/auth/github/device/poll"
+            Body = @{ flowId = ("x" * 43) }
+        },
+        @{
+            Path = "/api/v1/auth/account/github/unbind"
+            Body = @{ password = "release-smoke-password" }
+        },
+        @{
+            Path = "/api/v1/auth/account/2fa/setup"
+            Body = @{ password = "release-smoke-password" }
+        },
+        @{
+            Path = "/api/v1/auth/account/2fa/enable"
+            Body = @{ setupId = ("x" * 43); code = "123456" }
+        },
+        @{
+            Path = "/api/v1/auth/account/2fa/disable"
+            Body = @{ password = "release-smoke-password"; code = "123456" }
+        },
+        @{
+            Path = "/api/v1/auth/account/2fa/recovery-codes"
+            Body = @{ password = "release-smoke-password"; code = "123456" }
+        }
+    )
+    foreach ($hiddenPost in $hiddenMultiUserPosts) {
+        try {
+            Invoke-WebRequest `
+                -Uri "http://127.0.0.1:$Port$($hiddenPost.Path)" `
+                -Method Post `
+                -ContentType "application/json" `
+                -Body ($hiddenPost.Body | ConvertTo-Json -Compress) `
+                -TimeoutSec 5 `
+                -UseBasicParsing | Out-Null
+            throw "Windows local backend unexpectedly exposes $($hiddenPost.Path)."
+        }
+        catch {
+            $hiddenResponse = $_.Exception.Response
+            if ($null -eq $hiddenResponse -or [int]$hiddenResponse.StatusCode -ne 404) {
+                throw
+            }
+        }
+    }
+
     $settings = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/settings" -TimeoutSec 5
     $settings.translationModel.enabled = $false
     $settings.translationModel | Add-Member -NotePropertyName apiKey -NotePropertyValue "" -Force
@@ -108,11 +199,17 @@ try {
         password = ""
         passwordAction = "keep"
     }
+    # Windows PowerShell 5.1 otherwise encodes a string request body with the
+    # active ANSI code page even when the media type is JSON. Send explicit
+    # UTF-8 bytes so settings containing Chinese text round-trip correctly.
+    $settingsJson = $settings | ConvertTo-Json -Depth 8 -Compress
+    $settingsBody = [System.Text.Encoding]::UTF8.GetBytes($settingsJson)
     $savedSettings = Invoke-RestMethod `
         -Uri "http://127.0.0.1:$Port/api/v1/settings" `
         -Method Put `
-        -ContentType "application/json" `
-        -Body ($settings | ConvertTo-Json -Depth 8 -Compress) `
+        -Headers @{ "X-QingJuan-Local-Request" = "1" } `
+        -ContentType "application/json; charset=utf-8" `
+        -Body $settingsBody `
         -TimeoutSec 5
     if ($savedSettings.translationModel.enabled) {
         throw "Windows client model settings API did not persist the update."
@@ -169,5 +266,17 @@ finally {
     }
     else {
         $env:QINGJUAN_AUTH_TOKEN_SHA256 = $previousAuthTokenDigest
+    }
+    if ($null -eq $previousMultiUser) {
+        Remove-Item Env:QINGJUAN_MULTI_USER -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:QINGJUAN_MULTI_USER = $previousMultiUser
+    }
+    if ($null -eq $previousTwoFactorEncryptionKey) {
+        Remove-Item Env:QINGJUAN_2FA_ENCRYPTION_KEY -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:QINGJUAN_2FA_ENCRYPTION_KEY = $previousTwoFactorEncryptionKey
     }
 }

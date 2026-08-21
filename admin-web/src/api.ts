@@ -1,9 +1,14 @@
 import type {
+  BackendUpdateStartPayload,
+  BackendUpdateStartResponse,
+  BackendUpdateStatus,
   Book,
   BookSource,
   ConnectionTokenStatus,
   Device,
   RuntimeLogBatch,
+  RegistrationSettings,
+  RegistrationSettingsUpdate,
   ServiceDiagnostics,
   ServiceMeta,
   SessionInfo,
@@ -17,6 +22,10 @@ import type {
   Task,
   TaskLog,
   TranslationModelCheck,
+  UserAdminView,
+  UserCreatePayload,
+  UserPasswordPayload,
+  UserUpdatePayload,
 } from "./types";
 
 let csrfToken = "";
@@ -65,6 +74,38 @@ export const getRuntimeLogs = (limit = 500): Promise<RuntimeLogBatch> =>
   request(`/admin/api/runtime-logs?limit=${encodeURIComponent(limit)}`);
 export const getServiceDiagnostics = (): Promise<ServiceDiagnostics> =>
   request("/admin/api/diagnostics");
+export const getBackendUpdateStatus = (): Promise<BackendUpdateStatus> =>
+  request("/admin/api/backend-update");
+export const checkBackendUpdate = (): Promise<BackendUpdateStatus> =>
+  request("/admin/api/backend-update/check", { method: "POST" });
+export const startBackendUpdate = (
+  payload: BackendUpdateStartPayload,
+): Promise<BackendUpdateStartResponse> =>
+  request("/admin/api/backend-update", { method: "POST", body: JSON.stringify(payload) });
+export const getRegistrationSettings = (): Promise<RegistrationSettings> =>
+  request("/admin/api/registration-settings");
+export const updateRegistrationSettings = (
+  payload: RegistrationSettingsUpdate,
+): Promise<RegistrationSettings> =>
+  request("/admin/api/registration-settings", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+export const getUsers = (): Promise<UserAdminView[]> => request("/admin/api/users");
+export const createUser = (payload: UserCreatePayload): Promise<UserAdminView> =>
+  request("/admin/api/users", { method: "POST", body: JSON.stringify(payload) });
+export const updateUser = (userId: string, payload: UserUpdatePayload): Promise<UserAdminView> =>
+  request(`/admin/api/users/${encodeURIComponent(userId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+export const resetUserPassword = (userId: string, payload: UserPasswordPayload): Promise<void> =>
+  request(`/admin/api/users/${encodeURIComponent(userId)}/password`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+export const revokeUserSessions = (userId: string): Promise<void> =>
+  request(`/admin/api/users/${encodeURIComponent(userId)}/sessions/revoke`, { method: "POST" });
 export const checkTranslationModel = (force = false): Promise<TranslationModelCheck> =>
   request(`/api/v1/translation-model/check?force=${force}`, { method: "POST" });
 export const getDevices = (): Promise<Device[]> => request("/api/v1/devices");

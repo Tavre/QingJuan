@@ -4,6 +4,7 @@ import '../../../core/models/site_plugin.dart';
 import '../../../core/models/source.dart';
 import '../../../shared/app_surface.dart';
 import '../../../shared/responsive.dart';
+import '../../../shared/smooth_scroll.dart';
 
 enum SitePluginStatusFilter { all, enabled, disabled }
 
@@ -252,7 +253,9 @@ class _PluginScrollRegion extends StatefulWidget {
 }
 
 class _PluginScrollRegionState extends State<_PluginScrollRegion> {
-  final ScrollController _controller = ScrollController();
+  final ScrollController _controller = QjScrollController(
+    debugLabel: 'plugin-scroll-region',
+  );
 
   @override
   void dispose() {
@@ -862,7 +865,7 @@ class SourceRuleTile extends StatelessWidget {
 
   final BookSource source;
   final bool saving;
-  final ValueChanged<bool> onChanged;
+  final ValueChanged<bool>? onChanged;
 
   @override
   Widget build(BuildContext context) {

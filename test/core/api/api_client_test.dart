@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -6,8 +7,163 @@ import 'package:http/testing.dart';
 import 'package:qingjuan/core/api/api_client.dart';
 import 'package:qingjuan/core/api/api_exception.dart';
 import 'package:qingjuan/core/models/settings.dart';
+import 'package:qingjuan/core/models/user_account.dart';
 
 void main() {
+  test('local backend requests carry a non-simple anti-CSRF header', () async {
+    final api = ApiClient(
+      () => 'http://127.0.0.1:19453',
+      client: MockClient((request) async {
+        expect(request.headers['X-QingJuan-Local-Request'], '1');
+        return http.Response('[]', 200);
+      }),
+    );
+
+    await api.fetchBooks();
+
+    expect(
+      api.headersForUrl('/books/book-1/assets/cover.jpg'),
+      <String, String>{'X-QingJuan-Local-Request': '1'},
+    );
+    expect(api.headersForUrl('https://images.example.test/cover.jpg'), isEmpty);
+    api.close();
+  });
+
+  test('resource requests send connection and user credentials together',
+      () async {
+    final api = ApiClient(
+      () => 'https://qingjuan.example.test',
+      token: () => 'connection-token',
+      userToken: () => 'user-token',
+      client: MockClient((request) async {
+        expect(request.url.path, '/api/v1/books');
+        expect(request.headers['Authorization'], 'Bearer connection-token');
+        expect(request.headers['X-QingJuan-User-Token'], 'user-token');
+        return http.Response('[]', 200);
+      }),
+    );
+
+    await api.fetchBooks();
+
+    expect(
+      api.headersForUrl('/books/book-1/assets/cover.jpg'),
+      <String, String>{
+        'Authorization': 'Bearer connection-token',
+        'X-QingJuan-User-Token': 'user-token',
+      },
+    );
+    expect(api.headersForUrl('https://images.example.test/cover.jpg'), isEmpty);
+    api.close();
+  });
+
+  test('login omits a stale user token and parses the returned session',
+      () async {
+    final api = ApiClient(
+      () => 'https://qingjuan.example.test',
+      token: () => 'connection-token',
+      userToken: () => 'stale-user-token',
+      client: MockClient((request) async {
+        expect(request.url.path, '/api/v1/auth/login');
+        expect(request.headers['Authorization'], 'Bearer connection-token');
+        expect(request.headers.containsKey('X-QingJuan-User-Token'), isFalse);
+        expect(
+          jsonDecode(request.body),
+          <String, dynamic>{'username': 'reader', 'password': 'secret'},
+        );
+        return http.Response.bytes(
+          utf8.encode(jsonEncode(<String, dynamic>{
+            'token': 'fresh-user-token',
+            'user': <String, dynamic>{
+              'id': 'user-1',
+              'username': 'reader',
+              'displayName': '读者',
+              'role': 'user',
+              'status': 'active',
+              'createdAt': '2026-08-21T00:00:00Z',
+              'lastLoginAt': '2026-08-21T01:00:00Z',
+            },
+          })),
+          200,
+          headers: const <String, String>{'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    final result = await api.loginUser(
+      username: 'reader',
+      password: 'secret',
+    );
+
+    expect(result, isA<AuthenticatedLogin>());
+    final session = (result as AuthenticatedLogin).session;
+    expect(session.token, 'fresh-user-token');
+    expect(session.user.displayName, '读者');
+    api.close();
+  });
+
+  test('a delayed old-backend response cannot expire the new user session',
+      () async {
+    var backendUrl = 'https://old.example.test';
+    var userToken = 'old-user-token';
+    var expiredCalls = 0;
+    final responseGate = Completer<void>();
+    final api = ApiClient(
+      () => backendUrl,
+      token: () => 'connection-token',
+      userToken: () => userToken,
+      onUserSessionExpired: () => expiredCalls += 1,
+      client: MockClient((request) async {
+        expect(request.url.host, 'old.example.test');
+        expect(request.headers['X-QingJuan-User-Token'], 'old-user-token');
+        await responseGate.future;
+        return http.Response(
+          '{"detail":"旧会话已失效"}',
+          401,
+          headers: const <String, String>{'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    final oldRequest = api.fetchBooks();
+    backendUrl = 'https://new.example.test';
+    userToken = 'new-user-token';
+    responseGate.complete();
+
+    await expectLater(oldRequest, throwsA(isA<ApiException>()));
+    expect(expiredCalls, 0);
+    api.close();
+  });
+
+  test('a delayed 401 cannot expire a reactivated same-url connection',
+      () async {
+    var connectionRevision = 1;
+    var expiredCalls = 0;
+    final responseGate = Completer<void>();
+    final api = ApiClient(
+      () => 'https://qingjuan.example.test',
+      token: () => 'same-connection-token',
+      userToken: () => 'same-user-token',
+      connectionRevision: () => connectionRevision,
+      onUserSessionExpired: () => expiredCalls += 1,
+      client: MockClient((request) async {
+        await responseGate.future;
+        return http.Response(
+          '{"detail":"旧连接中的会话已失效"}',
+          401,
+          headers: const <String, String>{'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    final oldRequest = api.fetchBooks();
+    connectionRevision = 3;
+    responseGate.complete();
+
+    await expectLater(oldRequest, throwsA(isA<ApiException>()));
+    expect(expiredCalls, 0);
+    api.close();
+  });
+
   test('gateway HTML is replaced with a concise public error', () async {
     final api = ApiClient(
       () => 'https://qingjuan.example.test',

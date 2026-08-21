@@ -68,6 +68,7 @@ try:
         PreviewResponse,
         TranslationSettings,
     )
+    from .multi_user import multi_user_enabled
     from .site_plugins import (
         is_manga_site_url,
         resolve_site_plugin,
@@ -98,6 +99,7 @@ except ImportError:
         PreviewResponse,
         TranslationSettings,
     )
+    from app.multi_user import multi_user_enabled
     from app.site_plugins import (
         is_manga_site_url,
         resolve_site_plugin,
@@ -192,7 +194,6 @@ try:
         qidian_chapter_ids_from_url,
     )
     from .site_plugins.qidian_client import search_books as search_qidian_books
-    from .site_plugins.qidian_runtime import QIDIAN_RUNTIME
 except ImportError:
     from app.site_plugins.qidian_client import (
         canonical_book_url as canonical_qidian_book_url,
@@ -214,7 +215,6 @@ except ImportError:
         qidian_chapter_ids_from_url,
     )
     from app.site_plugins.qidian_client import search_books as search_qidian_books
-    from app.site_plugins.qidian_runtime import QIDIAN_RUNTIME
 
 try:
     from .site_plugins.fanqie_client import search_books as search_fanqie_books
@@ -2777,6 +2777,8 @@ async def download_chapter_payload(
     book_dir: Path,
     manifest: dict,
     chapter_index: int,
+    *,
+    qidian_cookies: dict[str, str] | None = None,
 ) -> dict:
     chapter = _chapter_lookup(manifest).get(chapter_index)
     if chapter is None:
@@ -2790,6 +2792,7 @@ async def download_chapter_payload(
             chapter_index,
             chapter,
             image_download_semaphore=asyncio.Semaphore(image_concurrency),
+            qidian_cookies=qidian_cookies,
         )
 
 
@@ -2799,6 +2802,8 @@ async def download_selected_chapters(
     chapter_indexes: list[int],
     concurrency: int = 1,
     progress_callback: Callable[[int, int, list[str]], Awaitable[None] | None] | None = None,
+    *,
+    qidian_cookies: dict[str, str] | None = None,
 ) -> dict:
     chapter_lookup = _chapter_lookup(manifest)
     selected_indexes = [
@@ -2833,6 +2838,7 @@ async def download_selected_chapters(
                         chapter_index,
                         chapter,
                         image_download_semaphore=image_download_semaphore,
+                        qidian_cookies=qidian_cookies,
                     )
                 finally:
                     active_titles.pop(chapter_index, None)
@@ -2881,6 +2887,7 @@ async def _download_single_chapter(
     chapter: dict,
     *,
     image_download_semaphore: asyncio.Semaphore | None = None,
+    qidian_cookies: dict[str, str] | None = None,
 ) -> dict:
     filename = str(chapter.get("file_name") or f"{chapter_index:04d}-chapter-{chapter_index}.txt")
     source_url = str(chapter.get("url") or "").strip()
@@ -2910,7 +2917,15 @@ async def _download_single_chapter(
             "access_restricted": bool(chapter.get("access_restricted")),
         }
 
-    result = await _fetch_chapter_data(client, source_url, chapter_title)
+    if qidian_cookies is None:
+        result = await _fetch_chapter_data(client, source_url, chapter_title)
+    else:
+        result = await _fetch_chapter_data(
+            client,
+            source_url,
+            chapter_title,
+            qidian_cookies=qidian_cookies,
+        )
     image_files = await _download_chapter_images(
         client,
         book_dir,
@@ -9176,6 +9191,8 @@ async def _ensure_bika_credentials(
     credential, password = _require_bika_credentials(runtime_settings)
     if credential and password:
         return credential, password
+    if multi_user_enabled():
+        raise ValueError("Bika 服务凭据尚未配置，请管理员先在模型设置中填写账号与密码。")
     return await _register_bika_account(client, runtime_settings)
 
 
@@ -10369,7 +10386,13 @@ async def preview_from_url(payload: AddBookPayload) -> PreviewResponse:
     return _apply_payload_metadata_to_preview(result, payload)
 
 
-async def download_book(payload: AddBookPayload, preview: PreviewResponse, root_dir: Path) -> DownloadResult:
+async def download_book(
+    payload: AddBookPayload,
+    preview: PreviewResponse,
+    root_dir: Path,
+    *,
+    qidian_cookies: dict[str, str] | None = None,
+) -> DownloadResult:
     safe_title = re.sub(r'[\/:*?"<>|]', "_", preview.title).strip() or "未命名小说"
     book_dir = root_dir / payload.language / safe_title
     book_dir.mkdir(parents=True, exist_ok=True)
@@ -10393,7 +10416,15 @@ async def download_book(payload: AddBookPayload, preview: PreviewResponse, root_
             image_files: list[str] = []
             download_error: str | None = None
             try:
-                result = await _fetch_chapter_data(client, chapter.url, chapter.title)
+                if qidian_cookies is None:
+                    result = await _fetch_chapter_data(client, chapter.url, chapter.title)
+                else:
+                    result = await _fetch_chapter_data(
+                        client,
+                        chapter.url,
+                        chapter.title,
+                        qidian_cookies=qidian_cookies,
+                    )
                 image_files = await _download_chapter_images(
                     client,
                     book_dir,
@@ -11147,12 +11178,14 @@ async def _fetch_fanqie_chapter_data(
 
 async def _fetch_qidian_chapter_data(
     chapter_url: str,
+    *,
+    qidian_cookies: dict[str, str] | None = None,
 ) -> ChapterFetchResult:
     ids = qidian_chapter_ids_from_url(chapter_url)
     if ids is None:
         raise ValueError("起点章节链接缺少作品或章节 ID")
     book_id, chapter_id = ids
-    cookies = QIDIAN_RUNTIME.cookies()
+    cookies = dict(qidian_cookies or {})
     chapter = await asyncio.to_thread(
         get_qidian_chapter,
         book_id,
@@ -11183,9 +11216,7 @@ async def _fetch_quark_chapter_data(
         image_urls=[],
         content_source="shuqi-public-web",
         authorization_method="anonymous-public",
-        access_restricted=(
-            not quark_chapter_is_public(chapter) if isinstance(chapter, dict) else False
-        ),
+        access_restricted=(not quark_chapter_is_public(chapter) if isinstance(chapter, dict) else False),
     )
 
 
@@ -11298,7 +11329,11 @@ async def _fetch_ehentai_chapter_data(
 
 
 async def _fetch_chapter_data(
-    client: httpx.AsyncClient, chapter_url: str, chapter_title: str = ""
+    client: httpx.AsyncClient,
+    chapter_url: str,
+    chapter_title: str = "",
+    *,
+    qidian_cookies: dict[str, str] | None = None,
 ) -> ChapterFetchResult:
     plugin = _require_enabled_site_plugin(chapter_url)
     if plugin.chapter_handler is None:
@@ -11307,7 +11342,10 @@ async def _fetch_chapter_data(
         if plugin.chapter_handler == "fanqie":
             return await _fetch_fanqie_chapter_data(client, chapter_url, chapter_title)
         if plugin.chapter_handler == "qidian":
-            return await _fetch_qidian_chapter_data(chapter_url)
+            return await _fetch_qidian_chapter_data(
+                chapter_url,
+                qidian_cookies=qidian_cookies,
+            )
         if plugin.chapter_handler == "quark":
             return await _fetch_quark_chapter_data(client, chapter_url)
         if plugin.chapter_handler == "18comic":
@@ -11518,10 +11556,7 @@ async def _get_fanqie_html_response(
                     continue
                 raise
 
-            if (
-                _fanqie_response_needs_retry(response)
-                and attempt < FANQIE_MAX_RETRIES - 1
-            ):
+            if _fanqie_response_needs_retry(response) and attempt < FANQIE_MAX_RETRIES - 1:
                 await asyncio.sleep(_retry_wait_seconds(response, attempt))
                 continue
             break

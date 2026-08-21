@@ -11,6 +11,7 @@ import '../../shared/feedback_widgets.dart';
 import '../../shared/mobile_sheet.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
+import '../../shared/smooth_scroll.dart';
 import 'sources_controller.dart';
 import 'widgets/plugin_settings_widgets.dart';
 
@@ -270,38 +271,42 @@ class _PluginsPageState extends State<PluginsPage> {
     SourcesController controller,
   ) {
     final groups = groupSitePlugins(plugins);
-    return ListView(
-      key: const ValueKey('plugin-grouped-list'),
-      children: <Widget>[
-        PluginOverview(plugins: controller.plugins),
-        const SizedBox(height: 16),
-        PluginFilterBar(
-          searchController: _searchController,
-          filter: _statusFilter,
-          resultCount: plugins.length,
-          onQueryChanged: (_) => setState(() {}),
-          onFilterChanged: (value) => setState(() => _statusFilter = value),
-        ),
-        const SizedBox(height: 18),
-        if (plugins.isEmpty)
-          _emptyResults()
-        else
-          for (final entry in groups.entries) ...<Widget>[
-            SectionTitle(
-              sitePluginCategoryLabel(entry.key),
-              trailing: Text('${entry.value.length} 个'),
-            ),
-            for (final plugin in entry.value)
-              SitePluginTile(
-                plugin: plugin,
-                saving: controller.isPluginSaving(plugin.id),
-                onChanged: (enabled) =>
-                    _setPluginEnabled(context, plugin, enabled),
-                onDetails: () => _showPluginDetails(context, plugin),
+    return QjScrollControllerBuilder(
+      debugLabel: 'plugins-grouped-list',
+      builder: (context, scrollController) => ListView(
+        key: const ValueKey('plugin-grouped-list'),
+        controller: scrollController,
+        children: <Widget>[
+          PluginOverview(plugins: controller.plugins),
+          const SizedBox(height: 16),
+          PluginFilterBar(
+            searchController: _searchController,
+            filter: _statusFilter,
+            resultCount: plugins.length,
+            onQueryChanged: (_) => setState(() {}),
+            onFilterChanged: (value) => setState(() => _statusFilter = value),
+          ),
+          const SizedBox(height: 18),
+          if (plugins.isEmpty)
+            _emptyResults()
+          else
+            for (final entry in groups.entries) ...<Widget>[
+              SectionTitle(
+                sitePluginCategoryLabel(entry.key),
+                trailing: Text('${entry.value.length} 个'),
               ),
-            const SizedBox(height: 8),
-          ],
-      ],
+              for (final plugin in entry.value)
+                SitePluginTile(
+                  plugin: plugin,
+                  saving: controller.isPluginSaving(plugin.id),
+                  onChanged: (enabled) =>
+                      _setPluginEnabled(context, plugin, enabled),
+                  onDetails: () => _showPluginDetails(context, plugin),
+                ),
+              const SizedBox(height: 8),
+            ],
+        ],
+      ),
     );
   }
 

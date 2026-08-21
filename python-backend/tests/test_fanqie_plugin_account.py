@@ -341,7 +341,7 @@ async def test_bookshelf_import_skips_existing_and_unsupported_books(monkeypatch
     monkeypatch.setattr(
         main,
         "list_books",
-        lambda: [
+        lambda owner_id=None: [
             BookRecord(
                 id="book-existing",
                 title="已有作品",
@@ -367,7 +367,7 @@ async def test_bookshelf_import_skips_existing_and_unsupported_books(monkeypatch
             bookKind="长小说",
         )
 
-    async def create_book(payload, preview_result):
+    async def create_book(payload, preview_result, *, owner_id="user-admin"):
         return BookRecord(
             id="book-imported",
             title=preview_result.title,

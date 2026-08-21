@@ -7,6 +7,7 @@ import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
+import '../../shared/smooth_scroll.dart';
 
 enum _TaskFilter { all, active, failed, completed }
 
@@ -159,65 +160,69 @@ class _TaskList extends StatelessWidget {
             })
         .length;
 
-    return ListView(
-      cacheExtent: 360,
-      children: <Widget>[
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: <Widget>[
-            _TaskSummary(
-              key: const ValueKey('task-summary-all'),
-              label: '全部',
-              count: count(_TaskFilter.all),
-              icon: FluentIcons.list,
-              selected: filter == _TaskFilter.all,
-              onPressed: () => onFilterChanged(_TaskFilter.all),
-            ),
-            _TaskSummary(
-              key: const ValueKey('task-summary-active'),
-              label: '进行中',
-              count: count(_TaskFilter.active),
-              icon: FluentIcons.sync,
-              selected: filter == _TaskFilter.active,
-              onPressed: () => onFilterChanged(_TaskFilter.active),
-            ),
-            _TaskSummary(
-              key: const ValueKey('task-summary-failed'),
-              label: '失败',
-              count: count(_TaskFilter.failed),
-              icon: FluentIcons.error_badge,
-              selected: filter == _TaskFilter.failed,
-              onPressed: () => onFilterChanged(_TaskFilter.failed),
-            ),
-            _TaskSummary(
-              key: const ValueKey('task-summary-completed'),
-              label: '已完成',
-              count: count(_TaskFilter.completed),
-              icon: FluentIcons.completed,
-              selected: filter == _TaskFilter.completed,
-              onPressed: () => onFilterChanged(_TaskFilter.completed),
-            ),
-          ],
-        ),
-        const SizedBox(height: 18),
-        if (filteredTasks.isEmpty)
-          EmptyView(
-            icon: FluentIcons.filter,
-            title: '该分类暂无任务',
-            message: '可以选择“全部”查看其他任务。',
-            action: Button(
-              onPressed: () => onFilterChanged(_TaskFilter.all),
-              child: const Text('查看全部'),
-            ),
-          )
-        else
-          for (final task in filteredTasks)
-            _TaskTile(
-              key: ValueKey('task-tile-${task.id}'),
-              task: task,
-            ),
-      ],
+    return QjScrollControllerBuilder(
+      debugLabel: 'tasks',
+      builder: (context, scrollController) => ListView(
+        controller: scrollController,
+        cacheExtent: 360,
+        children: <Widget>[
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: <Widget>[
+              _TaskSummary(
+                key: const ValueKey('task-summary-all'),
+                label: '全部',
+                count: count(_TaskFilter.all),
+                icon: FluentIcons.list,
+                selected: filter == _TaskFilter.all,
+                onPressed: () => onFilterChanged(_TaskFilter.all),
+              ),
+              _TaskSummary(
+                key: const ValueKey('task-summary-active'),
+                label: '进行中',
+                count: count(_TaskFilter.active),
+                icon: FluentIcons.sync,
+                selected: filter == _TaskFilter.active,
+                onPressed: () => onFilterChanged(_TaskFilter.active),
+              ),
+              _TaskSummary(
+                key: const ValueKey('task-summary-failed'),
+                label: '失败',
+                count: count(_TaskFilter.failed),
+                icon: FluentIcons.error_badge,
+                selected: filter == _TaskFilter.failed,
+                onPressed: () => onFilterChanged(_TaskFilter.failed),
+              ),
+              _TaskSummary(
+                key: const ValueKey('task-summary-completed'),
+                label: '已完成',
+                count: count(_TaskFilter.completed),
+                icon: FluentIcons.completed,
+                selected: filter == _TaskFilter.completed,
+                onPressed: () => onFilterChanged(_TaskFilter.completed),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          if (filteredTasks.isEmpty)
+            EmptyView(
+              icon: FluentIcons.filter,
+              title: '该分类暂无任务',
+              message: '可以选择“全部”查看其他任务。',
+              action: Button(
+                onPressed: () => onFilterChanged(_TaskFilter.all),
+                child: const Text('查看全部'),
+              ),
+            )
+          else
+            for (final task in filteredTasks)
+              _TaskTile(
+                key: ValueKey('task-tile-${task.id}'),
+                task: task,
+              ),
+        ],
+      ),
     );
   }
 }

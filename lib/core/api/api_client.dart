@@ -10,22 +10,32 @@ import '../models/settings.dart';
 import '../models/site_plugin.dart';
 import '../models/source.dart';
 import '../models/task.dart';
+import '../models/user_account.dart';
 import 'api_exception.dart';
 
 class ApiClient {
   ApiClient(
     this._baseUrl, {
     String Function()? token,
+    String Function()? userToken,
+    int Function()? connectionRevision,
     Map<String, String> Function()? deviceHeaders,
+    void Function()? onUserSessionExpired,
     http.Client? client,
   })  : _token = token ?? (() => ''),
+        _userToken = userToken ?? (() => ''),
+        _connectionRevision = connectionRevision ?? (() => 0),
         _deviceHeaders = deviceHeaders ?? (() => const <String, String>{}),
+        _onUserSessionExpired = onUserSessionExpired,
         _client = client ?? http.Client();
 
   static const _apiPrefix = '/api/v1';
   final String Function() _baseUrl;
   final String Function() _token;
+  final String Function() _userToken;
+  final int Function() _connectionRevision;
   final Map<String, String> Function() _deviceHeaders;
+  final void Function()? _onUserSessionExpired;
   final http.Client _client;
 
   Uri _uri(String endpoint, [Map<String, dynamic>? query]) =>
@@ -42,14 +52,24 @@ class ApiClient {
     );
   }
 
-  Map<String, String> _headers({bool json = false, String? token}) {
+  Map<String, String> _headers({
+    bool json = false,
+    String? token,
+    String? userToken,
+    bool includeUserToken = true,
+  }) {
     final value = (token ?? _token()).trim();
+    final userValue =
+        includeUserToken ? (userToken ?? _userToken()).trim() : '';
     final headers = <String, String>{
       if (json) 'Content-Type': 'application/json',
+      if (userValue.isNotEmpty) 'X-QingJuan-User-Token': userValue,
     };
     if (value.isNotEmpty) {
       headers['Authorization'] = 'Bearer $value';
       headers.addAll(_deviceHeaders());
+    } else {
+      headers['X-QingJuan-Local-Request'] = '1';
     }
     return headers;
   }
@@ -59,13 +79,25 @@ class ApiClient {
     String endpoint, {
     Object? body,
     Map<String, dynamic>? query,
+    bool includeUserToken = true,
+    int attempts = 4,
+    Duration timeout = const Duration(minutes: 2),
   }) async {
+    final baseUrl = _baseUrl();
+    final connectionToken = _token().trim();
+    final userToken = includeUserToken ? _userToken().trim() : '';
+    final connectionRevision = _connectionRevision();
+    final uri = _uriFor(baseUrl, endpoint, query);
+    final headers = _headers(
+      json: body != null,
+      token: connectionToken,
+      userToken: userToken,
+      includeUserToken: includeUserToken,
+    );
+    final encoded = body == null ? null : jsonEncode(body);
     Object? lastError;
-    for (var attempt = 0; attempt < 4; attempt++) {
+    for (var attempt = 0; attempt < attempts; attempt++) {
       try {
-        final uri = _uri(endpoint, query);
-        final headers = _headers(json: body != null);
-        final encoded = body == null ? null : jsonEncode(body);
         final requestFuture = switch (method) {
           'GET' => _client.get(uri, headers: headers),
           'POST' => _client.post(uri, headers: headers, body: encoded),
@@ -73,8 +105,16 @@ class ApiClient {
           'DELETE' => _client.delete(uri, headers: headers, body: encoded),
           _ => throw UnsupportedError('Unsupported HTTP method: $method'),
         };
-        final response =
-            await requestFuture.timeout(const Duration(minutes: 2));
+        final response = await requestFuture.timeout(timeout);
+        if (includeUserToken &&
+            response.statusCode == 401 &&
+            userToken.isNotEmpty &&
+            _userToken().trim() == userToken &&
+            _token().trim() == connectionToken &&
+            _baseUrl() == baseUrl &&
+            _connectionRevision() == connectionRevision) {
+          _onUserSessionExpired?.call();
+        }
         return response;
       } on SocketException catch (error) {
         lastError = error;
@@ -83,7 +123,7 @@ class ApiClient {
       } on TimeoutException catch (error) {
         lastError = error;
       }
-      if (attempt < 3) {
+      if (attempt < attempts - 1) {
         await Future<void>.delayed(
             Duration(milliseconds: 250 * (1 << attempt)));
       }
@@ -146,8 +186,17 @@ class ApiClient {
     }
   }
 
-  Future<JsonMap> fetchServiceMeta() async {
-    final payload = _decode(await _request('GET', '/meta'));
+  Future<JsonMap> fetchServiceMeta({bool quick = false}) async {
+    final payload = _decode(
+      await _request(
+        'GET',
+        '/meta',
+        includeUserToken: false,
+        attempts: quick ? 1 : 4,
+        timeout:
+            quick ? const Duration(seconds: 5) : const Duration(minutes: 2),
+      ),
+    );
     final meta = _map(payload);
     if (meta['service'] != 'qingjuan-backend' || meta['apiVersion'] != '1') {
       throw const ApiException('目标服务不是兼容的青卷后端');
@@ -166,7 +215,7 @@ class ApiClient {
     final response = await _client
         .get(
           _uriFor(baseUrl, '/meta'),
-          headers: _headers(token: token),
+          headers: _headers(token: token, includeUserToken: false),
         )
         .timeout(const Duration(seconds: 8));
     final meta = _map(_decode(response));
@@ -174,6 +223,219 @@ class ApiClient {
       throw const ApiException('目标服务不是兼容的青卷后端');
     }
     return meta;
+  }
+
+  Future<UserSession> registerUser({
+    required String username,
+    required String displayName,
+    required String email,
+    required String password,
+    String? emailCode,
+    String? identityBadge,
+  }) async {
+    final payload = _decode(
+      await _request(
+        'POST',
+        '/auth/register',
+        body: <String, dynamic>{
+          'username': username,
+          'displayName': displayName,
+          'email': email,
+          'password': password,
+          if (emailCode != null && emailCode.isNotEmpty) 'emailCode': emailCode,
+          if (identityBadge != null && identityBadge.isNotEmpty)
+            'identityBadge': identityBadge,
+        },
+        includeUserToken: false,
+        attempts: 1,
+      ),
+    );
+    return UserSession.fromJson(_map(payload));
+  }
+
+  Future<RegistrationPolicy> fetchRegistrationPolicy() async {
+    final payload = _decode(
+      await _request(
+        'GET',
+        '/auth/registration-policy',
+        includeUserToken: false,
+      ),
+    );
+    return RegistrationPolicy.fromJson(_map(payload));
+  }
+
+  Future<void> sendRegistrationEmailCode({required String email}) async {
+    _decode(
+      await _request(
+        'POST',
+        '/auth/email-code',
+        body: <String, dynamic>{'email': email},
+        includeUserToken: false,
+        attempts: 1,
+      ),
+    );
+  }
+
+  Future<LoginResult> loginUser({
+    required String username,
+    required String password,
+  }) async {
+    final payload = _decode(
+      await _request(
+        'POST',
+        '/auth/login',
+        body: <String, dynamic>{
+          'username': username,
+          'password': password,
+        },
+        includeUserToken: false,
+        attempts: 1,
+      ),
+    );
+    return LoginResult.fromJson(_map(payload));
+  }
+
+  Future<UserSession> completeTwoFactorLogin({
+    required String challengeToken,
+    required String code,
+  }) async {
+    final payload = _decode(
+      await _request(
+        'POST',
+        '/auth/login/2fa',
+        body: <String, dynamic>{
+          'challengeToken': challengeToken,
+          'code': code,
+        },
+        includeUserToken: false,
+        attempts: 1,
+      ),
+    );
+    return UserSession.fromJson(_map(payload));
+  }
+
+  Future<GitHubDeviceFlow> startGitHubDevice({
+    required String purpose,
+    String? password,
+    String? code,
+  }) async {
+    final payload = _decode(
+      await _request(
+        'POST',
+        '/auth/github/device/start',
+        body: <String, dynamic>{
+          'purpose': purpose,
+          if (password != null) 'password': password,
+          if (code != null && code.isNotEmpty) 'code': code,
+        },
+        includeUserToken: purpose == 'bind',
+        attempts: 1,
+      ),
+    );
+    return GitHubDeviceFlow.fromJson(_map(payload), purpose: purpose);
+  }
+
+  Future<GitHubDevicePollResult> pollGitHubDevice(
+    GitHubDeviceFlow flow,
+  ) async {
+    final payload = _decode(
+      await _request(
+        'POST',
+        '/auth/github/device/poll',
+        body: <String, dynamic>{'flowId': flow.flowId},
+        includeUserToken: flow.purpose == 'bind',
+        attempts: 1,
+        timeout: const Duration(seconds: 20),
+      ),
+    );
+    return GitHubDevicePollResult.fromJson(_map(payload));
+  }
+
+  Future<AccountSecurity> fetchAccountSecurity() async {
+    final payload = _decode(await _request('GET', '/auth/account/security'));
+    return AccountSecurity.fromJson(_map(payload));
+  }
+
+  Future<void> unbindGitHub({
+    required String password,
+    String? code,
+  }) async {
+    _decode(
+      await _request(
+        'POST',
+        '/auth/account/github/unbind',
+        body: <String, dynamic>{
+          'password': password,
+          if (code != null && code.isNotEmpty) 'code': code,
+        },
+        attempts: 1,
+      ),
+    );
+  }
+
+  Future<TwoFactorSetup> setupTwoFactor({required String password}) async {
+    final payload = _decode(
+      await _request(
+        'POST',
+        '/auth/account/2fa/setup',
+        body: <String, dynamic>{'password': password},
+        attempts: 1,
+      ),
+    );
+    return TwoFactorSetup.fromJson(_map(payload));
+  }
+
+  Future<RecoveryCodes> enableTwoFactor({
+    required String setupId,
+    required String code,
+  }) async {
+    final payload = _decode(
+      await _request(
+        'POST',
+        '/auth/account/2fa/enable',
+        body: <String, dynamic>{'setupId': setupId, 'code': code},
+        attempts: 1,
+      ),
+    );
+    return RecoveryCodes.fromJson(_map(payload));
+  }
+
+  Future<void> disableTwoFactor({
+    required String password,
+    required String code,
+  }) async {
+    _decode(
+      await _request(
+        'POST',
+        '/auth/account/2fa/disable',
+        body: <String, dynamic>{'password': password, 'code': code},
+        attempts: 1,
+      ),
+    );
+  }
+
+  Future<RecoveryCodes> regenerateTwoFactorRecoveryCodes({
+    required String password,
+    required String code,
+  }) async {
+    final payload = _decode(
+      await _request(
+        'POST',
+        '/auth/account/2fa/recovery-codes',
+        body: <String, dynamic>{'password': password, 'code': code},
+        attempts: 1,
+      ),
+    );
+    return RecoveryCodes.fromJson(_map(payload));
+  }
+
+  Future<UserAccount> fetchUserSession() async {
+    final payload = _decode(await _request('GET', '/auth/session'));
+    return UserAccount.fromJson(_map(payload));
+  }
+
+  Future<void> logoutUser() async {
+    _decode(await _request('POST', '/auth/logout'));
   }
 
   Future<TranslationModelCheck> checkTranslationModel({

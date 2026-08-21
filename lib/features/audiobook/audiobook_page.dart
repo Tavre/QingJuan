@@ -8,6 +8,7 @@ import '../../core/models/tts_voice.dart';
 import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/responsive.dart';
+import '../../shared/smooth_scroll.dart';
 import 'audiobook_controller.dart';
 import 'flutter_tts_engine.dart';
 
@@ -37,6 +38,9 @@ class AudiobookPage extends StatefulWidget {
 
 class _AudiobookPageState extends State<AudiobookPage> {
   late final AudiobookController _controller;
+  final ScrollController _textScrollController = QjScrollController(
+    debugLabel: 'audiobook-text',
+  );
 
   @override
   void initState() {
@@ -53,6 +57,7 @@ class _AudiobookPageState extends State<AudiobookPage> {
 
   @override
   void dispose() {
+    _textScrollController.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -177,6 +182,7 @@ class _AudiobookPageState extends State<AudiobookPage> {
                                             onRetry: _controller.initialize,
                                           )
                                         : SingleChildScrollView(
+                                            controller: _textScrollController,
                                             child: SelectionArea(
                                               child: Text(
                                                 _controller.currentText,
@@ -261,6 +267,7 @@ class _AudiobookPageState extends State<AudiobookPage> {
                                 onRetry: _controller.initialize,
                               )
                             : SingleChildScrollView(
+                                controller: _textScrollController,
                                 child: SelectionArea(
                                   child: Text(
                                     _controller.currentText,

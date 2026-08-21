@@ -5,14 +5,24 @@ umask 077
 readonly APP_ROOT="/opt/qingjuan"
 readonly REPO_DIR="$APP_ROOT/app"
 readonly VENV_DIR="$APP_ROOT/venv"
+readonly CURRENT_LINK="$APP_ROOT/current"
+readonly RELEASES_DIR="$APP_ROOT/releases"
+readonly LEGACY_RELEASE_DIR="$RELEASES_DIR/legacy"
+readonly UPDATER_STATE_DIR="/var/lib/qingjuan-updater"
 readonly CONFIG_DIR="/etc/qingjuan"
 readonly DATA_DIR="/var/lib/qingjuan"
 readonly SERVICE_NAME="qingjuan-backend"
 readonly SERVICE_USER="qingjuan"
 readonly SERVICE_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
+readonly UPDATER_SERVICE_UNIT="/etc/systemd/system/qingjuan-updater.service"
+readonly UPDATER_PATH_UNIT="/etc/systemd/system/qingjuan-updater.path"
 readonly INFO_COMMAND="/usr/local/sbin/qingjuan-info"
 readonly PASSWORD_COMMAND="/usr/local/sbin/qingjuan-password"
 readonly UNINSTALL_COMMAND="/usr/local/sbin/qingjuan-uninstall"
+readonly UPDATE_RUNNER_COMMAND="/usr/local/sbin/qingjuan-update-runner"
+readonly UPDATE_REQUEST_FILE="/run/qingjuan/update-request.json"
+readonly UPDATE_STATUS_FILE="$DATA_DIR/backend-update.json"
+readonly MAINTENANCE_LOCK="/run/lock/qingjuan-maintenance.lock"
 
 public_url=""
 bind_host="127.0.0.1"
@@ -114,7 +124,7 @@ install_system_packages() {
   fi
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    ca-certificates curl fonts-noto-cjk git python3 python3-venv
+    ca-certificates curl fonts-noto-cjk git python3 python3-venv util-linux
   if ! command -v chromium >/dev/null 2>&1 && \
      ! command -v chromium-browser >/dev/null 2>&1 && \
      ! command -v google-chrome >/dev/null 2>&1; then
@@ -196,12 +206,18 @@ PY
 
 install_system_packages
 
-for command_name in python3 git curl systemctl; do
+for command_name in python3 git curl flock runuser systemctl; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     printf '缺少系统命令：%s\n' "$command_name" >&2
     exit 1
   fi
 done
+
+exec 9>"$MAINTENANCE_LOCK"
+if ! flock -n 9; then
+  printf '已有安装、更新或维护任务正在运行。\n' >&2
+  exit 1
+fi
 
 python3 - <<'PY'
 import sys
@@ -309,6 +325,35 @@ fi
 # umask 077 protects generated secrets, but the unprivileged service must be able to read the venv.
 chown -R root:"$SERVICE_USER" "$VENV_DIR"
 chmod -R u=rwX,g=rX,o= "$VENV_DIR"
+chown -R root:"$SERVICE_USER" "$REPO_DIR"
+chmod -R u=rwX,g=rX,o= "$REPO_DIR"
+
+if [[ -L "$UPDATER_STATE_DIR" ]] || { [[ -e "$UPDATER_STATE_DIR" ]] && [[ ! -d "$UPDATER_STATE_DIR" ]]; }; then
+  printf '升级器状态目录类型不安全：%s\n' "$UPDATER_STATE_DIR" >&2
+  exit 1
+fi
+install -d -o root -g root -m 0700 "$UPDATER_STATE_DIR"
+install -d -o root -g "$SERVICE_USER" -m 0750 "$RELEASES_DIR" "$LEGACY_RELEASE_DIR"
+
+install_legacy_link() {
+  local name="$1"
+  local destination="$2"
+  local temporary="$LEGACY_RELEASE_DIR/.${name}.$$.new"
+  rm -f -- "$temporary"
+  ln -s -- "$destination" "$temporary"
+  mv -Tf -- "$temporary" "$LEGACY_RELEASE_DIR/$name"
+}
+
+install_legacy_link "app" "$REPO_DIR"
+install_legacy_link "venv" "$VENV_DIR"
+if [[ ! -e "$CURRENT_LINK" && ! -L "$CURRENT_LINK" ]]; then
+  temporary_current="$APP_ROOT/.current.$$.new"
+  ln -s -- "$LEGACY_RELEASE_DIR" "$temporary_current"
+  mv -Tf -- "$temporary_current" "$CURRENT_LINK"
+elif [[ ! -L "$CURRENT_LINK" ]]; then
+  printf '%s 必须是由安装器管理的符号链接。\n' "$CURRENT_LINK" >&2
+  exit 1
+fi
 
 client_file="$CONFIG_DIR/client.env"
 backend_file="$CONFIG_DIR/backend.env"
@@ -327,11 +372,17 @@ print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())
 
 admin_password_hash=""
 admin_session_secret=""
+two_factor_encryption_key=""
+two_factor_encryption_key_present="false"
 initial_admin_password=""
 model_endpoint_allowlist=""
 if [[ -f "$backend_file" ]]; then
   admin_password_hash="$(sed -n 's/^QINGJUAN_ADMIN_PASSWORD_HASH=//p' "$backend_file" | tail -n 1)"
   admin_session_secret="$(sed -n 's/^QINGJUAN_ADMIN_SESSION_SECRET=//p' "$backend_file" | tail -n 1)"
+  two_factor_encryption_key="$(sed -n 's/^QINGJUAN_2FA_ENCRYPTION_KEY=//p' "$backend_file" | tail -n 1)"
+  if grep -q '^QINGJUAN_2FA_ENCRYPTION_KEY=' "$backend_file"; then
+    two_factor_encryption_key_present="true"
+  fi
   model_endpoint_allowlist="$(sed -n 's/^QINGJUAN_MODEL_ENDPOINT_ALLOWLIST=//p' "$backend_file" | tail -n 1)"
 fi
 if [[ -z "$admin_password_hash" ]]; then
@@ -348,10 +399,18 @@ if [[ -z "$admin_password_hash" ]]; then
 elif [[ -z "$admin_session_secret" ]]; then
   admin_session_secret="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 fi
+if [[ "$two_factor_encryption_key_present" == "true" && -n "$two_factor_encryption_key" && ! "$two_factor_encryption_key" =~ ^[0-9a-fA-F]{64}$ ]]; then
+  printf '现有 QINGJUAN_2FA_ENCRYPTION_KEY 格式无效；为避免破坏已有二次验证数据，安装已中止。\n' >&2
+  exit 1
+fi
+if [[ -z "$two_factor_encryption_key" ]]; then
+  two_factor_encryption_key="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+fi
 public_url="${public_url%/}"
 
 printf '%s\n' \
   "QINGJUAN_AUTH_TOKEN_SHA256=$token_digest" \
+  "QINGJUAN_MULTI_USER=1" \
   "QINGJUAN_CONNECTION_TOKEN_FILE=$client_file" \
   "QINGJUAN_DATA_DIR=$DATA_DIR" \
   "QINGJUAN_BROWSER_EXECUTABLE=$browser_path" \
@@ -360,7 +419,10 @@ printf '%s\n' \
   "QINGJUAN_PORT=$port" \
   "QINGJUAN_ADMIN_PASSWORD_HASH=$admin_password_hash" \
   "QINGJUAN_ADMIN_SESSION_SECRET=$admin_session_secret" \
+  "QINGJUAN_2FA_ENCRYPTION_KEY=$two_factor_encryption_key" \
   "QINGJUAN_MODEL_ENDPOINT_ALLOWLIST=$model_endpoint_allowlist" \
+  "QINGJUAN_UPDATE_REQUEST_FILE=$UPDATE_REQUEST_FILE" \
+  "QINGJUAN_UPDATE_STATUS_FILE=$UPDATE_STATUS_FILE" \
   > "$backend_file"
 
 printf '%s\n' \
@@ -372,13 +434,19 @@ chmod 0600 "$backend_file"
 chown root:root "$backend_file"
 chmod 0640 "$client_file"
 chown root:"$SERVICE_USER" "$client_file"
+rm -f -- "$UPDATE_STATUS_FILE"
 install -o root -g root -m 0644 "$REPO_DIR/deploy/linux/qingjuan-backend.service" "$SERVICE_UNIT"
+install -o root -g root -m 0644 "$REPO_DIR/deploy/linux/qingjuan-updater.service" "$UPDATER_SERVICE_UNIT"
+install -o root -g root -m 0644 "$REPO_DIR/deploy/linux/qingjuan-updater.path" "$UPDATER_PATH_UNIT"
+install -o root -g root -m 0755 "$REPO_DIR/deploy/linux/qingjuan-update-runner.sh" "$UPDATE_RUNNER_COMMAND"
 install -o root -g root -m 0755 "$REPO_DIR/deploy/linux/qingjuan-info.sh" "$INFO_COMMAND"
 install -o root -g root -m 0755 "$REPO_DIR/deploy/linux/qingjuan-password.sh" "$PASSWORD_COMMAND"
 install -o root -g root -m 0755 "$REPO_DIR/deploy/linux/uninstall.sh" "$UNINSTALL_COMMAND"
 
 systemctl daemon-reload
-systemctl enable --now "$SERVICE_NAME"
+systemctl enable "$SERVICE_NAME" qingjuan-updater.path
+systemctl start "$SERVICE_NAME"
+systemctl start qingjuan-updater.path
 
 print_initial_admin_password() {
   if [[ -z "$initial_admin_password" ]]; then
@@ -393,8 +461,19 @@ print_initial_admin_password() {
 }
 
 healthy="false"
+health_host="$bind_host"
+case "$health_host" in
+  ""|"0.0.0.0"|"127.0.0.1"|"localhost") health_host="127.0.0.1" ;;
+  "::"|"[::]"|"::0") health_host="[::1]" ;;
+  *:* )
+    health_host="${health_host#\[}"
+    health_host="${health_host%\]}"
+    health_host="[${health_host}]"
+    ;;
+esac
 for _ in $(seq 1 60); do
-  if curl --fail --silent --max-time 2 "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1; then
+  if curl --noproxy '*' --fail --silent --max-time 2 \
+    "http://${health_host}:${port}/healthz" >/dev/null 2>&1; then
     healthy="true"
     break
   fi

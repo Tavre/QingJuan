@@ -10,6 +10,7 @@ import 'package:qingjuan/app/app_state.dart';
 import 'package:qingjuan/app/app_theme.dart';
 import 'package:qingjuan/core/api/api_client.dart';
 import 'package:qingjuan/core/backend/backend_connection_manager.dart';
+import 'package:qingjuan/features/auth/auth_controller.dart';
 import 'package:qingjuan/features/detail/book_detail_page.dart';
 import 'package:qingjuan/features/library/library_controller.dart';
 import 'package:qingjuan/features/settings/settings_controller.dart';
@@ -568,6 +569,7 @@ class _Harness {
         appState: appState,
         api: api,
         backend: backend,
+        auth: AuthController.localAdministrator(api),
         library: library,
         sources: sources,
         tasks: tasks,

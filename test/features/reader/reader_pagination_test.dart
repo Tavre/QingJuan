@@ -178,4 +178,51 @@ void main() {
 
     expect(relaxed, lessThan(compact));
   });
+
+  test('layout pagination moves a wrapped page-end line to the next page', () {
+    const fontSize = 20.0;
+    const lineHeight = 1.5;
+    const pageHeight = fontSize * lineHeight * 2;
+    const style = TextStyle(
+      fontSize: fontSize,
+      height: lineHeight,
+      letterSpacing: 0.12,
+    );
+    final text = readerTextForPagination(
+      <String>[List<String>.filled(80, '正文').join()],
+      '',
+    );
+
+    final pages = paginateReaderTextForLayout(
+      text,
+      maxWidth: 120,
+      pageHeight: pageHeight,
+      style: style,
+    );
+
+    expect(pages, hasLength(greaterThan(1)));
+    expect(pages.join(), text);
+    for (final page in pages) {
+      final span = readerTextSpanForLayout(page, fontSize: fontSize);
+      final painter = TextPainter(
+        text: TextSpan(style: style, children: span.children),
+        textAlign: TextAlign.justify,
+        textDirection: TextDirection.ltr,
+      );
+      final markerCount = readerParagraphStartMarker.allMatches(page).length;
+      if (markerCount > 0) {
+        painter.setPlaceholderDimensions(
+          List<PlaceholderDimensions>.filled(
+            markerCount,
+            const PlaceholderDimensions(
+              size: Size(fontSize * 2, 0),
+              alignment: PlaceholderAlignment.bottom,
+            ),
+          ),
+        );
+      }
+      painter.layout(maxWidth: 120);
+      expect(painter.height, lessThanOrEqualTo(pageHeight + 0.01));
+    }
+  });
 }

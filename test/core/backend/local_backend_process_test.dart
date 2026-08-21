@@ -131,27 +131,10 @@ void main() {
     );
   });
 
-  test('local admin launcher only opens the fixed model settings address',
-      () async {
-    Uri? opened;
-    final lifecycle = WindowsLocalBackendLifecycle(
-      isWindows: () => true,
-      openUri: (uri) async => opened = uri,
-    );
-    final modelSettings = Uri.parse('http://127.0.0.1:19453/admin/#settings');
-
-    await lifecycle.openAdmin(modelSettings);
-
-    expect(opened, modelSettings);
-    await expectLater(
-      lifecycle.openAdmin(Uri.parse('https://example.test/admin/#settings')),
-      throwsA(
-        isA<LocalBackendException>().having(
-          (error) => error.toString(),
-          'message',
-          contains('拒绝打开'),
-        ),
-      ),
-    );
+  test('Windows local backend disables the admin web interface', () {
+    expect(windowsLocalBackendEnvironment['QINGJUAN_DISABLE_ADMIN_WEB'], '1');
+    expect(windowsLocalBackendEnvironment['QINGJUAN_TRUST_LOCAL_ADMIN'], '1');
+    expect(
+        windowsLocalBackendEnvironment['QINGJUAN_AUTH_TOKEN_SHA256'], isEmpty);
   });
 }

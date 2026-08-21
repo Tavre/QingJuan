@@ -10,6 +10,7 @@ from app.admin_auth import (
     ADMIN_CSRF_HEADER,
     ADMIN_PASSWORD_HASH_ENV,
     ADMIN_SESSION_SECRET_ENV,
+    TRUST_LOCAL_ADMIN_ENV,
     hash_admin_password,
 )
 from app.api.admin import router as admin_router
@@ -154,3 +155,36 @@ def test_endpoint_secret_is_kept_only_for_the_same_origin() -> None:
         )
         == ""
     )
+
+
+def test_trusted_windows_loopback_updates_settings_without_admin_routes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(TRUST_LOCAL_ADMIN_ENV, "1")
+    monkeypatch.delenv("QINGJUAN_AUTH_TOKEN_SHA256", raising=False)
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "qingjuan.db")
+    monkeypatch.setattr(db, "_DATA_DIR_READY", True)
+    db.init_db()
+    application = create_application(
+        routers=[settings_router],
+        api_prefix=API_PREFIX,
+        authenticate=True,
+    )
+    payload = _settings_payload(base_url="https://models.example.test/v1")
+    payload["translationModel"]["apiKey"] = "local-provider-key"
+    payload["translationModel"]["apiKeyAction"] = "replace"
+
+    with TestClient(
+        application,
+        base_url="http://127.0.0.1",
+        client=("127.0.0.1", 50000),
+    ) as client:
+        response = client.put(f"{API_PREFIX}/settings", json=payload)
+        admin_response = client.get("/admin/")
+
+    assert response.status_code == 200
+    assert response.json()["translationModel"]["apiKeyConfigured"] is True
+    assert admin_response.status_code == 404
+    assert db.load_settings().translationModel.apiKey == "local-provider-key"

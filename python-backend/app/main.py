@@ -52,7 +52,7 @@ try:
         system_router,
         tasks_router,
     )
-    from .application import create_application
+    from .application import admin_web_enabled, create_application
     from .chapter_cache import ChapterCacheCoordinator
     from .db import (
         DATA_DIR,
@@ -187,7 +187,7 @@ except ImportError:
         system_router,
         tasks_router,
     )
-    from app.application import create_application
+    from app.application import admin_web_enabled, create_application
     from app.chapter_cache import ChapterCacheCoordinator
     from app.db import (
         DATA_DIR,
@@ -439,11 +439,11 @@ async def get_service_meta() -> ServiceMetaResponse:
         apiVersion=API_VERSION,
         instanceId=_load_or_create_instance_id(),
         capabilities={
-            "adminWeb": True,
-            "connectionTokenReveal": True,
+            "adminWeb": admin_web_enabled(),
+            "connectionTokenReveal": admin_web_enabled(),
             "deviceRegistry": True,
-            "runtimeLogs": True,
-            "serviceDiagnostics": True,
+            "runtimeLogs": admin_web_enabled(),
+            "serviceDiagnostics": admin_web_enabled(),
             "translationModelCheck": True,
             "rapidOcr": True,
             "windowsOcr": os.name == "nt",
@@ -1799,20 +1799,32 @@ def _startup_console_lines(host: str, port: int) -> tuple[str, ...]:
     def console_safe(value: object) -> str:
         return "".join(character if character.isprintable() else "?" for character in str(value))
 
-    return (
+    lines = [
         "============================================================",
         "青卷 FastAPI 后端已启动",
         f"客户端地址：{console_safe(public_url)}",
         f"监听地址：{console_safe(host)}:{port}",
         f"业务 API：{console_safe(public_url)}/api/v1",
-        f"管理界面：{console_safe(public_url)}/admin/",
         f"健康检查：{console_safe(public_url)}/healthz",
         f"数据目录：{console_safe(DATA_DIR)}",
         f"Bearer 认证：{'已启用' if authentication_enabled() else '未启用（仅允许回环监听）'}",
-        f"管理登录：{'已配置' if validate_admin_auth_configuration() else '未配置'}",
-        "原始连接 Token 不写入服务日志；管理员使用 sudo qingjuan-info 查看。",
-        "============================================================",
+    ]
+    if admin_web_enabled():
+        lines.extend(
+            (
+                f"管理界面：{console_safe(public_url)}/admin/",
+                f"管理登录：{'已配置' if validate_admin_auth_configuration() else '未配置'}",
+            )
+        )
+    else:
+        lines.append("管理界面：未启用（Windows 本机模式在客户端设置中配置模型）")
+    lines.extend(
+        (
+            "原始连接 Token 不写入服务日志；管理员使用 sudo qingjuan-info 查看。",
+            "============================================================",
+        )
     )
+    return tuple(lines)
 
 
 def main() -> None:
@@ -1829,7 +1841,7 @@ def main() -> None:
 
     if not _is_loopback_host(args.host) and not authentication_enabled():
         raise SystemExit("监听非回环地址必须配置 QINGJUAN_AUTH_TOKEN_SHA256")
-    if not _is_loopback_host(args.host) and not validate_admin_auth_configuration():
+    if admin_web_enabled() and not _is_loopback_host(args.host) and not validate_admin_auth_configuration():
         raise SystemExit("监听非回环地址必须配置管理界面密码与会话密钥")
 
     for line in _startup_console_lines(args.host, args.port):
@@ -4462,13 +4474,15 @@ def _now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
+_ADMIN_WEB_ENABLED = admin_web_enabled()
+
 app = create_application(
     routers=API_ROUTERS,
-    public_routers=PUBLIC_ROUTERS,
+    public_routers=PUBLIC_ROUTERS if _ADMIN_WEB_ENABLED else (health_router,),
     api_prefix=API_PREFIX,
     authenticate=True,
     lifespan=lifespan,
-    admin_static_path=Path(__file__).with_name("admin_static"),
+    admin_static_path=(Path(__file__).with_name("admin_static") if _ADMIN_WEB_ENABLED else None),
 )
 
 

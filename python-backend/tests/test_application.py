@@ -8,7 +8,14 @@ from fastapi.testclient import TestClient
 
 from app import db, main
 from app.api.routers import health_router
-from app.application import APP_TITLE, APP_VERSION, create_application, read_app_version
+from app.application import (
+    APP_TITLE,
+    APP_VERSION,
+    DISABLE_ADMIN_WEB_ENV,
+    admin_web_enabled,
+    create_application,
+    read_app_version,
+)
 from app.models import (
     BookRecord,
     OpenAICompatibleConfig,
@@ -37,6 +44,15 @@ def test_application_factory_sets_metadata() -> None:
 
     assert application.title == APP_TITLE
     assert application.version == APP_VERSION
+
+
+def test_windows_local_mode_can_disable_admin_web(monkeypatch) -> None:
+    monkeypatch.setenv(DISABLE_ADMIN_WEB_ENV, "1")
+
+    assert admin_web_enabled() is False
+    output = "\n".join(main._startup_console_lines("127.0.0.1", 19453))
+    assert "管理界面：未启用" in output
+    assert "127.0.0.1:19453/admin/" not in output
 
 
 def test_database_connection_context_closes_handle(monkeypatch, tmp_path) -> None:

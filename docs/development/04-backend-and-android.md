@@ -66,12 +66,12 @@ HTTPS，FastAPI 不直接承担公网 TLS 终止。
   CSRF Header；前端不得把密码、连接 Token 或会话 Cookie 写入 localStorage、sessionStorage、日志或 URL。
 - 登录失败使用通用错误并限制连续尝试速率，不泄露配置状态。退出登录清除 Cookie；终端改密同时轮换会话签名密钥，
   使所有已有管理会话失效。
-- Windows 客户端自己启动的回环后端显式设置 `QINGJUAN_TRUST_LOCAL_ADMIN=1`。只有该开关存在，并且网络对端与 HTTP Host
-  都是回环地址时，管理界面才可建立进程内本机会话而无需 Linux 管理密码；会话仍返回 CSRF 值，DNS 重绑定、非回环请求、普通源码启动和 Linux 部署
-  不得获得该信任。Windows 启动器同时清空继承的远程认证与管理凭据环境，避免全局环境污染本机模式。
+- Windows 客户端自己启动的回环后端显式设置 `QINGJUAN_DISABLE_ADMIN_WEB=1` 与 `QINGJUAN_TRUST_LOCAL_ADMIN=1`。
+  前者阻止挂载管理 Router 和静态站点；后者仅在网络对端与 HTTP Host 都是回环地址时允许 Flutter 通过业务 API 保存模型设置和
+  强制自检。DNS 重绑定、非回环请求、普通源码启动和 Linux 部署不得获得该信任。Windows 启动器同时清空继承的远程认证与管理凭据环境。
 - 管理界面与 Flutter 客户端访问同一业务 API 和单用户数据，不建立第二套数据库或业务规则。
-- 管理界面接受 `#settings` 与 `#plugins` 页面深链接：登录或本机信任会话建立后分别选中“模型设置”和“插件管理”，其他未知
-  Hash 回退“服务概览”。菜单内部切换同步 Hash，但不得把 API 密钥、密码、Token 或表单值写入 URL。
+- Linux 管理界面接受 `#settings` 与 `#plugins` 页面深链接：登录后分别选中“模型设置”和“插件管理”，其他未知 Hash
+  回退“服务概览”。菜单内部切换同步 Hash，但不得把 API 密钥、密码、Token 或表单值写入 URL。
 - 私有网络可使用 HTTP；任何公网访问仍必须由受信反向代理提供 HTTPS。页面和 API 必须同源，禁止将管理 Cookie
   或 CSRF 值发送到第三方地址。
 
@@ -92,12 +92,11 @@ HTTPS，FastAPI 不直接承担公网 TLS 终止。
 
 ### 服务端翻译模型与连接自检
 
-- 当前后端 SQLite 中的 `translationModel` 是唯一权威配置。只有带 CSRF 的管理会话可修改 API 根地址、密钥、
-  模型名、视觉能力和系统提示词；普通客户端 Bearer Token 不得修改这些设置。Windows 本机后端仅在固定回环地址和
-  `QINGJUAN_TRUST_LOCAL_ADMIN=1` 同时成立时使用本机管理例外。Windows / Android 只向后端创建翻译任务，不接收模型密钥，
-  也不直连供应商。
+- 当前后端 SQLite 中的 `translationModel` 是唯一权威配置。Linux 只有带 CSRF 的管理会话可修改 API 根地址、密钥、
+  模型名、视觉能力和系统提示词；普通 Bearer 客户端不得修改。Windows 本机后端仅在固定回环地址和
+  `QINGJUAN_TRUST_LOCAL_ADMIN=1` 同时成立时接受 Flutter 设置页写入。密钥不写入客户端偏好、不从后端回显，所有客户端都不直连供应商。
 - `/api/v1/translation-model/check?force=false` 只读取当前配置的进程内缓存状态，Bearer Token 调用不得发起任何出站请求。
-  只有带 CSRF 的管理会话可调用 `force=true` 发起真实探针。接口返回 `enabled`、`configured`、`available`、
+  Linux 只有带 CSRF 的管理会话可调用 `force=true`；Windows 本机模式可由受信回环客户端在保存后调用。接口返回 `enabled`、`configured`、`available`、
   稳定状态、模型名、视觉能力、检查时间、延迟和脱敏说明；不得返回 API 根地址、密钥、请求头、供应商响应原文或完整异常。
 - 启用且配置完整时，管理员自检向规范化后的 `/v1/chat/completions` 发送固定、无用户正文的最小探针，最多请求 8 个输出
   Token，用于验证地址、密钥和模型确实可调用。相同配置的结果在单进程内缓存 60 秒；保存新配置后只有管理员显式检测才会发起新探针。

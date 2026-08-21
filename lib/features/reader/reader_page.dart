@@ -79,6 +79,11 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   Size? _paginationViewport;
   double? _paginationFontSize;
   double? _paginationLineHeight;
+  double? _paginationScaledFontSize;
+  double? _paginationFirstPageHeight;
+  TextStyle? _paginationTextStyle;
+  TextDirection? _paginationTextDirection;
+  Locale? _paginationLocale;
   List<String> _paginationPages = const <String>[];
   DateTime? _lastHardwareKeyAt;
   Offset? _readerPointerDown;
@@ -1281,28 +1286,50 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     );
   }
 
-  List<String> _pagesFor(ChapterContent content, Size viewport) {
+  List<String> _pagesFor(
+    BuildContext context,
+    ChapterContent content,
+    Size viewport, {
+    required double firstPageHeight,
+    required TextStyle style,
+  }) {
     final lineHeight = _lineSpacing.height;
+    final textScaler = MediaQuery.textScalerOf(context);
+    final scaledFontSize = textScaler.scale(_fontSize);
+    final textDirection = Directionality.of(context);
+    final locale = Localizations.maybeLocaleOf(context);
     if (identical(_paginationContent, content) &&
         _paginationViewport == viewport &&
         _paginationFontSize == _fontSize &&
-        _paginationLineHeight == lineHeight) {
+        _paginationLineHeight == lineHeight &&
+        _paginationScaledFontSize == scaledFontSize &&
+        _paginationFirstPageHeight == firstPageHeight &&
+        _paginationTextStyle == style &&
+        _paginationTextDirection == textDirection &&
+        _paginationLocale == locale) {
       return _paginationPages;
     }
     final pages = content.imageSources.isNotEmpty
         ? List<String>.filled(content.imageSources.length, '', growable: false)
-        : paginateReaderText(
+        : paginateReaderTextForLayout(
             _readerParagraphs(content).join('\n\n'),
-            estimateReaderPageCharacters(
-              viewport,
-              _fontSize,
-              lineHeight: lineHeight,
-            ),
+            maxWidth: viewport.width,
+            pageHeight: viewport.height,
+            firstPageHeight: firstPageHeight,
+            style: style,
+            textScaler: textScaler,
+            textDirection: textDirection,
+            locale: locale,
           );
     _paginationContent = content;
     _paginationViewport = viewport;
     _paginationFontSize = _fontSize;
     _paginationLineHeight = lineHeight;
+    _paginationScaledFontSize = scaledFontSize;
+    _paginationFirstPageHeight = firstPageHeight;
+    _paginationTextStyle = style;
+    _paginationTextDirection = textDirection;
+    _paginationLocale = locale;
     _paginationPages = pages;
     return pages;
   }
@@ -1313,6 +1340,10 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     final viewPadding = MediaQuery.viewPaddingOf(context);
     return LayoutBuilder(
       builder: (context, constraints) {
+        final textScaler = MediaQuery.textScalerOf(context);
+        final textDirection = Directionality.of(context);
+        final locale = Localizations.maybeLocaleOf(context);
+        final defaultTextStyle = DefaultTextStyle.of(context).style;
         final textInsets = EdgeInsets.fromLTRB(
           24,
           math.max(20, viewPadding.top + 14),
@@ -1325,15 +1356,68 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
           16,
           math.max(20, viewPadding.bottom + 14),
         );
-        final pages = _pagesFor(
-          content,
-          Size(
-            constraints.maxWidth,
-            math.max(
-              240,
-              constraints.maxHeight - viewPadding.vertical,
-            ),
+        final titleStyle = defaultTextStyle.merge(
+          FluentTheme.of(context).typography.title?.copyWith(
+                    color: textColor,
+                    fontSize: 25,
+                    fontWeight: FontWeight.w800,
+                    height: 1.28,
+                  ) ??
+              TextStyle(
+                color: textColor,
+                fontSize: 25,
+                fontWeight: FontWeight.w800,
+                height: 1.28,
+              ),
+        );
+        final bodyStyle = defaultTextStyle.merge(
+          TextStyle(
+            color: textColor,
+            fontSize: _fontSize,
+            height: _lineSpacing.height,
+            letterSpacing: 0.12,
           ),
+        );
+        final footerBookStyle = defaultTextStyle.merge(
+          TextStyle(
+            color: _palette.secondaryText.withAlpha(150),
+            fontSize: 11.5,
+          ),
+        );
+        final footerPageStyle = defaultTextStyle.merge(
+          TextStyle(
+            color: _palette.secondaryText.withAlpha(165),
+            fontSize: 11.5,
+          ),
+        );
+        final footerPainter = TextPainter(
+          text: TextSpan(text: '1 / 1', style: footerPageStyle),
+          textDirection: textDirection,
+          textScaler: textScaler,
+          locale: locale,
+          maxLines: 1,
+        )..layout();
+        final pageFooterHeight = math.max(18.0, footerPainter.height);
+        final textWidth = math.max(
+          1.0,
+          constraints.maxWidth - textInsets.horizontal,
+        );
+        final bodyHeight = math.max(
+          1.0,
+          constraints.maxHeight - textInsets.vertical - pageFooterHeight,
+        );
+        final titlePainter = TextPainter(
+          text: TextSpan(text: content.chapter.title, style: titleStyle),
+          textDirection: textDirection,
+          textScaler: textScaler,
+          locale: locale,
+        )..layout(maxWidth: textWidth);
+        final pages = _pagesFor(
+          context,
+          content,
+          Size(textWidth, bodyHeight),
+          firstPageHeight: bodyHeight - titlePainter.height - 23,
+          style: bodyStyle,
         );
         _pageCount = math.max(1, pages.length);
         return Listener(
@@ -1384,15 +1468,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                       if (index == 0) ...<Widget>[
                         Text(
                           content.chapter.title,
-                          style: FluentTheme.of(context)
-                              .typography
-                              .title
-                              ?.copyWith(
-                                color: textColor,
-                                fontSize: 25,
-                                fontWeight: FontWeight.w800,
-                                height: 1.28,
-                              ),
+                          style: titleStyle,
                         ),
                         const SizedBox(height: 23),
                       ],
@@ -1405,36 +1481,28 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                               textScaler: MediaQuery.textScalerOf(context),
                             ),
                             textAlign: TextAlign.justify,
-                            style: TextStyle(
-                              color: textColor,
-                              fontSize: _fontSize,
-                              height: _lineSpacing.height,
-                              letterSpacing: 0.12,
-                            ),
+                            style: bodyStyle,
                           ),
                         ),
                       ),
-                      Row(
-                        children: <Widget>[
-                          Expanded(
-                            child: Text(
-                              widget.detail.book.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: _palette.secondaryText.withAlpha(150),
-                                fontSize: 11.5,
+                      SizedBox(
+                        height: pageFooterHeight,
+                        child: Row(
+                          children: <Widget>[
+                            Expanded(
+                              child: Text(
+                                widget.detail.book.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: footerBookStyle,
                               ),
                             ),
-                          ),
-                          Text(
-                            '${index + 1} / ${pages.length}',
-                            style: TextStyle(
-                              color: _palette.secondaryText.withAlpha(165),
-                              fontSize: 11.5,
+                            Text(
+                              '${index + 1} / ${pages.length}',
+                              style: footerPageStyle,
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ],
                   ),

@@ -108,6 +108,147 @@ List<String> paginateReaderText(String text, int targetCharacters) {
   return pages;
 }
 
+List<String> paginateReaderTextForLayout(
+  String text, {
+  required double maxWidth,
+  required double pageHeight,
+  double? firstPageHeight,
+  required TextStyle style,
+  TextScaler textScaler = TextScaler.noScaling,
+  TextDirection textDirection = TextDirection.ltr,
+  Locale? locale,
+}) {
+  if (text.isEmpty) return const <String>[''];
+  assert(maxWidth > 0);
+  assert(pageHeight > 0);
+
+  final boundaries = <int>[0];
+  var offset = 0;
+  for (final rune in text.runes) {
+    offset += rune > 0xFFFF ? 2 : 1;
+    boundaries.add(offset);
+  }
+
+  final pages = <String>[];
+  var start = 0;
+  while (start < boundaries.length - 1) {
+    final availableHeight =
+        pages.isEmpty ? firstPageHeight ?? pageHeight : pageHeight;
+    if (availableHeight <= 0) {
+      pages.add('');
+      continue;
+    }
+
+    final estimatedCharacters = math.max(
+      1,
+      ((maxWidth / math.max(1, textScaler.scale(style.fontSize ?? 14))) *
+              (availableHeight /
+                  math.max(
+                    1,
+                    textScaler.scale(style.fontSize ?? 14) *
+                        (style.height ?? 1.2),
+                  )) *
+              1.5)
+          .ceil(),
+    );
+    var fittingEnd = start;
+    var rejectedEnd = math.min(
+      boundaries.length - 1,
+      start + estimatedCharacters,
+    );
+
+    bool fits(int end) => _readerTextFitsLayout(
+          text.substring(boundaries[start], boundaries[end]),
+          maxWidth: maxWidth,
+          maxHeight: availableHeight,
+          style: style,
+          textScaler: textScaler,
+          textDirection: textDirection,
+          locale: locale,
+        );
+
+    if (fits(rejectedEnd)) {
+      fittingEnd = rejectedEnd;
+      while (fittingEnd < boundaries.length - 1) {
+        rejectedEnd = math.min(
+          boundaries.length - 1,
+          start + (fittingEnd - start) * 2,
+        );
+        if (!fits(rejectedEnd)) break;
+        fittingEnd = rejectedEnd;
+      }
+    }
+
+    if (fittingEnd < boundaries.length - 1) {
+      while (rejectedEnd - fittingEnd > 1) {
+        final candidate = fittingEnd + (rejectedEnd - fittingEnd) ~/ 2;
+        if (fits(candidate)) {
+          fittingEnd = candidate;
+        } else {
+          rejectedEnd = candidate;
+        }
+      }
+    }
+
+    // Even an unusually short viewport must still make progress. Normal reader
+    // layouts always fit at least one glyph; this fallback only protects custom
+    // window sizes and extreme accessibility scaling from an infinite loop.
+    if (fittingEnd == start) fittingEnd = start + 1;
+
+    var pageEnd = fittingEnd;
+    if (pageEnd < boundaries.length - 1) {
+      final searchStart = start + ((pageEnd - start) * 0.72).floor();
+      for (var index = pageEnd; index > searchStart; index--) {
+        if (_isBreakCharacter(text.codeUnitAt(boundaries[index] - 1))) {
+          pageEnd = index;
+          break;
+        }
+      }
+    }
+
+    pages.add(text.substring(boundaries[start], boundaries[pageEnd]));
+    start = pageEnd;
+  }
+  return pages;
+}
+
+bool _readerTextFitsLayout(
+  String text, {
+  required double maxWidth,
+  required double maxHeight,
+  required TextStyle style,
+  required TextScaler textScaler,
+  required TextDirection textDirection,
+  Locale? locale,
+}) {
+  final span = readerTextSpanForLayout(
+    text,
+    fontSize: style.fontSize ?? 14,
+    textScaler: textScaler,
+  );
+  final painter = TextPainter(
+    text: TextSpan(style: style, children: span.children),
+    textAlign: TextAlign.justify,
+    textDirection: textDirection,
+    textScaler: textScaler,
+    locale: locale,
+  );
+  final markerCount = readerParagraphStartMarker.allMatches(text).length;
+  if (markerCount > 0) {
+    painter.setPlaceholderDimensions(
+      List<PlaceholderDimensions>.filled(
+        markerCount,
+        PlaceholderDimensions(
+          size: Size(textScaler.scale(style.fontSize ?? 14) * 2, 0),
+          alignment: PlaceholderAlignment.bottom,
+        ),
+      ),
+    );
+  }
+  painter.layout(maxWidth: maxWidth);
+  return painter.height <= maxHeight;
+}
+
 bool _isBreakCharacter(int codeUnit) =>
     codeUnit == 0x0A ||
     codeUnit == 0x3002 ||

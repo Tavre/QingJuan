@@ -46,9 +46,11 @@ $smokeRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
 New-Item -ItemType Directory -Path $smokeRoot -Force | Out-Null
 $previousDataDir = $env:QINGJUAN_DATA_DIR
 $previousTrustLocalAdmin = $env:QINGJUAN_TRUST_LOCAL_ADMIN
+$previousDisableAdminWeb = $env:QINGJUAN_DISABLE_ADMIN_WEB
 $previousAuthTokenDigest = $env:QINGJUAN_AUTH_TOKEN_SHA256
 $env:QINGJUAN_DATA_DIR = Join-Path $smokeRoot "data"
 $env:QINGJUAN_TRUST_LOCAL_ADMIN = "1"
+$env:QINGJUAN_DISABLE_ADMIN_WEB = "1"
 $env:QINGJUAN_AUTH_TOKEN_SHA256 = ""
 $stdout = Join-Path $smokeRoot "backend.stdout.log"
 $stderr = Join-Path $smokeRoot "backend.stderr.log"
@@ -80,14 +82,40 @@ try {
     if ($meta.service -ne "qingjuan-backend" -or $meta.appVersion -ne $expectedVersion.Split("+")[0]) {
         throw "Packaged backend metadata does not match the client version."
     }
-
-    $admin = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/admin/" -TimeoutSec 5 -UseBasicParsing
-    if ($admin.StatusCode -ne 200) {
-        throw "Packaged backend admin assets are unavailable."
+    if ($meta.capabilities.adminWeb) {
+        throw "Windows local backend unexpectedly advertises the admin web interface."
     }
-    $adminSession = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/admin/api/session" -TimeoutSec 5
-    if (-not $adminSession.authenticated -or [string]::IsNullOrWhiteSpace($adminSession.csrfToken)) {
-        throw "Packaged backend local admin session is unavailable."
+
+    try {
+        Invoke-WebRequest -Uri "http://127.0.0.1:$Port/admin/" -TimeoutSec 5 -UseBasicParsing | Out-Null
+        throw "Windows local backend unexpectedly serves the admin web interface."
+    }
+    catch {
+        $statusCode = [int]$_.Exception.Response.StatusCode
+        if ($statusCode -ne 404) {
+            throw
+        }
+    }
+
+    $settings = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/settings" -TimeoutSec 5
+    $settings.translationModel.enabled = $false
+    $settings.translationModel | Add-Member -NotePropertyName apiKey -NotePropertyValue "" -Force
+    $settings.translationModel | Add-Member -NotePropertyName apiKeyAction -NotePropertyValue "keep" -Force
+    $settings.mangaOcr | Add-Member -NotePropertyName apiKey -NotePropertyValue "" -Force
+    $settings.mangaOcr | Add-Member -NotePropertyName apiKeyAction -NotePropertyValue "keep" -Force
+    $settings.bika = @{
+        email = ""
+        password = ""
+        passwordAction = "keep"
+    }
+    $savedSettings = Invoke-RestMethod `
+        -Uri "http://127.0.0.1:$Port/api/v1/settings" `
+        -Method Put `
+        -ContentType "application/json" `
+        -Body ($settings | ConvertTo-Json -Depth 8 -Compress) `
+        -TimeoutSec 5
+    if ($savedSettings.translationModel.enabled) {
+        throw "Windows client model settings API did not persist the update."
     }
 
     $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop |
@@ -129,6 +157,12 @@ finally {
     }
     else {
         $env:QINGJUAN_TRUST_LOCAL_ADMIN = $previousTrustLocalAdmin
+    }
+    if ($null -eq $previousDisableAdminWeb) {
+        Remove-Item Env:QINGJUAN_DISABLE_ADMIN_WEB -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:QINGJUAN_DISABLE_ADMIN_WEB = $previousDisableAdminWeb
     }
     if ($null -eq $previousAuthTokenDigest) {
         Remove-Item Env:QINGJUAN_AUTH_TOKEN_SHA256 -ErrorAction SilentlyContinue

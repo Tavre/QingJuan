@@ -12,6 +12,7 @@ from app.admin_auth import (
     ADMIN_CSRF_HEADER,
     ADMIN_PASSWORD_HASH_ENV,
     ADMIN_SESSION_SECRET_ENV,
+    TRUST_LOCAL_ADMIN_ENV,
     hash_admin_password,
 )
 from app.api import translation_model as translation_model_api
@@ -296,3 +297,48 @@ def test_model_check_endpoint_requires_backend_auth_and_returns_safe_dto(
     assert accepted.json()["available"] is True
     assert "provider-secret-key" not in accepted.text
     assert "models.example.test" not in accepted.text
+
+
+def test_trusted_windows_loopback_can_force_model_check_without_admin_web(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(TRUST_LOCAL_ADMIN_ENV, "1")
+    monkeypatch.delenv("QINGJUAN_AUTH_TOKEN_SHA256", raising=False)
+    force_values: list[bool] = []
+
+    async def fake_check(
+        settings: TranslationSettings,
+        *,
+        force: bool = False,
+    ) -> TranslationModelCheckResponse:
+        force_values.append(force)
+        return TranslationModelCheckResponse(
+            enabled=True,
+            configured=True,
+            available=True,
+            status="ready",
+            model="local-model",
+            supportsVision=False,
+            checkedAt="2030-01-01T00:00:00Z",
+            latencyMs=8,
+            message="模型可用",
+            cached=False,
+        )
+
+    monkeypatch.setattr(translation_model_api, "check_translation_model", fake_check)
+    application = create_application(
+        routers=[translation_model_api.router],
+        api_prefix=API_PREFIX,
+        authenticate=True,
+    )
+
+    with TestClient(
+        application,
+        base_url="http://127.0.0.1",
+        client=("127.0.0.1", 50000),
+    ) as client:
+        response = client.post(f"{API_PREFIX}/translation-model/check?force=true")
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "local-model"
+    assert force_values == [True]

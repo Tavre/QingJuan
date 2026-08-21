@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import sys
 import time
@@ -14,7 +15,12 @@ from .security import API_PREFIX, authentication_enabled, require_api_authentica
 from .service_diagnostics import RequestMetrics, should_track_request
 
 APP_TITLE = "青卷后端"
+DISABLE_ADMIN_WEB_ENV = "QINGJUAN_DISABLE_ADMIN_WEB"
 _VERSION_PATTERN = re.compile(r"^version:\s*(\d+\.\d+\.\d+)(?:\+\d+)?\s*$")
+
+
+def admin_web_enabled() -> bool:
+    return os.getenv(DISABLE_ADMIN_WEB_ENV, "").strip() != "1"
 
 
 def read_app_version(pubspec_path: Path) -> str:
@@ -83,6 +89,7 @@ def create_application(
         )
 
     if admin_static_path is not None:
+
         @application.middleware("http")
         async def add_admin_security_headers(request: Request, call_next: Callable) -> Response:
             response = await call_next(request)

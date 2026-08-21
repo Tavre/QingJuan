@@ -1,6 +1,10 @@
+import 'dart:convert';
+
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:qingjuan/app/app_scope.dart';
 import 'package:qingjuan/app/app_state.dart';
 import 'package:qingjuan/core/api/api_client.dart';
@@ -90,7 +94,7 @@ void main() {
     );
     expect(systemIcon.semanticLabel, '跟随系统外观');
     expect(find.text('已发现 1 个系统声音。选择会立即保存，并用于之后打开的听书页面。'), findsOneWidget);
-    expect(find.text('由后端管理界面统一配置'), findsOneWidget);
+    expect(find.text('由 Linux 后端管理界面统一配置'), findsOneWidget);
     expect(find.text('等待服务端模型自检'), findsOneWidget);
     expect(find.text('重新检测模型'), findsOneWidget);
     expect(find.text('启用翻译模型'), findsNothing);
@@ -139,14 +143,12 @@ void main() {
     final preferences = await SharedPreferences.getInstance();
     final appState = AppState(preferences, localBackendSupported: true);
     final api = ApiClient(() => appState.backendUrl);
-    Uri? openedModelSettings;
     final backend = BackendConnectionManager(
       api,
       isConfigured: () => appState.hasBackendConnection,
       isLocal: () => appState.connectionMode == BackendConnectionMode.local,
       localBackend: WindowsLocalBackendLifecycle(
         isWindows: () => true,
-        openUri: (uri) async => openedModelSettings = uri,
       ),
     )..status = BackendStatus.ready;
 
@@ -173,15 +175,25 @@ void main() {
 
     expect(find.text('本机模式使用固定回环地址'), findsOneWidget);
     expect(find.textContaining(AppState.defaultLocalBackendUrl), findsWidgets);
-    final openModelSettings =
-        find.byKey(const ValueKey('open-local-model-settings'));
-    await tester.ensureVisible(openModelSettings);
-    await tester.pumpAndSettle();
-    await tester.tap(openModelSettings);
-    await tester.pumpAndSettle();
     expect(
-      openedModelSettings,
-      Uri.parse('http://127.0.0.1:19453/admin/#settings'),
+        find.byKey(const ValueKey('open-local-model-settings')), findsNothing);
+    expect(find.textContaining('/admin/'), findsNothing);
+    expect(find.text('模型配置保存在本机后端'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('translation-model-enabled')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('translation-model-base-url')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('translation-model-api-key')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('save-local-model-settings')),
+      findsOneWidget,
     );
 
     final modeSelector = find.byType(ComboBox<BackendConnectionMode>);
@@ -230,6 +242,136 @@ void main() {
           .text,
       'draft-token',
     );
+    await backend.dispose();
+    api.close();
+  });
+
+  testWidgets('Windows local model settings save through the backend API',
+      (tester) async {
+    final preferences = await SharedPreferences.getInstance();
+    final appState = AppState(preferences, localBackendSupported: true);
+    Map<String, dynamic>? savedPayload;
+    var forceChecked = false;
+    final api = ApiClient(
+      () => appState.backendUrl,
+      client: MockClient((request) async {
+        if (request.method == 'PUT' && request.url.path == '/api/v1/settings') {
+          savedPayload = jsonDecode(request.body) as Map<String, dynamic>;
+          return http.Response(
+            jsonEncode(<String, dynamic>{
+              'systemPrompt': '本机翻译提示',
+              'autoTranslateNextChapters': 2,
+              'downloadConcurrency': 4,
+              'translationModel': <String, dynamic>{
+                'enabled': true,
+                'baseUrl': 'https://models.example.test/v1',
+                'model': 'local-model',
+                'supportsVision': true,
+                'apiKeyConfigured': true,
+              },
+              'mangaOcr': <String, dynamic>{
+                'enabled': false,
+                'baseUrl': '',
+                'apiKeyConfigured': false,
+              },
+              'bika': <String, dynamic>{
+                'emailConfigured': false,
+                'passwordConfigured': false,
+              },
+            }),
+            200,
+            headers: <String, String>{'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/api/v1/translation-model/check') {
+          forceChecked = request.url.queryParameters['force'] == 'true';
+          return http.Response(
+            jsonEncode(<String, dynamic>{
+              'enabled': true,
+              'configured': true,
+              'available': true,
+              'status': 'ready',
+              'model': 'local-model',
+              'supportsVision': true,
+              'checkedAt': '2026-08-21T00:00:00Z',
+              'latencyMs': 12,
+              'message': '模型可用',
+              'cached': false,
+            }),
+            200,
+            headers: <String, String>{'content-type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 404);
+      }),
+    );
+    final backend = BackendConnectionManager(
+      api,
+      isConfigured: () => true,
+      isLocal: () => true,
+    )..status = BackendStatus.ready;
+    final settings = SettingsController(api)
+      ..update(
+        TranslationSettings.defaults().copyWith(
+          systemPrompt: '本机翻译提示',
+          translationModel: const TranslationModelSettings.defaults().copyWith(
+            enabled: true,
+            baseUrl: 'https://models.example.test/v1',
+            model: 'local-model',
+            supportsVision: true,
+          ),
+        ),
+      );
+
+    await tester.pumpWidget(
+      FluentApp(
+        home: UiPlatformScope(
+          platform: TargetPlatform.windows,
+          child: AppScope(
+            appState: appState,
+            api: api,
+            backend: backend,
+            library: LibraryController(api),
+            sources: SourcesController(api),
+            tasks: TasksController(api),
+            settings: settings,
+            child: SettingsPage(
+              voiceService: _FakeTtsVoiceService(const <TtsVoice>[]),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const ValueKey('translation-model-api-key')),
+      'local-secret',
+    );
+    final save = find.byKey(const ValueKey('save-local-model-settings'));
+    await tester.ensureVisible(save);
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+
+    final translationModel =
+        savedPayload!['translationModel'] as Map<String, dynamic>;
+    expect(translationModel['apiKey'], 'local-secret');
+    expect(translationModel['apiKeyAction'], 'replace');
+    expect(translationModel['model'], 'local-model');
+    expect(forceChecked, isTrue);
+    expect(
+      tester
+          .widget<TextBox>(
+            find.byKey(const ValueKey('translation-model-api-key')),
+          )
+          .controller!
+          .text,
+      isEmpty,
+    );
+    await tester.pump(const Duration(seconds: 4));
+
+    settings.dispose();
     await backend.dispose();
     api.close();
   });

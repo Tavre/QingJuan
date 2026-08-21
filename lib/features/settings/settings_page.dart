@@ -25,16 +25,11 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  static final _localModelSettingsUri = Uri.parse(
-    '${AppState.defaultLocalBackendUrl}/admin/#settings',
-  );
-
   final _backendController = TextEditingController();
   final _backendTokenController = TextEditingController();
   BackendConnectionMode _connectionMode = BackendConnectionMode.remote;
   bool _savingConnection = false;
   bool _modelChecking = false;
-  bool _openingLocalModelSettings = false;
   bool _initialized = false;
 
   @override
@@ -138,7 +133,7 @@ class _SettingsPageState extends State<SettingsPage> {
       animation: Listenable.merge(<Listenable>[scope.appState, settings]),
       builder: (context, _) => PageFrame(
         title: compact ? '我的' : '设置',
-        subtitle: '管理界面主题、设备听书、后端连接和翻译服务。',
+        subtitle: '管理界面主题、设备听书、后端连接和模型服务。',
         compactHeader: ReadingPageHeader(
           title: '我的',
           subtitle: '阅读偏好与服务器连接',
@@ -260,16 +255,16 @@ class _SettingsPageState extends State<SettingsPage> {
               backendUrlController: _backendController,
               backendTokenController: _backendTokenController,
               onModeChanged: (mode) => setState(() => _connectionMode = mode),
-              openingLocalModelSettings: _openingLocalModelSettings,
-              onOpenLocalModelSettings: () =>
-                  unawaited(_openLocalModelSettings(scope)),
             ),
             const SizedBox(height: 30),
             const SectionTitle('翻译服务'),
             TranslationModelCard(
               backend: scope.backend,
+              settings: settings,
+              localConfiguration:
+                  scope.appState.connectionMode == BackendConnectionMode.local,
               checking: _modelChecking,
-              onCheck: () => _checkTranslationModel(scope),
+              onCheck: (force) => _checkTranslationModel(scope, force: force),
             ),
             if (settings.error != null) ...<Widget>[
               const SizedBox(height: 16),
@@ -285,9 +280,12 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Future<void> _checkTranslationModel(AppScope scope) async {
+  Future<void> _checkTranslationModel(
+    AppScope scope, {
+    bool force = false,
+  }) async {
     setState(() => _modelChecking = true);
-    final result = await scope.backend.checkTranslationModel();
+    final result = await scope.backend.checkTranslationModel(force: force);
     if (!mounted) return;
     setState(() => _modelChecking = false);
     displayInfoBar(
@@ -300,25 +298,5 @@ class _SettingsPageState extends State<SettingsPage> {
             : InfoBarSeverity.warning,
       ),
     );
-  }
-
-  Future<void> _openLocalModelSettings(AppScope scope) async {
-    if (_openingLocalModelSettings) return;
-    setState(() => _openingLocalModelSettings = true);
-    try {
-      await scope.backend.openLocalAdmin(_localModelSettingsUri);
-    } catch (error) {
-      if (!mounted) return;
-      displayInfoBar(
-        context,
-        builder: (_, __) => InfoBar(
-          title: const Text('无法打开模型设置'),
-          content: Text('$error'),
-          severity: InfoBarSeverity.error,
-        ),
-      );
-    } finally {
-      if (mounted) setState(() => _openingLocalModelSettings = false);
-    }
   }
 }

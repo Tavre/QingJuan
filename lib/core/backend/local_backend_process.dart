@@ -10,10 +10,18 @@ import '../models/book.dart';
 abstract interface class LocalBackendLifecycle {
   Future<JsonMap> ensureRunning(ApiClient api);
 
-  Future<void> openAdmin(Uri uri);
-
   Future<void> stop();
 }
+
+const windowsLocalBackendEnvironment = <String, String>{
+  'QINGJUAN_TRUST_LOCAL_ADMIN': '1',
+  'QINGJUAN_DISABLE_ADMIN_WEB': '1',
+  'QINGJUAN_AUTH_TOKEN_SHA256': '',
+  'QINGJUAN_ADMIN_PASSWORD_HASH': '',
+  'QINGJUAN_ADMIN_SESSION_SECRET': '',
+  'QINGJUAN_CONNECTION_TOKEN_FILE': '',
+  'QINGJUAN_PUBLIC_URL': '',
+};
 
 class LocalBackendException implements Exception {
   const LocalBackendException(this.message);
@@ -29,11 +37,9 @@ class WindowsLocalBackendLifecycle implements LocalBackendLifecycle {
     LocalBackendCommand? commandOverride,
     Future<void> Function(Duration)? delay,
     bool Function()? isWindows,
-    Future<void> Function(Uri uri)? openUri,
   })  : _commandOverride = commandOverride,
         _delay = delay ?? Future<void>.delayed,
-        _isWindows = isWindows ?? (() => Platform.isWindows),
-        _openUri = openUri;
+        _isWindows = isWindows ?? (() => Platform.isWindows);
 
   static const _readyAttempts = 30;
   static const _readyDelay = Duration(milliseconds: 300);
@@ -41,7 +47,6 @@ class WindowsLocalBackendLifecycle implements LocalBackendLifecycle {
   final LocalBackendCommand? _commandOverride;
   final Future<void> Function(Duration) _delay;
   final bool Function() _isWindows;
-  final Future<void> Function(Uri uri)? _openUri;
   Process? _ownedProcess;
 
   @override
@@ -69,14 +74,7 @@ class WindowsLocalBackendLifecycle implements LocalBackendLifecycle {
         command.executable,
         command.arguments,
         workingDirectory: command.workingDirectory,
-        environment: const <String, String>{
-          'QINGJUAN_TRUST_LOCAL_ADMIN': '1',
-          'QINGJUAN_AUTH_TOKEN_SHA256': '',
-          'QINGJUAN_ADMIN_PASSWORD_HASH': '',
-          'QINGJUAN_ADMIN_SESSION_SECRET': '',
-          'QINGJUAN_CONNECTION_TOKEN_FILE': '',
-          'QINGJUAN_PUBLIC_URL': '',
-        },
+        environment: windowsLocalBackendEnvironment,
         mode: ProcessStartMode.normal,
         runInShell: false,
       );
@@ -102,35 +100,6 @@ class WindowsLocalBackendLifecycle implements LocalBackendLifecycle {
       throw _existingPortError(compatibilityError);
     }
     throw const LocalBackendException('本机后端启动超时，请检查随包后端或 Python 依赖');
-  }
-
-  @override
-  Future<void> openAdmin(Uri uri) async {
-    if (!_isWindows()) {
-      throw const LocalBackendException('当前平台不支持打开 Windows 本机管理界面');
-    }
-    if (uri.scheme != 'http' ||
-        uri.host != '127.0.0.1' ||
-        uri.port != 19453 ||
-        uri.path != '/admin/' ||
-        (uri.fragment.isNotEmpty && uri.fragment != 'settings')) {
-      throw const LocalBackendException('拒绝打开非本机青卷管理地址');
-    }
-    try {
-      final openUri = _openUri;
-      if (openUri != null) {
-        await openUri(uri);
-        return;
-      }
-      await Process.start(
-        'explorer.exe',
-        <String>[uri.toString()],
-        mode: ProcessStartMode.detached,
-        runInShell: false,
-      );
-    } catch (error) {
-      throw LocalBackendException('无法打开本机模型设置：$error');
-    }
   }
 
   @override

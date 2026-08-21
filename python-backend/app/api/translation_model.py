@@ -2,6 +2,7 @@ from fastapi import APIRouter, Query, Request
 
 from ..admin_auth import require_admin_session
 from ..db import load_settings
+from ..security import authentication_enabled
 from ..translation_model_health import (
     TranslationModelCheckResponse,
     check_translation_model,
@@ -17,6 +18,6 @@ async def post_translation_model_check(
     force: bool = Query(default=False),
 ) -> TranslationModelCheckResponse:
     if force:
-        require_admin_session(request, require_csrf=True)
+        require_admin_session(request, require_csrf=authentication_enabled())
         return await check_translation_model(load_settings(), force=True)
     return get_translation_model_check_snapshot(load_settings())

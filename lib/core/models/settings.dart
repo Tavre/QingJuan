@@ -128,6 +128,60 @@ class TranslationModelSettings {
   final bool clearApiKey;
 }
 
+class MangaOcrSettings {
+  const MangaOcrSettings({
+    required this.enabled,
+    required this.baseUrl,
+    required this.apiKey,
+    required this.apiKeyConfigured,
+    this.clearApiKey = false,
+  });
+
+  factory MangaOcrSettings.fromJson(JsonMap json) => MangaOcrSettings(
+        enabled: json['enabled'] as bool? ?? false,
+        baseUrl: json['baseUrl'] as String? ?? '',
+        apiKey: json['apiKey'] as String? ?? '',
+        apiKeyConfigured: json['apiKeyConfigured'] as bool? ?? false,
+      );
+
+  const MangaOcrSettings.defaults()
+      : enabled = false,
+        baseUrl = '',
+        apiKey = '',
+        apiKeyConfigured = false,
+        clearApiKey = false;
+
+  JsonMap toJson() => <String, dynamic>{
+        'enabled': enabled,
+        'baseUrl': baseUrl,
+        'apiKey': apiKey,
+        'apiKeyAction': clearApiKey
+            ? 'clear'
+            : (apiKey.trim().isEmpty ? 'keep' : 'replace'),
+      };
+
+  MangaOcrSettings copyWith({
+    bool? enabled,
+    String? baseUrl,
+    String? apiKey,
+    bool? apiKeyConfigured,
+    bool? clearApiKey,
+  }) =>
+      MangaOcrSettings(
+        enabled: enabled ?? this.enabled,
+        baseUrl: baseUrl ?? this.baseUrl,
+        apiKey: apiKey ?? this.apiKey,
+        apiKeyConfigured: apiKeyConfigured ?? this.apiKeyConfigured,
+        clearApiKey: clearApiKey ?? this.clearApiKey,
+      );
+
+  final bool enabled;
+  final String baseUrl;
+  final String apiKey;
+  final bool apiKeyConfigured;
+  final bool clearApiKey;
+}
+
 class TranslationSettings {
   const TranslationSettings({
     required this.systemPrompt,
@@ -155,7 +209,9 @@ class TranslationSettings {
       downloadConcurrency: (json['downloadConcurrency'] as num?)?.toInt() ?? 4,
       translationModel:
           TranslationModelSettings.fromJson(migratedTranslationModel),
-      mangaOcr: (json['mangaOcr'] as JsonMap?) ?? <String, dynamic>{},
+      mangaOcr: MangaOcrSettings.fromJson(
+        (json['mangaOcr'] as JsonMap?) ?? <String, dynamic>{},
+      ),
       bika: (json['bika'] as JsonMap?) ?? <String, dynamic>{},
     );
   }
@@ -165,11 +221,7 @@ class TranslationSettings {
         autoTranslateNextChapters: 2,
         downloadConcurrency: 4,
         translationModel: TranslationModelSettings.defaults(),
-        mangaOcr: <String, dynamic>{
-          'enabled': false,
-          'baseUrl': '',
-          'apiKey': ''
-        },
+        mangaOcr: MangaOcrSettings.defaults(),
         bika: <String, dynamic>{'email': '', 'password': ''},
       );
 
@@ -178,8 +230,12 @@ class TranslationSettings {
         'autoTranslateNextChapters': autoTranslateNextChapters,
         'downloadConcurrency': downloadConcurrency,
         'translationModel': translationModel.toJson(),
-        'mangaOcr': mangaOcr,
-        'bika': bika,
+        'mangaOcr': mangaOcr.toJson(),
+        'bika': <String, dynamic>{
+          'email': '',
+          'password': '',
+          'passwordAction': 'keep',
+        },
       };
 
   TranslationSettings copyWith({
@@ -187,6 +243,7 @@ class TranslationSettings {
     int? autoTranslateNextChapters,
     int? downloadConcurrency,
     TranslationModelSettings? translationModel,
+    MangaOcrSettings? mangaOcr,
   }) =>
       TranslationSettings(
         systemPrompt: systemPrompt ?? this.systemPrompt,
@@ -194,7 +251,7 @@ class TranslationSettings {
             autoTranslateNextChapters ?? this.autoTranslateNextChapters,
         downloadConcurrency: downloadConcurrency ?? this.downloadConcurrency,
         translationModel: translationModel ?? this.translationModel,
-        mangaOcr: mangaOcr,
+        mangaOcr: mangaOcr ?? this.mangaOcr,
         bika: bika,
       );
 
@@ -202,6 +259,6 @@ class TranslationSettings {
   final int autoTranslateNextChapters;
   final int downloadConcurrency;
   final TranslationModelSettings translationModel;
-  final JsonMap mangaOcr;
+  final MangaOcrSettings mangaOcr;
   final JsonMap bika;
 }

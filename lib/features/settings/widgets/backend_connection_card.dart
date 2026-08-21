@@ -15,8 +15,6 @@ class BackendConnectionCard extends StatelessWidget {
     required this.backendUrlController,
     required this.backendTokenController,
     required this.onModeChanged,
-    required this.openingLocalModelSettings,
-    required this.onOpenLocalModelSettings,
     super.key,
   });
 
@@ -27,8 +25,6 @@ class BackendConnectionCard extends StatelessWidget {
   final TextEditingController backendUrlController;
   final TextEditingController backendTokenController;
   final ValueChanged<BackendConnectionMode> onModeChanged;
-  final bool openingLocalModelSettings;
-  final VoidCallback onOpenLocalModelSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -126,51 +122,9 @@ class BackendConnectionCard extends StatelessWidget {
               title: Text('本机模式使用固定回环地址'),
               content: Text(
                 '${AppState.defaultLocalBackendUrl}；保存后会检查并按需启动随包后端，无需连接 Token。'
-                '翻译模型、API 密钥与 OCR 在后端管理界面的“模型设置”中维护。',
+                '翻译模型、API 密钥与 OCR 直接在下方“翻译服务”中维护。',
               ),
               severity: InfoBarSeverity.info,
-            ),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 12,
-              runSpacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: <Widget>[
-                FilledButton(
-                  key: const ValueKey('open-local-model-settings'),
-                  onPressed: activeMode == BackendConnectionMode.local &&
-                          backend.status == BackendStatus.ready &&
-                          !openingLocalModelSettings
-                      ? onOpenLocalModelSettings
-                      : null,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: <Widget>[
-                      if (openingLocalModelSettings)
-                        const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: ProgressRing(strokeWidth: 2),
-                        )
-                      else
-                        const Icon(
-                          FluentIcons.open_in_new_window,
-                          size: 16,
-                          semanticLabel: '在系统浏览器打开',
-                        ),
-                      const SizedBox(width: 8),
-                      const Text('打开模型设置'),
-                    ],
-                  ),
-                ),
-                Text(
-                  activeMode == BackendConnectionMode.local &&
-                          backend.status == BackendStatus.ready
-                      ? '${AppState.defaultLocalBackendUrl}/admin/#settings'
-                      : '请先保存本机模式并等待后端连接成功',
-                  style: FluentTheme.of(context).typography.caption,
-                ),
-              ],
             ),
           ],
           const SizedBox(height: 8),

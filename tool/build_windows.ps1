@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$requiredFlutterVersion = "3.24.3"
+$requiredFlutterVersion = "3.47.1"
 $nugetVersion = "6.12.1"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $flutterOutput = Join-Path $projectRoot "build/windows/x64/runner/Release"
@@ -17,7 +17,14 @@ function Assert-FlutterVersion {
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to query Flutter version; flutter exited with code $LASTEXITCODE."
     }
-    $version = $versionOutput | ConvertFrom-Json
+    # A freshly installed Flutter SDK can print tool bootstrap messages before
+    # the machine-readable payload. Ignore that preamble and parse the JSON.
+    $versionText = $versionOutput -join [Environment]::NewLine
+    $jsonStart = $versionText.IndexOf("{")
+    if ($jsonStart -lt 0) {
+        throw "Unable to query Flutter version; machine output did not contain JSON."
+    }
+    $version = $versionText.Substring($jsonStart) | ConvertFrom-Json
     if ($version.frameworkVersion -eq $requiredFlutterVersion) {
         return
     }

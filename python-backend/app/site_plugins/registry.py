@@ -3,6 +3,7 @@ from __future__ import annotations
 from .alphapolis import PLUGIN as ALPHAPOLIS_PLUGIN
 from .base import SitePlugin
 from .bika import PLUGIN as BIKA_PLUGIN
+from .biqvge import PLUGIN as BIQVGE_PLUGIN
 from .ciweimao import PLUGIN as CIWEIMAO_PLUGIN
 from .comic18 import PLUGIN as COMIC18_PLUGIN
 from .comicores import PLUGIN as COMICORES_PLUGIN
@@ -33,6 +34,7 @@ SITE_PLUGINS: tuple[SitePlugin, ...] = (
     FANQIE_PLUGIN,
     QIDIAN_PLUGIN,
     QUARK_PLUGIN,
+    BIQVGE_PLUGIN,
     CIWEIMAO_PLUGIN,
     SFACG_PLUGIN,
     SHAONIANDREAM_PLUGIN,

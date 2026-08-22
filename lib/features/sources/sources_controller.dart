@@ -5,7 +5,7 @@ import '../../core/models/site_plugin.dart';
 import '../../core/models/source.dart';
 import '../../core/state/load_state.dart';
 
-enum BookSearchEngine { bookSources, quark, fanqie, qidian }
+enum BookSearchEngine { bookSources, quark, fanqie, qidian, biqvge }
 
 class SourcesController extends ChangeNotifier {
   SourcesController(this.api);
@@ -192,6 +192,12 @@ class SourcesController extends ChangeNotifier {
             normalized,
             sourceId: 'source-builtin-qidian',
             sourceName: '起点中文网',
+            sourceLanguage: '中文',
+          ),
+        BookSearchEngine.biqvge => api.searchBuiltinSite(
+            normalized,
+            sourceId: 'source-builtin-biqvge',
+            sourceName: '笔趣阁',
             sourceLanguage: '中文',
           ),
       };

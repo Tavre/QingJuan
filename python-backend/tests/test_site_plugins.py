@@ -19,7 +19,7 @@ from app.api.routers import plugins_router
 from app.application import create_application
 from app.models import AddBookPayload, BookSourceEnabledPayload, BookSourceRecord
 from app.security import API_PREFIX
-from app.site_plugins import list_site_plugins, resolve_site_plugin
+from app.site_plugins import get_site_plugin, list_site_plugins, resolve_site_plugin
 
 
 def test_site_plugin_registry_has_unique_ids_and_generic_fallback_last() -> None:
@@ -31,6 +31,7 @@ def test_site_plugin_registry_has_unique_ids_and_generic_fallback_last() -> None
         "18comic",
         "alphapolis",
         "bika",
+        "biqvge",
         "ciweimao",
         "comicores",
         "copymanga",
@@ -53,6 +54,7 @@ def test_site_plugin_registry_has_unique_ids_and_generic_fallback_last() -> None
         "18comic",
         "alphapolis",
         "bika",
+        "biqvge",
         "ciweimao",
         "comicores",
         "copymanga",
@@ -76,6 +78,9 @@ def test_site_plugin_registry_has_unique_ids_and_generic_fallback_last() -> None
     assert resolve_site_plugin("https://fanqienovel.com/page/123").id == "fanqie"
     assert resolve_site_plugin("https://www.qidian.com/book/1004608738/").id == "qidian"
     assert resolve_site_plugin("https://www.shuqi.com/book/46543.html").id == "quark"
+    assert resolve_site_plugin("http://www.txt80.net/txt/151585.html").id == "biqvge"
+    assert resolve_site_plugin("https://www.b520.cc/2_2157/").id == "biqvge"
+    assert resolve_site_plugin("https://www.blqukan.cc/38_38836/").id == "biqvge"
     assert resolve_site_plugin("https://comic.pixiv.net/works/123").id == "pixiv-comic"
     assert resolve_site_plugin("https://www.pixiv.net/artworks/123").id == "pixiv"
     assert resolve_site_plugin("https://yanmaga.jp/comics/10DANCE").id == "yanmaga"
@@ -101,6 +106,26 @@ def test_every_legacy_builtin_source_resolves_to_a_site_plugin() -> None:
     assert all(resolve_site_plugin(source.baseUrl) is not None for source in db.DEFAULT_BOOK_SOURCES)
 
 
+def test_biqvge_plugin_and_builtin_source_are_registered() -> None:
+    plugin = get_site_plugin("biqvge")
+    source = next(item for item in db.DEFAULT_BOOK_SOURCES if item.id == "source-builtin-biqvge")
+
+    assert plugin is not None
+    assert plugin.name == "笔趣阁"
+    assert set(plugin.domains) == {"txt80.net", "b520.cc", "blqukan.cc"}
+    assert (plugin.search_handler, plugin.preview_handler, plugin.chapter_handler) == (
+        "biqvge",
+        "biqvge",
+        "biqvge",
+    )
+    assert {"search", "preview", "chapter", "on_demand"} <= set(plugin.capabilities)
+    assert source.name == "笔趣阁"
+    assert source.baseUrl == "https://www.b520.cc"
+    assert source.bookKind == "长小说"
+    assert source.language == "中文"
+    assert source.origin == "builtin"
+
+
 def test_site_plugin_settings_are_seeded_and_preserve_user_choice(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "qingjuan.db")
@@ -110,6 +135,7 @@ def test_site_plugin_settings_are_seeded_and_preserve_user_choice(monkeypatch, t
     assert db.is_site_plugin_enabled("fanqie") is True
     assert db.get_book_source("source-builtin-quark").name == "夸克小说"
     assert db.get_book_source("source-builtin-qidian").name == "起点中文网"
+    assert db.get_book_source("source-builtin-biqvge").name == "笔趣阁"
 
     db.save_site_plugin_enabled("fanqie", False)
     db.init_db()

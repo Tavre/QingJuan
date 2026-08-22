@@ -567,6 +567,7 @@ class BuiltinSiteSearchResult(BaseModel):
     cover: str | None = None
     sourceUrl: str
     bookKind: BookKind | None = None
+    providerName: str | None = None
 
 
 class BookSourceSearchPayload(BaseModel):

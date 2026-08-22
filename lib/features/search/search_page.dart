@@ -27,6 +27,7 @@ class _SearchPageState extends State<SearchPage> {
         BookSearchEngine.quark => '夸克',
         BookSearchEngine.fanqie => '番茄',
         BookSearchEngine.qidian => '起点',
+        BookSearchEngine.biqvge => '笔趣阁',
       };
 
   String get _loadingLabel => switch (_engine) {
@@ -34,6 +35,7 @@ class _SearchPageState extends State<SearchPage> {
         BookSearchEngine.quark => '正在查询夸克小说',
         BookSearchEngine.fanqie => '正在查询番茄小说',
         BookSearchEngine.qidian => '正在查询起点中文网',
+        BookSearchEngine.biqvge => '正在查询笔趣阁',
       };
 
   String get _emptyMessage => switch (_engine) {
@@ -41,6 +43,7 @@ class _SearchPageState extends State<SearchPage> {
         BookSearchEngine.quark => '夸克结果来自书旗网页内核，可在加入书架前核对作者和简介。',
         BookSearchEngine.fanqie => '番茄结果来自匿名公开搜索，可在加入书架前核对作者和简介。',
         BookSearchEngine.qidian => '起点结果来自移动站公开搜索，可在加入书架前核对作者和简介。',
+        BookSearchEngine.biqvge => '笔趣阁结果来自公开网页与目录索引，可在加入书架前核对作者和简介。',
       };
 
   String get _heroMessage => switch (_engine) {
@@ -48,6 +51,7 @@ class _SearchPageState extends State<SearchPage> {
         BookSearchEngine.quark => '输入书名或作者，通过夸克小说的书旗网页内核查找作品。',
         BookSearchEngine.fanqie => '输入书名或作者，通过番茄小说的匿名公开搜索查找作品。',
         BookSearchEngine.qidian => '输入书名或作者，通过起点中文网移动站的公开搜索查找作品。',
+        BookSearchEngine.biqvge => '输入书名或作者，通过笔趣阁聚合站点查找作品。',
       };
 
   String _availabilityLabel(SourcesController sources) => switch (_engine) {
@@ -56,6 +60,7 @@ class _SearchPageState extends State<SearchPage> {
         BookSearchEngine.quark => '夸克小说',
         BookSearchEngine.fanqie => '番茄小说',
         BookSearchEngine.qidian => '起点中文网',
+        BookSearchEngine.biqvge => '笔趣阁',
       };
 
   String get _resultOriginLabel => switch (_engine) {
@@ -63,6 +68,7 @@ class _SearchPageState extends State<SearchPage> {
         BookSearchEngine.quark => '结果来自书旗网页内核',
         BookSearchEngine.fanqie => '结果来自番茄公开搜索',
         BookSearchEngine.qidian => '结果来自起点移动站',
+        BookSearchEngine.biqvge => '结果来自笔趣阁',
       };
 
   @override
@@ -82,6 +88,7 @@ class _SearchPageState extends State<SearchPage> {
             'source-builtin-quark',
             'source-builtin-fanqie',
             'source-builtin-qidian',
+            'source-builtin-biqvge',
           }.contains(result.sourceId)) {
         payload['downloadMode'] = 'on_demand';
       }
@@ -147,6 +154,10 @@ class _SearchPageState extends State<SearchPage> {
           value: BookSearchEngine.qidian,
           child: Text('起点'),
         ),
+        ComboBoxItem<BookSearchEngine>(
+          value: BookSearchEngine.biqvge,
+          child: Text('笔趣阁'),
+        ),
       ],
       onChanged: sources.searching
           ? null
@@ -191,7 +202,7 @@ class _SearchPageState extends State<SearchPage> {
         if (!usesMobileUi(context)) return _buildDesktopPage(sources);
         return PageFrame(
           title: '搜索',
-          subtitle: '选择夸克、番茄、起点或已启用书源发现作品，找到后直接加入书架。',
+          subtitle: '选择夸克、番茄、起点、笔趣阁或已启用书源发现作品，找到后直接加入书架。',
           compactHeader: ReadingPageHeader(
             title: '搜索',
             subtitle: '当前使用$_engineName搜索',
@@ -293,7 +304,7 @@ class _SearchPageState extends State<SearchPage> {
     return PageFrame(
       key: const ValueKey('desktop-search-page'),
       title: '全网搜索',
-      subtitle: '选择夸克、番茄、起点或已启用书源查找作品，并直接加入书架。',
+      subtitle: '选择夸克、番茄、起点、笔趣阁或已启用书源查找作品，并直接加入书架。',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[

@@ -126,6 +126,17 @@ DEFAULT_BOOK_SOURCES = [
         origin="builtin",
     ),
     BookSourceRecord(
+        id="source-builtin-biqvge",
+        name="笔趣阁",
+        baseUrl="https://www.b520.cc",
+        description="聚合八零小说网、笔趣阁 5200 与笔趣看，可搜索并导入上游可取得的作品目录和公开章节正文。",
+        bookKind="长小说",
+        language="中文",
+        sampleUrl="https://www.b520.cc/2_2157/",
+        tags=["中文", "聚合搜索", "章节解析"],
+        origin="builtin",
+    ),
+    BookSourceRecord(
         id="source-builtin-ciweimao",
         name="刺猬猫阅读",
         baseUrl="https://www.ciweimao.com",

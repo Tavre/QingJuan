@@ -75,22 +75,26 @@ export function BackendUpgradePage({
   const confirmingStartRef = useRef(confirmingStart);
 
   const applyStatus = useCallback((next: BackendUpdateStatus) => {
-    statusRef.current = next;
-    setStatus(next);
+    const displayStatus = shouldShowCompletedStatus(next, statusRef.current, confirmingStartRef.current)
+      ? next
+      : completedStatusAsUpToDate(next);
+
+    statusRef.current = displayStatus;
+    setStatus(displayStatus);
     setLoadError("");
     setConnectionInterrupted(false);
 
-    if (activeStates.has(next.state)) {
+    if (activeStates.has(displayStatus.state)) {
       confirmingStartRef.current = false;
       setConfirmingStart(false);
-      if (next.jobId) writeStoredValue(UPDATE_JOB_STORAGE_KEY, next.jobId);
+      if (displayStatus.jobId) writeStoredValue(UPDATE_JOB_STORAGE_KEY, displayStatus.jobId);
       return;
     }
 
     confirmingStartRef.current = false;
     setConfirmingStart(false);
     if (["completed", "failed", "idle", "up_to_date", "available", "unsupported"].includes(
-      next.state,
+      displayStatus.state,
     )) {
       clearStoredUpdate();
     }
@@ -365,7 +369,7 @@ export function BackendUpgradePage({
           </Card>
         </Col>
 
-        <Col xs={24} xl={8}>
+        <Col xs={24} xl={8} className="backend-upgrade-sidebar">
           <Card className="panel-card backend-upgrade-detail-card" title="升级信息">
             <Descriptions column={1} size="small" colon={false}>
               <Descriptions.Item label="当前版本">v{status.currentVersion}</Descriptions.Item>
@@ -475,6 +479,31 @@ function upgradeStep(state: BackendUpdateState): number {
   if (state === "restarting") return 2;
   if (state === "verifying" || state === "completed") return 3;
   return 0;
+}
+
+function shouldShowCompletedStatus(
+  next: BackendUpdateStatus,
+  previous: BackendUpdateStatus | null,
+  confirmingStart: boolean,
+): boolean {
+  if (next.state !== "completed") return true;
+  if (confirmingStart || (previous !== null && activeStates.has(previous.state))) return true;
+
+  const storedRequestId = readStoredValue(UPDATE_REQUEST_STORAGE_KEY);
+  const storedJobId = readStoredValue(UPDATE_JOB_STORAGE_KEY);
+  return Boolean(storedRequestId)
+    || Boolean(storedJobId && (!next.jobId || storedJobId === next.jobId));
+}
+
+function completedStatusAsUpToDate(status: BackendUpdateStatus): BackendUpdateStatus {
+  return {
+    ...status,
+    state: "up_to_date",
+    canUpdate: false,
+    message: "可以随时重新检查上游更新。",
+    blockedReason: null,
+    error: null,
+  };
 }
 
 function createRequestId(): string {

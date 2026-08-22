@@ -736,6 +736,16 @@ code {
   margin-top: 20px;
 }
 
+.backend-upgrade-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.backend-upgrade-sidebar > .ant-card {
+  width: 100%;
+}
+
 .backend-upgrade-detail-card .ant-descriptions-item-label {
   width: 92px;
   color: var(--qj-text-secondary);
@@ -963,7 +973,7 @@ code {
 }
 
 .user-row-admin > .ant-table-cell {
-  background: color-mix(in srgb, var(--qj-primary-soft) 42%, transparent);
+  background: color-mix(in srgb, var(--qj-primary-soft) 42%, var(--qj-surface));
 }
 
 .user-dialog-alert {

@@ -183,6 +183,30 @@ describe("BackendUpgradePage", () => {
     expect(window.sessionStorage.getItem("qingjuan-backend-update-request-id")).toBeNull();
   });
 
+  it("does not keep showing a completed update after its local workflow is cleared", async () => {
+    mockedApi.getBackendUpdateStatus.mockResolvedValueOnce({
+      ...availableStatus,
+      state: "completed",
+      canUpdate: false,
+      currentVersion: "2.1.0",
+      targetVersion: "2.1.0",
+      jobId: "old-update-job",
+      startedAt: "2030-01-01T00:01:00Z",
+      finishedAt: "2030-01-01T00:02:00Z",
+      message: "后端升级完成，服务已恢复",
+    });
+    render(
+      <App>
+        <BackendUpgradePage />
+      </App>,
+    );
+
+    expect(await screen.findByText("当前后端已是最新版本")).toBeInTheDocument();
+    expect(screen.queryByText("后端升级完成")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "检查后端更新" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "刷新管理台" })).not.toBeInTheDocument();
+  });
+
   it("shows a safe failure reason and allows checking again", async () => {
     mockedApi.getBackendUpdateStatus.mockResolvedValueOnce({
       ...availableStatus,

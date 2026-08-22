@@ -273,7 +273,9 @@ class _LibraryContent extends StatelessWidget {
     final scaleAllowance = 76 * (textScale - 1).clamp(0.0, 1.0).toDouble();
     final recent = _mostRecentBook(allBooks);
     return CustomScrollView(
-      scrollCacheExtent: ScrollCacheExtent.pixels(compact ? 360 : 520),
+      // Flutter stable still exposes the numeric cache extent API.
+      // ignore: deprecated_member_use
+      cacheExtent: compact ? 360 : 520,
       slivers: <Widget>[
         if (compact && recent != null) ...<Widget>[
           SliverToBoxAdapter(

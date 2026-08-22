@@ -741,7 +741,9 @@ class _BookDetailPageState extends State<BookDetailPage> {
             controller: _chapterScrollController,
             child: CustomScrollView(
               controller: _chapterScrollController,
-              scrollCacheExtent: ScrollCacheExtent.pixels(compact ? 360 : 600),
+              // Flutter stable still exposes the numeric cache extent API.
+              // ignore: deprecated_member_use
+              cacheExtent: compact ? 360 : 600,
               slivers: <Widget>[
                 SliverToBoxAdapter(child: _buildOverview(detail, compact)),
                 SliverFixedExtentList(

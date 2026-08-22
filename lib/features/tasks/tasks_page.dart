@@ -170,7 +170,9 @@ class _TaskList extends StatelessWidget {
       debugLabel: 'tasks',
       builder: (context, scrollController) => ListView(
         controller: scrollController,
-        scrollCacheExtent: const ScrollCacheExtent.pixels(360),
+        // Flutter stable still exposes the numeric cache extent API.
+        // ignore: deprecated_member_use
+        cacheExtent: 360,
         children: <Widget>[
           if (usesMobileUi(context))
             miuix.MiuixTabRow(

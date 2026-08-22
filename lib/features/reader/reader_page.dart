@@ -1138,7 +1138,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
             24,
             math.max(28, viewPadding.bottom + 18),
           ),
-          scrollCacheExtent: const ScrollCacheExtent.pixels(420),
+          // Flutter stable still exposes the numeric cache extent API.
+          // ignore: deprecated_member_use
+          cacheExtent: 420,
           addAutomaticKeepAlives: false,
           itemCount: elements.length,
           itemBuilder: (context, index) => Center(

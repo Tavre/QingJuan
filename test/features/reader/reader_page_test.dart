@@ -576,8 +576,10 @@ void main() {
     final contentPadding = continuousList.padding! as EdgeInsets;
     expect(contentPadding.bottom, lessThan(80));
     expect(
-      continuousList.scrollCacheExtent,
-      const ScrollCacheExtent.pixels(420),
+      // Flutter stable still exposes the numeric cache extent API.
+      // ignore: deprecated_member_use
+      continuousList.cacheExtent,
+      420,
     );
     expect(tester.getSize(continuousReader).height, 600);
 

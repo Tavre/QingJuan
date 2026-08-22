@@ -1,6 +1,7 @@
 import 'dart:ui' as ui;
 
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import 'motion.dart';
 import 'responsive.dart';
@@ -106,6 +107,17 @@ class AppSurface extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final mobile = usesMobileUi(context);
+    if (mobile) {
+      return _MiuixSurfaceBody(
+        padding: padding,
+        margin: margin,
+        selected: selected,
+        tone: tone,
+        borderRadius: borderRadius,
+        onPressed: onPressed,
+        child: child,
+      );
+    }
     if (onPressed == null) {
       return _SurfaceBody(
         padding: padding,
@@ -143,6 +155,64 @@ class AppSurface extends StatelessWidget {
         );
       },
     );
+  }
+}
+
+class _MiuixSurfaceBody extends StatelessWidget {
+  const _MiuixSurfaceBody({
+    required this.child,
+    required this.padding,
+    required this.margin,
+    required this.selected,
+    required this.tone,
+    required this.borderRadius,
+    required this.onPressed,
+  });
+
+  final Widget child;
+  final EdgeInsetsGeometry padding;
+  final EdgeInsetsGeometry? margin;
+  final bool selected;
+  final AppSurfaceTone tone;
+  final double? borderRadius;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = miuix.MiuixTheme.of(context).colors;
+    final effectiveTone = selected ? AppSurfaceTone.accent : tone;
+    final cardColors = switch (effectiveTone) {
+      AppSurfaceTone.standard ||
+      AppSurfaceTone.elevated =>
+        miuix.MiuixCardColors(
+          color: colors.surfaceContainer,
+          contentColor: colors.onSurfaceContainer,
+        ),
+      AppSurfaceTone.muted => miuix.MiuixCardColors(
+          color: colors.surfaceContainerHigh,
+          contentColor: colors.onSurfaceContainerHigh,
+        ),
+      AppSurfaceTone.accent => miuix.MiuixCardColors(
+          color: colors.primaryContainer,
+          contentColor: colors.onPrimaryContainer,
+        ),
+      AppSurfaceTone.danger => miuix.MiuixCardColors(
+          color: colors.errorContainer,
+          contentColor: colors.onErrorContainer,
+        ),
+    };
+    final card = miuix.MiuixCard(
+      cornerRadius: borderRadius ?? 18,
+      insideMargin: padding,
+      colors: cardColors,
+      onPressed: onPressed,
+      feedbackType: onPressed == null
+          ? miuix.MiuixPressFeedbackType.none
+          : miuix.MiuixPressFeedbackType.sink,
+      child: child,
+    );
+    if (margin == null) return card;
+    return Padding(padding: margin!, child: card);
   }
 }
 

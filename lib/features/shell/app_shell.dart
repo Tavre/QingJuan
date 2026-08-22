@@ -1,12 +1,13 @@
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import '../../app/app_scope.dart';
 import '../../app/app_state.dart';
-import '../../shared/app_surface.dart';
 import '../../shared/desktop_title_bar.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/motion.dart';
+import '../../shared/mobile_miuix.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
 import '../about/about_page.dart';
@@ -136,7 +137,7 @@ class AppShell extends StatelessWidget {
     final scope = AppScope.of(context);
     final app = scope.appState;
     return AnimatedBuilder(
-      animation: Listenable.merge(<Listenable>[app, scope.auth]),
+      animation: Listenable.merge(<Listenable>[app, scope.auth, scope.tasks]),
       builder: (context, _) {
         final theme = FluentTheme.of(context);
         final dark = theme.brightness == Brightness.dark;
@@ -145,13 +146,16 @@ class AppShell extends StatelessWidget {
             ? _desktopLocalSections
             : _desktopRemoteSections;
         final content = mobile
-            ? _MobileShell(
-                section: app.section,
-                page: _page(scope, app.section),
-                primarySections: _mobileSections,
-                labelFor: _mobileLabel,
-                iconFor: _mobileIcon,
-                onSelected: (section) => _selectSection(app, section),
+            ? QingJuanMiuixTheme(
+                child: _MobileShell(
+                  section: app.section,
+                  pageFor: (section) => _page(scope, section),
+                  primarySections: _mobileSections,
+                  labelFor: _mobileLabel,
+                  iconFor: _mobileIcon,
+                  activeTaskCount: scope.tasks.activeCount,
+                  onSelected: (section) => _selectSection(app, section),
+                ),
               )
             : _DesktopShell(
                 section: app.section,
@@ -176,10 +180,7 @@ class AppShell extends StatelessWidget {
                 dark ? Brightness.light : Brightness.dark,
             systemNavigationBarDividerColor: const Color(0x00000000),
           ),
-          child: ColoredBox(
-            color: theme.scaffoldBackgroundColor,
-            child: SafeArea(child: content),
-          ),
+          child: content,
         );
       },
     );
@@ -269,50 +270,61 @@ class _BackendRequiredPage extends StatelessWidget {
 class _MobileShell extends StatelessWidget {
   const _MobileShell({
     required this.section,
-    required this.page,
+    required this.pageFor,
     required this.primarySections,
     required this.labelFor,
     required this.iconFor,
+    required this.activeTaskCount,
     required this.onSelected,
   });
 
   final AppSection section;
-  final Widget page;
+  final Widget Function(AppSection) pageFor;
   final List<AppSection> primarySections;
   final String Function(AppSection) labelFor;
   final IconData Function(AppSection) iconFor;
+  final int activeTaskCount;
   final ValueChanged<AppSection> onSelected;
 
   @override
   Widget build(BuildContext context) {
-    final theme = FluentTheme.of(context);
+    final colors = miuix.MiuixTheme.of(context).colors;
+    final primaryIndex = primarySections.indexOf(section);
+    final navigationSection = primaryIndex < 0 ? AppSection.settings : section;
+    final stackIndex = primaryIndex < 0
+        ? primarySections.indexOf(AppSection.settings)
+        : primaryIndex;
+    final primaryStack = IndexedStack(
+      key: const ValueKey('mobile-primary-pages'),
+      index: stackIndex,
+      children: <Widget>[for (final item in primarySections) pageFor(item)],
+    );
+    final page = primaryIndex >= 0
+        ? primaryStack
+        : Stack(
+            fit: StackFit.expand,
+            children: <Widget>[
+              Offstage(offstage: true, child: primaryStack),
+              QjPageSwitcher(pageKey: section, child: pageFor(section)),
+            ],
+          );
     return PopScope(
       canPop: section != AppSection.about && section != AppSection.plugins,
       onPopInvokedWithResult: (didPop, result) {
         if (!didPop) onSelected(AppSection.settings);
       },
-      child: ColoredBox(
-        color: theme.scaffoldBackgroundColor,
-        child: Column(
-          children: <Widget>[
-            Expanded(
-              child: QjPageSwitcher(
-                pageKey: section,
-                child: page,
-              ),
-            ),
-            _MobileNavigationBar(
-              section:
-                  section == AppSection.about || section == AppSection.plugins
-                      ? AppSection.settings
-                      : section,
-              sections: primarySections,
-              labelFor: labelFor,
-              iconFor: iconFor,
-              onSelected: onSelected,
-            ),
-          ],
+      child: miuix.MiuixScaffold(
+        key: const ValueKey('mobile-miuix-scaffold'),
+        containerColor: colors.background,
+        bottomBar: _MobileNavigationBar(
+          section: navigationSection,
+          sections: primarySections,
+          labelFor: labelFor,
+          iconFor: iconFor,
+          activeTaskCount: activeTaskCount,
+          onSelected: onSelected,
         ),
+        content: (padding) => Padding(padding: padding, child: page),
       ),
     );
   }
@@ -324,6 +336,7 @@ class _MobileNavigationBar extends StatelessWidget {
     required this.sections,
     required this.labelFor,
     required this.iconFor,
+    required this.activeTaskCount,
     required this.onSelected,
   });
 
@@ -331,112 +344,37 @@ class _MobileNavigationBar extends StatelessWidget {
   final List<AppSection> sections;
   final String Function(AppSection) labelFor;
   final IconData Function(AppSection) iconFor;
+  final int activeTaskCount;
   final ValueChanged<AppSection> onSelected;
 
   @override
   Widget build(BuildContext context) {
-    final theme = FluentTheme.of(context);
-    final dark = theme.brightness == Brightness.dark;
     final textScaler = TextScaler.linear(
       MediaQuery.textScalerOf(context).scale(1).clamp(1.0, 1.2),
     );
-    return SizedBox(
+    return MediaQuery(
       key: const ValueKey('mobile-bottom-navigation'),
-      height: 82,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
-        child: AppGlassSurface(
-          key: const ValueKey('mobile-bottom-navigation-glass'),
-          borderRadius: 22,
-          blurSigma: 16,
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
-          child: MediaQuery(
-            data: MediaQuery.of(context).copyWith(textScaler: textScaler),
-            child: Row(
-              children: <Widget>[
-                for (final item in sections)
-                  Expanded(
-                    child: Semantics(
-                      selected: item == section,
-                      button: true,
-                      label: labelFor(item),
-                      child: Button(
-                        key: ValueKey<String>(
-                          'mobile-navigation-${item.name}',
-                        ),
-                        style: ButtonStyle(
-                          padding: const WidgetStatePropertyAll(
-                            EdgeInsets.zero,
-                          ),
-                          shape: WidgetStatePropertyAll(
-                            RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                          ),
-                          backgroundColor: const WidgetStatePropertyAll(
-                            Color(0x00000000),
-                          ),
-                        ),
-                        onPressed: () => onSelected(item),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: <Widget>[
-                            AnimatedScale(
-                              duration: QjMotion.duration(
-                                context,
-                                QjMotionSpeed.fast,
-                              ),
-                              curve: QjMotion.enterCurve,
-                              scale: item == section ? 1.06 : 1,
-                              child: AnimatedContainer(
-                                duration: QjMotion.duration(
-                                  context,
-                                  QjMotionSpeed.fast,
-                                ),
-                                curve: QjMotion.enterCurve,
-                                width: 42,
-                                height: 27,
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(
-                                  color: item == section
-                                      ? theme.accentColor.withAlpha(
-                                          dark ? 62 : 28,
-                                        )
-                                      : const Color(0x00000000),
-                                  borderRadius: BorderRadius.circular(14),
-                                ),
-                                child: Icon(
-                                  iconFor(item),
-                                  size: 19,
-                                  color: item == section
-                                      ? theme.accentColor
-                                      : theme.resources.textFillColorSecondary,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              labelFor(item),
-                              maxLines: 1,
-                              style: theme.typography.caption?.copyWith(
-                                fontSize: 10.5,
-                                fontWeight: item == section
-                                    ? FontWeight.w700
-                                    : FontWeight.w400,
-                                color: item == section
-                                    ? theme.accentColor
-                                    : theme.resources.textFillColorSecondary,
-                              ),
-                            ),
-                          ],
-                        ),
+      data: MediaQuery.of(context).copyWith(textScaler: textScaler),
+      child: miuix.MiuixNavigationBar(
+        showDivider: false,
+        mode: miuix.MiuixNavigationBarDisplayMode.iconAndText,
+        children: <Widget>[
+          for (final item in sections)
+            miuix.MiuixNavigationBarItem(
+              key: ValueKey<String>('mobile-navigation-${item.name}'),
+              selected: item == section,
+              onPressed: () => onSelected(item),
+              icon: Icon(iconFor(item)),
+              label: labelFor(item),
+              badge: item == AppSection.tasks && activeTaskCount > 0
+                  ? miuix.MiuixBadge(
+                      child: Text(
+                        activeTaskCount > 99 ? '99+' : '$activeTaskCount',
                       ),
-                    ),
-                  ),
-              ],
+                    )
+                  : null,
             ),
-          ),
-        ),
+        ],
       ),
     );
   }
@@ -488,10 +426,7 @@ class _DesktopShellState extends State<_DesktopShell> {
     if (event is! KeyDownEvent || !HardwareKeyboard.instance.isControlPressed) {
       return false;
     }
-    final sections = <AppSection>[
-      ...widget.primarySections,
-      AppSection.about,
-    ];
+    final sections = <AppSection>[...widget.primarySections, AppSection.about];
     for (var index = 0; index < sections.length; index++) {
       if (event.logicalKey == _shortcutKey(index) ||
           event.physicalKey == _shortcutPhysicalKey(index)) {
@@ -551,10 +486,7 @@ class _DesktopShellState extends State<_DesktopShell> {
       children: <Widget>[
         NavigationPaneTheme.merge(
           data: NavigationPaneThemeData(
-            animationDuration: QjMotion.duration(
-              context,
-              QjMotionSpeed.fast,
-            ),
+            animationDuration: QjMotion.duration(context, QjMotionSpeed.fast),
             animationCurve: QjMotion.enterCurve,
           ),
           child: NavigationView(

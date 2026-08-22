@@ -320,6 +320,37 @@ void main() {
     api.close();
   });
 
+  test('task logs are fetched incrementally by sequence', () async {
+    final api = ApiClient(
+      () => 'https://qingjuan.example.test',
+      client: MockClient((request) async {
+        expect(request.method, 'GET');
+        expect(request.url.path, '/api/v1/tasks/task-1/logs');
+        expect(request.url.queryParameters['after'], '7');
+        return http.Response(
+          jsonEncode(<Map<String, Object?>>[
+            <String, Object?>{
+              'sequence': 8,
+              'taskId': 'task-1',
+              'level': 'warning',
+              'message': '正在重试章节',
+              'createdAt': '2026-08-23T08:30:00Z',
+            },
+          ]),
+          200,
+          headers: <String, String>{'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    final logs = await api.fetchTaskLogs('task-1', after: 7);
+
+    expect(logs.single.sequence, 8);
+    expect(logs.single.level, 'warning');
+    expect(logs.single.message, '正在重试章节');
+    api.close();
+  });
+
   test('task page results are fetched incrementally by sequence', () async {
     final api = ApiClient(
       () => 'https://qingjuan.example.test',

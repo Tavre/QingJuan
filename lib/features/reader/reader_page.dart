@@ -32,12 +32,14 @@ class ReaderPage extends StatefulWidget {
 }
 
 class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
-  static const Duration _visibleChapterCheckInterval =
-      Duration(milliseconds: 80);
+  static const Duration _visibleChapterCheckInterval = Duration(
+    milliseconds: 80,
+  );
   static const Duration _progressSaveDelay = Duration(milliseconds: 420);
   static const int _hardwareKeyAnimationMilliseconds = 170;
-  static const MethodChannel _readerPlatformChannel =
-      MethodChannel('qingjuan/reader');
+  static const MethodChannel _readerPlatformChannel = MethodChannel(
+    'qingjuan/reader',
+  );
 
   final ScrollController _scrollController = QjScrollController(
     debugLabel: 'reader-content',
@@ -156,10 +158,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   List<String> _readerParagraphs(ChapterContent content) =>
       _paragraphCache.putIfAbsent(
         content,
-        () => readerParagraphsForLayout(
-          content.paragraphs,
-          content.content,
-        ),
+        () => readerParagraphsForLayout(content.paragraphs, content.content),
       );
 
   Future<ChapterContent> _getChapter(
@@ -211,10 +210,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _loadChapter(
-    int chapterIndex, {
-    bool initial = false,
-  }) async {
+  Future<void> _loadChapter(int chapterIndex, {bool initial = false}) async {
     if (chapterIndex < 1 || chapterIndex > _chapterCount) return;
     final loadToken = ++_loadToken;
     final firstLoad = _content == null;
@@ -334,10 +330,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _saveProgress({
-    int? chapterIndex,
-    double? ratio,
-  }) async {
+  Future<void> _saveProgress({int? chapterIndex, double? ratio}) async {
     final targetChapter = chapterIndex ?? _chapterIndex;
     final targetRatio = ratio ?? _currentProgressRatio();
     try {
@@ -460,18 +453,12 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       _content = _chapterCache[_cacheKey(visible, _mode)] ?? _content;
     });
     unawaited(
-      _saveProgress(
-        chapterIndex: previous,
-        ratio: visible > previous ? 1 : 0,
-      ),
+      _saveProgress(chapterIndex: previous, ratio: visible > previous ? 1 : 0),
     );
     unawaited(_prefetchAdjacent(visible));
   }
 
-  Future<void> _scrollByPage(
-    int direction, {
-    int milliseconds = 220,
-  }) async {
+  Future<void> _scrollByPage(int direction, {int milliseconds = 220}) async {
     if (!_scrollController.hasClients || direction == 0) return;
     var position = _scrollController.position;
     final distance = position.viewportDimension * 0.84;
@@ -557,10 +544,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _moveScrollTo(
-    double target, {
-    int milliseconds = 220,
-  }) async {
+  Future<void> _moveScrollTo(double target, {int milliseconds = 220}) async {
     if (!_scrollController.hasClients) return;
     if (QjMotion.disabled(context)) {
       _scrollController.jumpTo(target);
@@ -630,10 +614,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     await WidgetsBinding.instance.endOfFrame;
   }
 
-  Future<void> _goToPage(
-    int pageIndex, {
-    int? maximumMilliseconds,
-  }) async {
+  Future<void> _goToPage(int pageIndex, {int? maximumMilliseconds}) async {
     if (_pageController.positions.length != 1) return;
     if (_pageAnimation == ReaderPageAnimation.none ||
         QjMotion.disabled(context)) {
@@ -708,22 +689,14 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     _handleReaderTap(event.localPosition, width);
   }
 
-  Duration _motionDuration(
-    int milliseconds, {
-    BuildContext? targetContext,
-  }) {
+  Duration _motionDuration(int milliseconds, {BuildContext? targetContext}) {
     final mediaContext = targetContext ?? context;
-    return QjMotion.resolve(
-      mediaContext,
-      Duration(milliseconds: milliseconds),
-    );
+    return QjMotion.resolve(mediaContext, Duration(milliseconds: milliseconds));
   }
 
   Future<void> _setNativeReaderSystemUi(bool enabled) async {
     try {
-      // Color.value is required for the Flutter 3.24 release toolchain.
-      // ignore: deprecated_member_use
-      final backgroundColor = _palette.background.value;
+      final backgroundColor = _palette.background.toARGB32();
       await _readerPlatformChannel.invokeMethod<void>(
         'setReaderSystemUi',
         <String, Object>{
@@ -1021,10 +994,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                                   ),
                                 ),
                               ),
-                              onPressed: () => Navigator.pop(
-                                dialogContext,
-                                chapter.index,
-                              ),
+                              onPressed: () =>
+                                  Navigator.pop(dialogContext, chapter.index),
                               child: Row(
                                 children: <Widget>[
                                   SizedBox(
@@ -1167,7 +1138,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
             24,
             math.max(28, viewPadding.bottom + 18),
           ),
-          cacheExtent: 420,
+          scrollCacheExtent: const ScrollCacheExtent.pixels(420),
           addAutomaticKeepAlives: false,
           itemCount: elements.length,
           itemBuilder: (context, index) => Center(
@@ -1182,10 +1153,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildContinuousElement(
-    BuildContext context,
-    _ReaderElement element,
-  ) {
+  Widget _buildContinuousElement(BuildContext context, _ReaderElement element) {
     final textColor = _readerTextColor(context);
     if (element.kind == _ReaderElementKind.heading) {
       return Padding(
@@ -1209,9 +1177,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
             const SizedBox(height: 10),
             Text(
               '第 ${element.chapterIndex} 章 · ${widget.detail.book.title}',
-              style: FluentTheme.of(context).typography.caption?.copyWith(
-                    color: _palette.secondaryText,
-                  ),
+              style: FluentTheme.of(
+                context,
+              ).typography.caption?.copyWith(color: _palette.secondaryText),
             ),
           ],
         ),
@@ -1227,9 +1195,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
               padding: const EdgeInsets.symmetric(horizontal: 14),
               child: Text(
                 element.chapterIndex < _chapterCount ? '本章完 · 继续阅读' : '全书完',
-                style: FluentTheme.of(context).typography.caption?.copyWith(
-                      color: _palette.secondaryText,
-                    ),
+                style: FluentTheme.of(
+                  context,
+                ).typography.caption?.copyWith(color: _palette.secondaryText),
               ),
             ),
             Expanded(child: Container(height: 1, color: _palette.divider)),
@@ -1263,8 +1231,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
           children: <Widget>[
             Image.network(
               content.imageSources[contentIndex],
-              headers:
-                  _scope.api.headersForUrl(content.imageSources[contentIndex]),
+              headers: _scope.api.headersForUrl(
+                content.imageSources[contentIndex],
+              ),
               width: double.infinity,
               fit: BoxFit.contain,
               filterQuality: FilterQuality.medium,
@@ -1332,10 +1301,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
         final pageDelta = (activePage - index).clamp(-1.0, 1.0).toDouble();
         final distance = pageDelta.abs();
         if (_pageAnimation == ReaderPageAnimation.fade) {
-          return Opacity(
-            opacity: 1 - distance * 0.72,
-            child: page,
-          );
+          return Opacity(opacity: 1 - distance * 0.72, child: page);
         }
         return FractionalTranslation(
           translation: Offset(pageDelta * 0.035, 0),
@@ -1525,10 +1491,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
                       if (index == 0) ...<Widget>[
-                        Text(
-                          content.chapter.title,
-                          style: titleStyle,
-                        ),
+                        Text(content.chapter.title, style: titleStyle),
                         const SizedBox(height: 23),
                       ],
                       Expanded(
@@ -1598,9 +1561,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
             ),
             boxShadow: <BoxShadow>[
               BoxShadow(
-                color: const Color(0xFF000000).withAlpha(
-                  palette.isDark ? 34 : 14,
-                ),
+                color: const Color(
+                  0xFF000000,
+                ).withAlpha(palette.isDark ? 34 : 14),
                 blurRadius: 18,
                 offset: const Offset(0, 6),
               ),
@@ -2117,19 +2080,14 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                       ),
                       const SizedBox(height: 12),
                       FluentTheme(
-                        data: theme.copyWith(
-                          accentColor: palette.fluentAccent,
-                        ),
+                        data: theme.copyWith(accentColor: palette.fluentAccent),
                         child: ToggleSwitch(
                           key: const ValueKey('reader-volume-key-toggle'),
                           checked: _volumeKeyReadingEnabled,
                           onChanged: _setVolumeKeyReading,
                           content: Text(
                             '音量键滑动 / 翻页',
-                            style: TextStyle(
-                              color: palette.text,
-                              fontSize: 13,
-                            ),
+                            style: TextStyle(color: palette.text, fontSize: 13),
                           ),
                         ),
                       ),
@@ -2170,8 +2128,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
           children: <Widget>[
             Image.network(
               content.imageSources[contentIndex],
-              headers:
-                  _scope.api.headersForUrl(content.imageSources[contentIndex]),
+              headers: _scope.api.headersForUrl(
+                content.imageSources[contentIndex],
+              ),
               width: double.infinity,
               fit: BoxFit.contain,
               filterQuality: FilterQuality.medium,
@@ -2224,10 +2183,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
         leading: Tooltip(
           message: '返回作品详情',
           child: IconButton(
-            icon: const Icon(
-              FluentIcons.back,
-              semanticLabel: '返回作品详情',
-            ),
+            icon: const Icon(FluentIcons.back, semanticLabel: '返回作品详情'),
             onPressed: () => Navigator.pop(context),
           ),
         ),
@@ -2314,9 +2270,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
             decoration: BoxDecoration(
               color: theme.micaBackgroundColor,
               border: Border(
-                top: BorderSide(
-                  color: theme.resources.cardStrokeColorDefault,
-                ),
+                top: BorderSide(color: theme.resources.cardStrokeColorDefault),
               ),
             ),
             child: Row(
@@ -2414,12 +2368,7 @@ class _ReaderElement {
     int chapterIndex,
     ChapterContent content,
     int contentIndex,
-  ) : this._(
-          chapterIndex,
-          content,
-          _ReaderElementKind.content,
-          contentIndex,
-        );
+  ) : this._(chapterIndex, content, _ReaderElementKind.content, contentIndex);
 
   const _ReaderElement.footer(int chapterIndex, ChapterContent content)
       : this._(chapterIndex, content, _ReaderElementKind.footer, -1);

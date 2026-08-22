@@ -6,6 +6,7 @@ import '../../app/app_scope.dart';
 import '../../app/app_state.dart';
 import '../../core/backend/backend_connection_manager.dart';
 import '../../core/backend/backend_url_validator.dart';
+import '../../shared/mobile_miuix.dart';
 import '../../shared/mobile_sheet.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
@@ -131,16 +132,14 @@ class _SettingsPageState extends State<SettingsPage> {
     final settings = scope.settings;
     final compact = usesMobileUi(context);
     return AnimatedBuilder(
-      animation: Listenable.merge(
-        <Listenable>[
-          scope.appState,
-          scope.auth,
-          scope.library,
-          scope.tasks,
-          settings,
-          scope.backend,
-        ],
-      ),
+      animation: Listenable.merge(<Listenable>[
+        scope.appState,
+        scope.auth,
+        scope.library,
+        scope.tasks,
+        settings,
+        scope.backend,
+      ]),
       builder: (context, _) => PageFrame(
         title: compact ? '我的' : '设置',
         subtitle: '账户、阅读偏好与当前后端服务。',
@@ -148,28 +147,18 @@ class _SettingsPageState extends State<SettingsPage> {
           title: '我的',
           subtitle: scope.auth.canAccessWorkspace ? '你的账户与阅读空间' : '登录后使用独立书架',
           actions: <Widget>[
-            Tooltip(
-              message: '外观主题',
-              child: IconButton(
-                key: const ValueKey('settings-theme-button'),
-                icon: const Icon(
-                  FluentIcons.brightness,
-                  semanticLabel: '外观主题',
-                ),
-                onPressed: () => unawaited(_openThemeSettings(scope)),
-              ),
+            MobileMiuixIconButton(
+              key: const ValueKey('settings-theme-button'),
+              icon: FluentIcons.brightness,
+              label: '外观主题',
+              onPressed: () => unawaited(_openThemeSettings(scope)),
             ),
             const SizedBox(width: 7),
-            Tooltip(
-              message: '关于青卷',
-              child: IconButton(
-                key: const ValueKey('settings-about-button'),
-                icon: const Icon(
-                  FluentIcons.info,
-                  semanticLabel: '关于青卷',
-                ),
-                onPressed: () => scope.appState.selectSection(AppSection.about),
-              ),
+            MobileMiuixIconButton(
+              key: const ValueKey('settings-about-button'),
+              icon: FluentIcons.info,
+              label: '关于青卷',
+              onPressed: () => scope.appState.selectSection(AppSection.about),
             ),
             const SizedBox(width: 7),
           ],
@@ -373,9 +362,11 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _openAccountSettings(AppScope scope) => _showSettingsSheet(
         title: '账号管理',
         subtitle: '登录、注册或查看当前账户',
-        animation: Listenable.merge(
-          <Listenable>[scope.appState, scope.auth, scope.backend],
-        ),
+        animation: Listenable.merge(<Listenable>[
+          scope.appState,
+          scope.auth,
+          scope.backend,
+        ]),
         childBuilder: () => AuthAccountCard(
           auth: scope.auth,
           backend: scope.backend,
@@ -413,9 +404,10 @@ class _SettingsPageState extends State<SettingsPage> {
       context: context,
       builder: (sheetContext) => StatefulBuilder(
         builder: (context, setSheetState) => AnimatedBuilder(
-          animation: Listenable.merge(
-            <Listenable>[scope.settings, scope.backend],
-          ),
+          animation: Listenable.merge(<Listenable>[
+            scope.settings,
+            scope.backend,
+          ]),
           builder: (context, _) => MobileSheet(
             title: '翻译服务',
             subtitle: '查看模型配置与连接状态',
@@ -450,9 +442,11 @@ class _SettingsPageState extends State<SettingsPage> {
       context: context,
       builder: (sheetContext) => StatefulBuilder(
         builder: (context, setSheetState) => AnimatedBuilder(
-          animation: Listenable.merge(
-            <Listenable>[scope.appState, scope.settings, scope.backend],
-          ),
+          animation: Listenable.merge(<Listenable>[
+            scope.appState,
+            scope.settings,
+            scope.backend,
+          ]),
           builder: (context, _) => MobileSheet(
             title: '后端连接',
             subtitle: '选择本机或 Linux 服务器',

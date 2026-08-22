@@ -1,4 +1,5 @@
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import '../../../shared/app_surface.dart';
 
@@ -58,9 +59,9 @@ class MobileMyDashboard extends StatelessWidget {
   Widget build(BuildContext context) {
     final scale = MediaQuery.textScalerOf(context).scale(1).clamp(1.0, 1.35);
     return MediaQuery(
-      data: MediaQuery.of(context).copyWith(
-        textScaler: TextScaler.linear(scale),
-      ),
+      data: MediaQuery.of(
+        context,
+      ).copyWith(textScaler: TextScaler.linear(scale)),
       child: Column(
         key: const ValueKey('mobile-my-dashboard'),
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -148,10 +149,7 @@ class _ProfileCard extends StatelessWidget {
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: <Color>[
-                  accent.withAlpha(230),
-                  accent.withAlpha(130),
-                ],
+                colors: <Color>[accent.withAlpha(230), accent.withAlpha(130)],
               ),
             ),
             child: Text(
@@ -384,8 +382,8 @@ class _SettingsGrid extends StatelessWidget {
       _SettingsEntry(
         keyName: 'tasks',
         icon: FluentIcons.processing,
-        title: '阅读任务',
-        subtitle: '查看下载与翻译进度',
+        title: '任务日志',
+        subtitle: '查看下载、翻译进度与运行记录',
         onPressed: onOpenTasks,
       ),
       if (onOpenPlugins case final openPlugins?)
@@ -405,46 +403,35 @@ class _SettingsGrid extends StatelessWidget {
       ),
     ];
 
-    return AppSurface(
+    const primaryCount = 4;
+    return Column(
       key: const ValueKey('my-settings-grid'),
-      tone: AppSurfaceTone.elevated,
-      borderRadius: 24,
-      padding: const EdgeInsets.fromLTRB(12, 17, 12, 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6),
-            child: Text(
-              '设置与服务',
-              style: theme.typography.subtitle?.copyWith(
-                fontSize: 19,
-                fontWeight: FontWeight.w700,
-              ),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Padding(
+          padding: const EdgeInsetsDirectional.only(start: 4, bottom: 10),
+          child: Text(
+            '设置与服务',
+            style: theme.typography.subtitle?.copyWith(
+              fontSize: 19,
+              fontWeight: FontWeight.w700,
             ),
           ),
-          const SizedBox(height: 10),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              const spacing = 8.0;
-              final halfWidth = (constraints.maxWidth - spacing) / 2;
-              return Wrap(
-                spacing: spacing,
-                runSpacing: spacing,
-                children: <Widget>[
-                  for (var index = 0; index < items.length; index++)
-                    SizedBox(
-                      width: items.length.isOdd && index == items.length - 1
-                          ? constraints.maxWidth
-                          : halfWidth,
-                      child: _SettingsTile(entry: items[index]),
-                    ),
-                ],
-              );
-            },
+        ),
+        _SettingsGroup(entries: items.take(primaryCount).toList()),
+        const SizedBox(height: 18),
+        Padding(
+          padding: const EdgeInsetsDirectional.only(start: 4, bottom: 10),
+          child: Text(
+            '任务与支持',
+            style: theme.typography.subtitle?.copyWith(
+              fontSize: 19,
+              fontWeight: FontWeight.w700,
+            ),
           ),
-        ],
-      ),
+        ),
+        _SettingsGroup(entries: items.skip(primaryCount).toList()),
+      ],
     );
   }
 }
@@ -472,47 +459,51 @@ class _SettingsTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = FluentTheme.of(context);
-    return AppSurface(
+    final colors = miuix.MiuixTheme.of(context).colors;
+    return miuix.MiuixBasicComponent(
       key: ValueKey<String>('my-feature-${entry.keyName}'),
-      onPressed: entry.onPressed,
-      tone: AppSurfaceTone.muted,
-      borderRadius: 17,
-      padding: const EdgeInsets.all(12),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 76),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(
-                    entry.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.typography.bodyLarge?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    entry.subtitle,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.typography.caption?.copyWith(
-                      height: 1.35,
-                      color: theme.resources.textFillColorSecondary,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 6),
-            AccentIcon(entry.icon, size: 36),
-          ],
+      title: entry.title,
+      summary: entry.subtitle,
+      startAction: AccentIcon(entry.icon, size: 38),
+      endActions: <Widget>[
+        Icon(
+          FluentIcons.chevron_right,
+          size: 16,
+          color: colors.onSurfaceVariantActions,
         ),
+      ],
+      onClick: entry.onPressed,
+      onClickLabel: entry.title,
+      insideMargin: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+    );
+  }
+}
+
+class _SettingsGroup extends StatelessWidget {
+  const _SettingsGroup({required this.entries});
+
+  final List<_SettingsEntry> entries;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = miuix.MiuixTheme.of(context).colors;
+    return miuix.MiuixCard(
+      cornerRadius: 20,
+      colors: miuix.MiuixCardColors(
+        color: colors.surfaceContainer,
+        contentColor: colors.onSurfaceContainer,
+      ),
+      child: Column(
+        children: <Widget>[
+          for (var index = 0; index < entries.length; index++) ...<Widget>[
+            if (index > 0)
+              Padding(
+                padding: const EdgeInsetsDirectional.only(start: 66),
+                child: miuix.MiuixHorizontalDivider(color: colors.dividerLine),
+              ),
+            _SettingsTile(entry: entries[index]),
+          ],
+        ],
       ),
     );
   }

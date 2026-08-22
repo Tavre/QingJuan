@@ -2,6 +2,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qingjuan/app/app_theme.dart';
 import 'package:qingjuan/shared/app_surface.dart';
+import 'package:qingjuan/shared/responsive.dart';
 
 void main() {
   testWidgets('surface hover animation respects reduced motion',
@@ -11,9 +12,12 @@ void main() {
         theme: buildQingJuanTheme(Brightness.light),
         home: const MediaQuery(
           data: MediaQueryData(disableAnimations: true),
-          child: AppSurface(
-            onPressed: _noop,
-            child: Text('可点击卡片'),
+          child: UiPlatformScope(
+            platform: TargetPlatform.windows,
+            child: AppSurface(
+              onPressed: _noop,
+              child: Text('可点击卡片'),
+            ),
           ),
         ),
       ),

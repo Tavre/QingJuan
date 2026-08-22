@@ -1,10 +1,12 @@
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import '../../app/app_scope.dart';
 import '../../core/models/source.dart';
 import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/motion.dart';
+import '../../shared/mobile_miuix.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
 import '../detail/book_detail_page.dart';
@@ -21,6 +23,7 @@ class _SearchPageState extends State<SearchPage> {
   final _controller = TextEditingController();
   BookSearchEngine _engine = BookSearchEngine.bookSources;
   String? _importingSourceUrl;
+  bool _hasSearched = false;
 
   String get _engineName => switch (_engine) {
         BookSearchEngine.bookSources => '书源',
@@ -120,16 +123,54 @@ class _SearchPageState extends State<SearchPage> {
     }
   }
 
-  Future<void> _search(SourcesController sources) =>
-      sources.search(_controller.text, engine: _engine);
+  Future<void> _search(SourcesController sources) async {
+    setState(() => _hasSearched = true);
+    await sources.search(_controller.text, engine: _engine);
+  }
 
-  void _setEngine(
-    SourcesController sources,
-    BookSearchEngine engine,
-  ) {
+  void _setEngine(SourcesController sources, BookSearchEngine engine) {
     if (_engine == engine) return;
-    setState(() => _engine = engine);
+    setState(() {
+      _engine = engine;
+      _hasSearched = false;
+    });
     sources.clearSearchResults();
+  }
+
+  Widget _mobileEngineSelector(SourcesController sources) {
+    return miuix.MiuixTabRow(
+      key: const ValueKey('search-engine-selector'),
+      tabs: const <String>['书源', '夸克', '番茄', '起点', '笔趣阁'],
+      selectedTabIndex: BookSearchEngine.values.indexOf(_engine),
+      onTabSelected: (index) {
+        if (!sources.searching) {
+          _setEngine(sources, BookSearchEngine.values[index]);
+        }
+      },
+    );
+  }
+
+  Widget _mobileSearchInput(SourcesController sources) {
+    return Row(
+      children: <Widget>[
+        Expanded(
+          child: MobileMiuixSearchField(
+            key: const ValueKey('search-query-input'),
+            controller: _controller,
+            placeholder: '输入书名或作者',
+            onChanged: (_) {},
+            onSubmitted: (_) => _search(sources),
+          ),
+        ),
+        const SizedBox(width: 10),
+        MobileMiuixButton(
+          keyName: 'search-submit-button',
+          primary: true,
+          onPressed: sources.searching ? null : () => _search(sources),
+          child: const Text('搜索'),
+        ),
+      ],
+    );
   }
 
   Widget _engineSelector(SourcesController sources) {
@@ -167,32 +208,6 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
-  Widget _searchInput(SourcesController sources) {
-    return Row(
-      children: <Widget>[
-        Expanded(
-          child: TextBox(
-            key: const ValueKey('search-query-input'),
-            controller: _controller,
-            magnifierConfiguration: textInputMagnifierConfiguration(context),
-            placeholder: '输入书名或作者',
-            onSubmitted: (_) => _search(sources),
-            prefix: const Padding(
-              padding: EdgeInsets.only(left: 10),
-              child: Icon(FluentIcons.search, size: 18),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        FilledButton(
-          key: const ValueKey('search-submit-button'),
-          onPressed: sources.searching ? null : () => _search(sources),
-          child: const Text('搜索'),
-        ),
-      ],
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final sources = AppScope.of(context).sources;
@@ -218,12 +233,9 @@ class _SearchPageState extends State<SearchPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    InfoLabel(
-                      label: '搜索引擎',
-                      child: _engineSelector(sources),
-                    ),
-                    const SizedBox(height: 10),
-                    _searchInput(sources),
+                    _mobileEngineSelector(sources),
+                    const SizedBox(height: 12),
+                    _mobileSearchInput(sources),
                     const SizedBox(height: 12),
                     Wrap(
                       spacing: 8,
@@ -249,25 +261,37 @@ class _SearchPageState extends State<SearchPage> {
                   onRetry: () => _search(sources),
                 )
               else if (sources.results.isEmpty)
-                const AppSurface(
+                AppSurface(
                   tone: AppSurfaceTone.muted,
-                  padding: EdgeInsets.symmetric(horizontal: 22, vertical: 24),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 22,
+                    vertical: 24,
+                  ),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
-                      AccentIcon(FluentIcons.lightbulb, size: 46),
-                      SizedBox(width: 15),
+                      AccentIcon(
+                        _hasSearched
+                            ? FluentIcons.search_issue
+                            : FluentIcons.lightbulb,
+                        size: 46,
+                      ),
+                      const SizedBox(width: 15),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: <Widget>[
                             Text(
-                              '搜索小提示',
-                              style: TextStyle(fontWeight: FontWeight.w700),
+                              _hasSearched ? '没有找到相关作品' : '搜索小提示',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
-                            SizedBox(height: 6),
+                            const SizedBox(height: 6),
                             Text(
-                              '使用作品完整名称更容易命中；加入书架前可以核对作者、来源和简介。',
+                              _hasSearched
+                                  ? '可以缩短关键词，或切换其他搜索引擎再试一次。'
+                                  : '使用作品完整名称更容易命中；加入书架前可以核对作者、来源和简介。',
                             ),
                           ],
                         ),
@@ -325,8 +349,9 @@ class _SearchPageState extends State<SearchPage> {
                   child: TextBox(
                     key: const ValueKey('search-query-input'),
                     controller: _controller,
-                    magnifierConfiguration:
-                        textInputMagnifierConfiguration(context),
+                    magnifierConfiguration: textInputMagnifierConfiguration(
+                      context,
+                    ),
                     placeholder: '输入书名或作者',
                     onSubmitted: (_) => _search(sources),
                     prefix: const Padding(
@@ -348,10 +373,7 @@ class _SearchPageState extends State<SearchPage> {
           if (sources.searching)
             LoadingView(label: _loadingLabel)
           else if (sources.error != null)
-            ErrorView(
-              message: sources.error!,
-              onRetry: () => _search(sources),
-            )
+            ErrorView(message: sources.error!, onRetry: () => _search(sources))
           else if (sources.results.isEmpty)
             EmptyView(
               icon: FluentIcons.search_issue,
@@ -383,24 +405,38 @@ class _SearchResultTile extends StatelessWidget {
   final bool importing;
   final VoidCallback? onImport;
 
-  Widget _importButton({required bool compact}) => FilledButton(
-        key: ValueKey('search-import-${result.sourceUrl}'),
+  Widget _importButton({required bool compact}) {
+    final child = importing
+        ? Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              if (compact)
+                const miuix.MiuixCircularProgressIndicator(size: 16)
+              else
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: ProgressRing(strokeWidth: 2),
+                ),
+              const SizedBox(width: 7),
+              Text(compact ? '加入中' : '正在加入'),
+            ],
+          )
+        : Text(compact ? '加入' : '加入书架');
+    if (compact) {
+      return MobileMiuixButton(
+        keyName: 'search-import-${result.sourceUrl}',
+        primary: true,
         onPressed: onImport,
-        child: importing
-            ? Row(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: ProgressRing(strokeWidth: 2),
-                  ),
-                  const SizedBox(width: 7),
-                  Text(compact ? '加入中' : '正在加入'),
-                ],
-              )
-            : Text(compact ? '加入' : '加入书架'),
+        child: child,
       );
+    }
+    return FilledButton(
+      key: ValueKey('search-import-${result.sourceUrl}'),
+      onPressed: onImport,
+      child: child,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -423,8 +459,9 @@ class _SearchResultTile extends StatelessWidget {
                     children: <Widget>[
                       Text(
                         result.title,
-                        style: theme.typography.bodyLarge
-                            ?.copyWith(fontWeight: FontWeight.w600),
+                        style: theme.typography.bodyLarge?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                       const SizedBox(height: 8),
                       Wrap(
@@ -558,10 +595,7 @@ class _SearchCover extends StatelessWidget {
       color: theme.accentColor.withAlpha(
         theme.brightness == Brightness.dark ? 56 : 26,
       ),
-      child: Icon(
-        FluentIcons.book_answers,
-        color: theme.accentColor,
-      ),
+      child: Icon(FluentIcons.book_answers, color: theme.accentColor),
     );
     return ClipRRect(
       borderRadius: BorderRadius.circular(10),

@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:qingjuan/app/app_scope.dart';
@@ -170,11 +171,11 @@ void main() {
 
     expect(
       tester
-          .widget<ComboBox<BookSearchEngine>>(
+          .widget<miuix.MiuixTabRow>(
             find.byKey(const ValueKey('search-engine-selector')),
           )
-          .value,
-      BookSearchEngine.bookSources,
+          .selectedTabIndex,
+      0,
     );
     await tester.enterText(
       find.byKey(const ValueKey('search-query-input')),
@@ -186,9 +187,12 @@ void main() {
     expect(find.text('书源结果'), findsOneWidget);
     expect(requests.single.url.path, '/api/v1/sources/search');
 
-    await tester.tap(find.byKey(const ValueKey('search-engine-selector')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('夸克').last);
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey('search-engine-selector')),
+        matching: find.text('夸克'),
+      ),
+    );
     await tester.pumpAndSettle();
 
     expect(sources.results, isEmpty);
@@ -205,7 +209,9 @@ void main() {
     expect(find.text('夸克小说'), findsWidgets);
 
     await tester.tap(find.text('加入').last);
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 700));
+    await tester.pump(const Duration(milliseconds: 300));
 
     final linkJobRequest = requests.lastWhere(
       (request) => request.url.path == '/api/v1/books/link-jobs',
@@ -223,9 +229,12 @@ void main() {
     await tester.pump(const Duration(seconds: 7));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const ValueKey('search-engine-selector')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('番茄').last);
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey('search-engine-selector')),
+        matching: find.text('番茄'),
+      ),
+    );
     await tester.pumpAndSettle();
 
     expect(sources.results, isEmpty);
@@ -241,9 +250,12 @@ void main() {
     expect(find.text('番茄结果'), findsOneWidget);
     expect(find.text('番茄小说'), findsWidgets);
 
-    await tester.tap(find.byKey(const ValueKey('search-engine-selector')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('起点').last);
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey('search-engine-selector')),
+        matching: find.text('起点'),
+      ),
+    );
     await tester.pumpAndSettle();
 
     expect(sources.results, isEmpty);
@@ -259,9 +271,12 @@ void main() {
     expect(find.text('起点结果'), findsOneWidget);
     expect(find.text('起点中文网'), findsWidgets);
 
-    await tester.tap(find.byKey(const ValueKey('search-engine-selector')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('笔趣阁').last);
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey('search-engine-selector')),
+        matching: find.text('笔趣阁'),
+      ),
+    );
     await tester.pumpAndSettle();
 
     expect(sources.results, isEmpty);

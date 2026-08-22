@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../shared/app_surface.dart';
 import '../../shared/brand_logo.dart';
+import '../../shared/mobile_miuix.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
 
@@ -33,39 +34,16 @@ class _AboutPageState extends State<AboutPage> {
       subtitle: usesMobileUi(context)
           ? '项目、平台支持与开源许可。'
           : '开源的 Windows 小说与漫画阅读、下载和翻译工具。',
-      compactHeader: Row(
-        children: <Widget>[
-          Tooltip(
-            message: '返回设置',
-            child: IconButton(
-              key: const ValueKey('mobile-about-back-button'),
-              icon: const Icon(
-                FluentIcons.back,
-                semanticLabel: '返回设置',
-              ),
-              onPressed: widget.onBack,
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  '关于青卷',
-                  style: FluentTheme.of(context).typography.title?.copyWith(
-                        fontSize: 28,
-                        fontWeight: FontWeight.w800,
-                      ),
-                ),
-                Text(
-                  '项目与许可信息',
-                  style: FluentTheme.of(context).typography.caption,
-                ),
-              ],
-            ),
-          ),
-        ],
+      compactHeader: ReadingPageHeader(
+        title: '关于青卷',
+        subtitle: '项目与许可信息',
+        navigationIcon: MobileMiuixIconButton(
+          key: const ValueKey('mobile-about-back-button'),
+          icon: FluentIcons.back,
+          label: '返回设置',
+          onPressed: widget.onBack,
+        ),
+        actions: const <Widget>[],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

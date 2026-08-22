@@ -128,7 +128,19 @@ void main() {
       find.byKey(const ValueKey('auth-password')),
       'secret',
     );
-    await tester.tap(find.byKey(const ValueKey('auth-submit')));
+    final submit = find.byKey(const ValueKey('auth-submit'));
+    final authScrollView =
+        find.ancestor(of: submit, matching: find.byType(Scrollable)).first;
+    final authScrollPosition =
+        tester.state<ScrollableState>(authScrollView).position;
+    authScrollPosition.jumpTo(
+      (authScrollPosition.pixels + 120).clamp(
+        authScrollPosition.minScrollExtent,
+        authScrollPosition.maxScrollExtent,
+      ),
+    );
+    await tester.pump();
+    await tester.tap(submit);
     await tester.pump(const Duration(milliseconds: 900));
 
     expect(auth.isAuthenticated, isTrue);
@@ -144,6 +156,8 @@ void main() {
           '/api/v1/settings',
         ]));
 
+    authScrollPosition.jumpTo(authScrollPosition.minScrollExtent);
+    await tester.pump();
     await tester.tap(find.byKey(const ValueKey('my-profile-card')));
     await tester.pumpAndSettle();
     expect(find.text('账号管理'), findsOneWidget);

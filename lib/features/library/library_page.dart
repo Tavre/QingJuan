@@ -7,6 +7,7 @@ import '../../core/state/load_state.dart';
 import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/motion.dart';
+import '../../shared/mobile_miuix.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
 import '../../shared/smooth_scroll.dart';
@@ -34,18 +35,14 @@ class LibraryPage extends StatelessWidget {
             title: '书架',
             subtitle: _librarySubtitle(controller.books.length),
             actions: <Widget>[
-              Tooltip(
-                message: '刷新书架',
-                child: IconButton(
-                  icon: const Icon(
-                    FluentIcons.refresh,
-                    semanticLabel: '刷新书架',
-                  ),
-                  onPressed: controller.load,
-                ),
+              MobileMiuixIconButton(
+                icon: FluentIcons.refresh,
+                label: '刷新书架',
+                onPressed: controller.load,
               ),
-              const SizedBox(width: 7),
-              FilledButton(
+              const SizedBox(width: 8),
+              MobileMiuixButton(
+                primary: true,
                 onPressed: () => _openImportDialog(context),
                 child: const Text('添加书籍'),
               ),
@@ -69,9 +66,7 @@ class LibraryPage extends StatelessWidget {
                         ),
                         const SizedBox(width: 8),
                       ],
-                      Text(
-                        controller.hasActiveLinkJob ? '链接解析中' : '查看链接任务',
-                      ),
+                      Text(controller.hasActiveLinkJob ? '链接解析中' : '查看链接任务'),
                     ],
                   ),
                 ),
@@ -94,7 +89,8 @@ class LibraryPage extends StatelessWidget {
                   icon: FluentIcons.library,
                   title: '书架还是空的',
                   message: '导入网页作品或本地文本，阅读进度会自动保存在 Linux 后端。',
-                  action: FilledButton(
+                  action: MobileMiuixButton(
+                    primary: true,
                     onPressed: () => _openImportDialog(context),
                     child: const Text('添加第一本书'),
                   ),
@@ -116,10 +112,7 @@ class LibraryPage extends StatelessWidget {
     );
   }
 
-  Widget _buildDesktopPage(
-    BuildContext context,
-    LibraryController controller,
-  ) {
+  Widget _buildDesktopPage(BuildContext context, LibraryController controller) {
     final books = controller.filteredBooks;
     final textScale = MediaQuery.textScalerOf(context).scale(1);
     final scaleAllowance = 64 * (textScale - 1).clamp(0.0, 1.5).toDouble();
@@ -164,8 +157,9 @@ class LibraryPage extends StatelessWidget {
               children: <Widget>[
                 Expanded(
                   child: TextBox(
-                    magnifierConfiguration:
-                        textInputMagnifierConfiguration(context),
+                    magnifierConfiguration: textInputMagnifierConfiguration(
+                      context,
+                    ),
                     placeholder: '搜索书名或简介',
                     prefix: const Padding(
                       padding: EdgeInsets.only(left: 10),
@@ -276,10 +270,10 @@ class _LibraryContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final textScale = MediaQuery.textScalerOf(context).scale(1);
-    final scaleAllowance = 48 * (textScale - 1).clamp(0.0, 1.0).toDouble();
+    final scaleAllowance = 76 * (textScale - 1).clamp(0.0, 1.0).toDouble();
     final recent = _mostRecentBook(allBooks);
     return CustomScrollView(
-      cacheExtent: compact ? 360 : 520,
+      scrollCacheExtent: ScrollCacheExtent.pixels(compact ? 360 : 520),
       slivers: <Widget>[
         if (compact && recent != null) ...<Widget>[
           SliverToBoxAdapter(
@@ -300,20 +294,15 @@ class _LibraryContent extends StatelessWidget {
           ),
         ),
         SliverToBoxAdapter(
-          child: TextBox(
-            magnifierConfiguration: textInputMagnifierConfiguration(context),
+          child: MobileMiuixSearchField(
             placeholder: '搜索书名或简介',
-            prefix: const Padding(
-              padding: EdgeInsets.only(left: 11),
-              child: Icon(FluentIcons.search, size: 18),
-            ),
             onChanged: onQueryChanged,
           ),
         ),
         if (onShowLinkJob != null) ...<Widget>[
           const SliverToBoxAdapter(child: SizedBox(height: 10)),
           SliverToBoxAdapter(
-            child: Button(
+            child: MobileMiuixButton(
               onPressed: onShowLinkJob,
               child: const Text('查看最近的链接导入任务'),
             ),
@@ -344,13 +333,10 @@ class _LibraryContent extends StatelessWidget {
                     crossAxisSpacing: 16,
                     mainAxisSpacing: 16,
                   ),
-            delegate: SliverChildBuilderDelegate(
-              (context, index) {
-                final book = books[index];
-                return BookCard(book: book, onOpen: () => onOpen(book));
-              },
-              childCount: books.length,
-            ),
+            delegate: SliverChildBuilderDelegate((context, index) {
+              final book = books[index];
+              return BookCard(book: book, onOpen: () => onOpen(book));
+            }, childCount: books.length),
           ),
         const SliverToBoxAdapter(child: SizedBox(height: 12)),
       ],
@@ -381,17 +367,17 @@ class _ContinueReadingCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
+    final effectiveTextScale =
+        MediaQuery.textScalerOf(context).scale(1).clamp(1.0, 1.3);
     final progress = book.chapterCount <= 0
         ? 0.0
         : (book.lastReadChapterIndex / book.chapterCount * 100)
             .clamp(0, 100)
             .toDouble();
-    final textScaler = TextScaler.linear(
-      MediaQuery.textScalerOf(context).scale(1).clamp(1.0, 1.3),
-    );
+    final textScaler = TextScaler.linear(effectiveTextScale);
     return SizedBox(
       key: const ValueKey('continue-reading-card'),
-      height: 154,
+      height: 154 + 48 * (effectiveTextScale - 1),
       child: AppSurface(
         tone: AppSurfaceTone.accent,
         borderRadius: 18,

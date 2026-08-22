@@ -742,6 +742,21 @@ class ApiClient {
     return _list(payload).map(BookTask.fromJson).toList();
   }
 
+  Future<List<TaskLog>> fetchTaskLogs(
+    String taskId, {
+    int after = 0,
+  }) async {
+    final encodedTaskId = Uri.encodeComponent(taskId);
+    final payload = _decode(
+      await _request(
+        'GET',
+        '/tasks/$encodedTaskId/logs',
+        query: <String, dynamic>{'after': after},
+      ),
+    );
+    return _list(payload).map(TaskLog.fromJson).toList();
+  }
+
   Future<List<TaskPageResult>> fetchTaskPageResults(
     String taskId, {
     int after = 0,

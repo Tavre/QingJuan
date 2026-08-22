@@ -6,6 +6,7 @@ import '../../core/models/book.dart';
 import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
 import '../../shared/mobile_sheet.dart';
+import '../../shared/mobile_miuix.dart';
 import '../../shared/motion.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
@@ -255,11 +256,8 @@ class _BookDetailPageState extends State<BookDetailPage> {
           style: _scope.appState.ttsSpeechStyle,
           onStyleChanged: _scope.appState.setTtsSpeechStyle,
           initialChapterIndex: chapterIndex ?? detail.progress.chapterIndex,
-          loadChapter: (index, mode) => _scope.api.fetchChapter(
-            detail.book.id,
-            index,
-            mode: mode,
-          ),
+          loadChapter: (index, mode) =>
+              _scope.api.fetchChapter(detail.book.id, index, mode: mode),
         ),
       ),
     );
@@ -281,8 +279,11 @@ class _BookDetailPageState extends State<BookDetailPage> {
     });
     try {
       final saved = await _exportFiles.save<Map<String, dynamic>>(
-        suggestedName:
-            _chapterExportFileName(detail, chapter, option.extension),
+        suggestedName: _chapterExportFileName(
+          detail,
+          chapter,
+          option.extension,
+        ),
         mimeType: option.mimeType,
         download: (targetPath) => _scope.api.exportChapter(
           bookId: widget.bookId,
@@ -341,7 +342,8 @@ class _BookDetailPageState extends State<BookDetailPage> {
         builder: (_, __) => InfoBar(
           title: const Text('存在尚未下载的章节'),
           content: Text(
-              '请先下载第 ${unavailable.map((chapter) => chapter.index).join('、')} 章。'),
+            '请先下载第 ${unavailable.map((chapter) => chapter.index).join('、')} 章。',
+          ),
           severity: InfoBarSeverity.warning,
         ),
       );
@@ -527,7 +529,8 @@ class _BookDetailPageState extends State<BookDetailPage> {
           ProgressBar(value: (progress * 100).clamp(0, 100)),
           const SizedBox(height: 6),
           Text(
-              '正在接收导出文件 ${(progress * 100).clamp(0, 100).toStringAsFixed(0)}%'),
+            '正在接收导出文件 ${(progress * 100).clamp(0, 100).toStringAsFixed(0)}%',
+          ),
           const SizedBox(height: 12),
         ],
         Row(
@@ -661,9 +664,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
                   } else {
                     _selected
                       ..clear()
-                      ..addAll(
-                        detail.chapters.map((chapter) => chapter.index),
-                      );
+                      ..addAll(detail.chapters.map((chapter) => chapter.index));
                   }
                 });
               },
@@ -693,9 +694,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      const loading = NavigationView(
-        content: LoadingView(label: '正在加载作品详情'),
-      );
+      const loading = NavigationView(content: LoadingView(label: '正在加载作品详情'));
       return _withMobileSafeArea(loading);
     }
     if (_error != null) {
@@ -742,7 +741,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
             controller: _chapterScrollController,
             child: CustomScrollView(
               controller: _chapterScrollController,
-              cacheExtent: compact ? 360 : 600,
+              scrollCacheExtent: ScrollCacheExtent.pixels(compact ? 360 : 600),
               slivers: <Widget>[
                 SliverToBoxAdapter(child: _buildOverview(detail, compact)),
                 SliverFixedExtentList(
@@ -793,10 +792,9 @@ class _DesktopBookSummary extends StatelessWidget {
       constraints: const BoxConstraints(maxWidth: 620),
       child: Text(
         detail.synopsis.trim().isEmpty ? '暂无简介。' : detail.synopsis,
-        style: FluentTheme.of(context)
-            .typography
-            .bodyLarge
-            ?.copyWith(height: 1.65),
+        style: FluentTheme.of(
+          context,
+        ).typography.bodyLarge?.copyWith(height: 1.65),
       ),
     );
   }
@@ -858,47 +856,20 @@ class _DetailHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = FluentTheme.of(context);
-    return Row(
+    return ReadingPageHeader(
       key: const ValueKey('detail-mobile-header'),
-      children: <Widget>[
-        Tooltip(
-          message: '返回书架',
-          child: IconButton(
-            icon: const Icon(FluentIcons.back, semanticLabel: '返回书架'),
-            onPressed: onBack,
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Text(
-                title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.typography.title?.copyWith(
-                  fontSize: 26,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(height: 3),
-              Text(
-                subtitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.typography.caption,
-              ),
-            ],
-          ),
-        ),
-        Tooltip(
-          message: '删除作品',
-          child: IconButton(
-            icon: const Icon(FluentIcons.delete, semanticLabel: '删除作品'),
-            onPressed: onDelete,
-          ),
+      title: title,
+      subtitle: subtitle,
+      navigationIcon: MobileMiuixIconButton(
+        icon: FluentIcons.back,
+        label: '返回书架',
+        onPressed: onBack,
+      ),
+      actions: <Widget>[
+        MobileMiuixIconButton(
+          icon: FluentIcons.delete,
+          label: '删除作品',
+          onPressed: onDelete,
         ),
       ],
     );
@@ -1022,14 +993,19 @@ class _Stats extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: <Widget>[
-        Expanded(child: AppMetric(label: '总字数', value: '${detail.totalWords}')),
         Expanded(
-            child: AppMetric(
-                label: '已下载',
-                value: '${detail.downloadedCount}',
-                accented: true)),
+          child: AppMetric(label: '总字数', value: '${detail.totalWords}'),
+        ),
         Expanded(
-            child: AppMetric(label: '已翻译', value: '${detail.translatedCount}')),
+          child: AppMetric(
+            label: '已下载',
+            value: '${detail.downloadedCount}',
+            accented: true,
+          ),
+        ),
+        Expanded(
+          child: AppMetric(label: '已翻译', value: '${detail.translatedCount}'),
+        ),
       ],
     );
   }
@@ -1073,13 +1049,13 @@ class _ChapterRow extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(horizontal: 12),
                       decoration: BoxDecoration(
                         color: states.isPressed
-                            ? FluentTheme.of(context)
-                                .resources
-                                .subtleFillColorSecondary
+                            ? FluentTheme.of(
+                                context,
+                              ).resources.subtleFillColorSecondary
                             : states.isHovered
-                                ? FluentTheme.of(context)
-                                    .resources
-                                    .subtleFillColorTertiary
+                                ? FluentTheme.of(
+                                    context,
+                                  ).resources.subtleFillColorTertiary
                                 : const Color(0x00000000),
                         borderRadius: BorderRadius.circular(13),
                       ),

@@ -1,10 +1,12 @@
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import '../../app/app_scope.dart';
 import '../../core/models/source.dart';
 import '../../core/state/load_state.dart';
 import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
+import '../../shared/mobile_miuix.dart';
 import '../../shared/mobile_sheet.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
@@ -44,18 +46,31 @@ class SourcesPage extends StatelessWidget {
     var loading = false;
     Widget dialogBuilder(BuildContext dialogContext) => StatefulBuilder(
           builder: (sheetContext, setState) {
+            final mobile = usesMobileUi(sheetContext);
             final content = Column(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
-                TextBox(
-                  controller: controller,
-                  magnifierConfiguration:
-                      textInputMagnifierConfiguration(sheetContext),
-                  maxLines: fromUrl ? 1 : 10,
-                  placeholder:
-                      fromUrl ? 'https://...' : '粘贴 JSON 或 Legado 书源文本',
-                  enabled: !loading,
-                ),
+                if (mobile)
+                  miuix.MiuixTextField(
+                    controller: controller,
+                    label: fromUrl ? 'https://...' : '粘贴 JSON 或 Legado 书源文本',
+                    useLabelAsPlaceholder: true,
+                    singleLine: fromUrl,
+                    maxLines: fromUrl ? 1 : 10,
+                    minLines: fromUrl ? 1 : 5,
+                    enabled: !loading,
+                  )
+                else
+                  TextBox(
+                    controller: controller,
+                    magnifierConfiguration: textInputMagnifierConfiguration(
+                      sheetContext,
+                    ),
+                    maxLines: fromUrl ? 1 : 10,
+                    placeholder:
+                        fromUrl ? 'https://...' : '粘贴 JSON 或 Legado 书源文本',
+                    enabled: !loading,
+                  ),
                 if (error != null) ...<Widget>[
                   const SizedBox(height: 12),
                   InfoBar(
@@ -66,40 +81,52 @@ class SourcesPage extends StatelessWidget {
                 ],
               ],
             );
-            final actions = <Widget>[
-              Button(
-                onPressed: loading ? null : () => Navigator.pop(dialogContext),
-                child: const Text('取消'),
-              ),
-              FilledButton(
-                onPressed: loading
-                    ? null
-                    : () async {
-                        setState(() {
-                          loading = true;
-                          error = null;
-                        });
-                        try {
-                          final sources = AppScope.of(sheetContext).sources;
-                          if (fromUrl) {
-                            await sources.importUrl(controller.text);
-                          } else {
-                            await sources.importText(controller.text);
-                          }
-                          if (dialogContext.mounted) {
-                            Navigator.pop(dialogContext);
-                          }
-                        } catch (exception) {
-                          setState(() {
-                            loading = false;
-                            error = '$exception';
-                          });
-                        }
-                      },
-                child: const Text('导入'),
-              ),
-            ];
-            if (usesMobileUi(sheetContext)) {
+            void cancel() => Navigator.pop(dialogContext);
+            final importAction = loading
+                ? null
+                : () async {
+                    setState(() {
+                      loading = true;
+                      error = null;
+                    });
+                    try {
+                      final sources = AppScope.of(sheetContext).sources;
+                      if (fromUrl) {
+                        await sources.importUrl(controller.text);
+                      } else {
+                        await sources.importText(controller.text);
+                      }
+                      if (dialogContext.mounted) {
+                        Navigator.pop(dialogContext);
+                      }
+                    } catch (exception) {
+                      setState(() {
+                        loading = false;
+                        error = '$exception';
+                      });
+                    }
+                  };
+            final actions = mobile
+                ? <Widget>[
+                    MobileMiuixButton(
+                      onPressed: loading ? null : cancel,
+                      child: const Text('取消'),
+                    ),
+                    MobileMiuixButton(
+                      primary: true,
+                      onPressed: importAction,
+                      child: Text(loading ? '导入中' : '导入'),
+                    ),
+                  ]
+                : <Widget>[
+                    Button(
+                      onPressed: loading ? null : cancel,
+                      child: const Text('取消'),
+                    ),
+                    FilledButton(
+                        onPressed: importAction, child: const Text('导入')),
+                  ];
+            if (mobile) {
               return MobileSheet(
                 title: fromUrl ? '从网址导入' : '粘贴书源',
                 subtitle: '支持 Legado 兼容书源',
@@ -119,10 +146,7 @@ class SourcesPage extends StatelessWidget {
           },
         );
     if (usesMobileUi(context)) {
-      await showMobileSheet<void>(
-        context: context,
-        builder: dialogBuilder,
-      );
+      await showMobileSheet<void>(context: context, builder: dialogBuilder);
     } else {
       await showDialog<void>(context: context, builder: dialogBuilder);
     }
@@ -151,19 +175,15 @@ class SourcesPage extends StatelessWidget {
                 : '${controller.sources.where((source) => source.enabled).length} 个书源已启用',
             actions: canManage
                 ? <Widget>[
-                    Tooltip(
-                      message: '粘贴书源配置',
-                      child: IconButton(
-                        icon: const Icon(
-                          FluentIcons.clipboard_list,
-                          semanticLabel: '粘贴书源配置',
-                        ),
-                        onPressed: () =>
-                            _showImportDialog(context, fromUrl: false),
-                      ),
+                    MobileMiuixIconButton(
+                      icon: FluentIcons.clipboard_list,
+                      label: '粘贴书源配置',
+                      onPressed: () =>
+                          _showImportDialog(context, fromUrl: false),
                     ),
-                    const SizedBox(width: 7),
-                    FilledButton(
+                    const SizedBox(width: 8),
+                    MobileMiuixButton(
+                      primary: true,
                       onPressed: () =>
                           _showImportDialog(context, fromUrl: true),
                       child: const Text('导入'),
@@ -213,7 +233,7 @@ class SourcesPage extends StatelessWidget {
                       child: Row(
                         children: <Widget>[
                           Expanded(
-                            child: Button(
+                            child: MobileMiuixButton(
                               onPressed: () =>
                                   _showImportDialog(context, fromUrl: false),
                               child: const Text('粘贴配置'),
@@ -221,7 +241,8 @@ class SourcesPage extends StatelessWidget {
                           ),
                           const SizedBox(width: 10),
                           Expanded(
-                            child: FilledButton(
+                            child: MobileMiuixButton(
+                              primary: true,
                               onPressed: () =>
                                   _showImportDialog(context, fromUrl: true),
                               child: const Text('导入网址'),
@@ -252,11 +273,8 @@ class SourcesPage extends StatelessWidget {
                             source: source,
                             saving: controller.isSourceSaving(source.id),
                             onChanged: canManage
-                                ? (enabled) => _setSourceEnabled(
-                                      context,
-                                      source,
-                                      enabled,
-                                    )
+                                ? (enabled) =>
+                                    _setSourceEnabled(context, source, enabled)
                                 : null,
                           );
                         },
@@ -351,15 +369,15 @@ class _SourcesOverview extends StatelessWidget {
       message: enabled == 0 ? '当前没有启用的书源。' : '$enabled 个书源正在为搜索提供内容。',
       child: Row(
         children: <Widget>[
-          Expanded(child: AppMetric(label: '全部', value: '${sources.length}')),
           Expanded(
-            child: AppMetric(
-              label: '已启用',
-              value: '$enabled',
-              accented: true,
-            ),
+            child: AppMetric(label: '全部', value: '${sources.length}'),
           ),
-          Expanded(child: AppMetric(label: '兼容搜索', value: '$supported')),
+          Expanded(
+            child: AppMetric(label: '已启用', value: '$enabled', accented: true),
+          ),
+          Expanded(
+            child: AppMetric(label: '兼容搜索', value: '$supported'),
+          ),
         ],
       ),
     );

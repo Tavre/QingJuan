@@ -1,4 +1,6 @@
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter/material.dart' as material;
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import 'responsive.dart';
 import 'smooth_scroll.dart';
@@ -28,6 +30,17 @@ class PageFrame extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final compact = usesMobileUi(context);
+    if (compact) {
+      return _MobileMiuixPageFrame(
+        title: title,
+        subtitle: subtitle,
+        command: command,
+        compactHeader: compactHeader,
+        scrollable: scrollable,
+        maxContentWidth: maxContentWidth,
+        child: child,
+      );
+    }
     final horizontalPadding = compact ? 18.0 : desktopHorizontalPadding ?? 32.0;
     final body = Align(
       alignment: Alignment.topCenter,
@@ -75,6 +88,100 @@ class PageFrame extends StatelessWidget {
           )
         : body;
   }
+}
+
+class _MobileMiuixPageFrame extends StatelessWidget {
+  const _MobileMiuixPageFrame({
+    required this.title,
+    required this.subtitle,
+    required this.child,
+    required this.command,
+    required this.compactHeader,
+    required this.scrollable,
+    required this.maxContentWidth,
+  });
+
+  final String title;
+  final String subtitle;
+  final Widget child;
+  final Widget? command;
+  final Widget? compactHeader;
+  final bool scrollable;
+  final double? maxContentWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = miuix.MiuixTheme.of(context).colors;
+    final header = switch (compactHeader) {
+      null => miuix.MiuixTopAppBar(
+          key: const ValueKey('mobile-app-bar'),
+          title: title,
+          largeTitle: title,
+          subtitle: subtitle,
+          color: colors.background,
+          defaultWindowInsetsPadding: false,
+        ),
+      ReadingPageHeader() => compactHeader!,
+      _ => _MobileCustomTopBar(child: compactHeader!),
+    };
+    return material.Material(
+      color: colors.background,
+      child: miuix.MiuixScaffold(
+        containerColor: colors.background,
+        contentWindowInsets: EdgeInsets.zero,
+        topBar: header,
+        content: (padding) {
+          final body = Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: maxContentWidth ?? double.infinity,
+              ),
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(
+                  16,
+                  padding.top + 8,
+                  16,
+                  28,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    if (compactHeader == null && command != null) ...<Widget>[
+                      Align(
+                        alignment: AlignmentDirectional.centerEnd,
+                        child: command!,
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    child,
+                  ],
+                ),
+              ),
+            ),
+          );
+          if (!scrollable) return SizedBox.expand(child: body);
+          return SingleChildScrollView(child: body);
+        },
+      ),
+    );
+  }
+}
+
+class _MobileCustomTopBar extends StatelessWidget {
+  const _MobileCustomTopBar({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Align(
+        alignment: Alignment.topCenter,
+        heightFactor: 1,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+          child: IntrinsicHeight(child: child),
+        ),
+      );
 }
 
 class _DesktopPageHeader extends StatelessWidget {
@@ -191,15 +298,30 @@ class ReadingPageHeader extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.actions,
+    this.navigationIcon,
     super.key,
   });
 
   final String title;
   final String subtitle;
   final List<Widget> actions;
+  final Widget? navigationIcon;
 
   @override
   Widget build(BuildContext context) {
+    if (usesMobileUi(context)) {
+      final colors = miuix.MiuixTheme.of(context).colors;
+      return miuix.MiuixTopAppBar(
+        key: const ValueKey('mobile-app-bar'),
+        title: title,
+        largeTitle: title,
+        subtitle: subtitle,
+        navigationIcon: navigationIcon,
+        actions: actions,
+        color: colors.background,
+        defaultWindowInsetsPadding: false,
+      );
+    }
     final theme = FluentTheme.of(context);
     final textScaler = TextScaler.linear(
       MediaQuery.textScalerOf(context).scale(1).clamp(1.0, 1.25),
@@ -207,6 +329,10 @@ class ReadingPageHeader extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: <Widget>[
+        if (navigationIcon != null) ...<Widget>[
+          navigationIcon!,
+          const SizedBox(width: 10),
+        ],
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,

@@ -1,4 +1,5 @@
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import 'responsive.dart';
 
@@ -19,7 +20,10 @@ class LoadingView extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            const ProgressRing(),
+            if (compact)
+              const miuix.MiuixCircularProgressIndicator(size: 30)
+            else
+              const ProgressRing(),
             const SizedBox(height: 14),
             Text(label),
           ],

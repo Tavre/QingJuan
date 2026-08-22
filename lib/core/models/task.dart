@@ -42,6 +42,37 @@ class BookTask {
   final String? error;
 }
 
+class TaskLog {
+  const TaskLog({
+    required this.sequence,
+    required this.taskId,
+    required this.level,
+    required this.message,
+    required this.createdAt,
+  });
+
+  factory TaskLog.fromJson(JsonMap json) {
+    final rawLevel = json['level'] as String?;
+    final level = switch (rawLevel) {
+      'warning' || 'error' => rawLevel!,
+      _ => 'info',
+    };
+    return TaskLog(
+      sequence: (json['sequence'] as num?)?.toInt() ?? 0,
+      taskId: json['taskId'] as String? ?? '',
+      level: level,
+      message: json['message'] as String? ?? '',
+      createdAt: json['createdAt'] as String? ?? '',
+    );
+  }
+
+  final int sequence;
+  final String taskId;
+  final String level;
+  final String message;
+  final String createdAt;
+}
+
 class TaskPageText {
   const TaskPageText({
     required this.order,

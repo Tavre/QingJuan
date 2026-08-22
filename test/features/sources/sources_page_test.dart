@@ -160,6 +160,12 @@ void main() {
 
   testWidgets('plugin settings toggles a backend-owned site module',
       (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
     final requests = <http.Request>[];
     final preferences = await SharedPreferences.getInstance();
     final appState = AppState(
@@ -253,9 +259,11 @@ void main() {
     expect(find.text('站点插件'), findsWidgets);
     expect(find.text('番茄小说'), findsOneWidget);
 
-    await tester.tap(
-      find.byKey(const ValueKey<String>('site-plugin-toggle-fanqie')),
-    );
+    final toggle =
+        find.byKey(const ValueKey<String>('site-plugin-toggle-fanqie'));
+    await tester.ensureVisible(toggle);
+    await tester.pumpAndSettle();
+    await tester.tap(toggle);
     await tester.pumpAndSettle();
 
     expect(sources.plugins.single.enabled, isFalse);

@@ -8,6 +8,7 @@ import '../../core/models/site_plugin.dart';
 import '../../core/state/load_state.dart';
 import '../../shared/app_surface.dart';
 import '../../shared/feedback_widgets.dart';
+import '../../shared/mobile_miuix.dart';
 import '../../shared/mobile_sheet.dart';
 import '../../shared/page_frame.dart';
 import '../../shared/responsive.dart';
@@ -394,43 +395,19 @@ class _PluginsPageState extends State<PluginsPage> {
         scrollable: false,
         maxContentWidth: usesMobileUi(context) ? null : _desktopContentMaxWidth,
         desktopHorizontalPadding: 24,
-        compactHeader: Row(
-          children: <Widget>[
-            if (widget.onBack != null) ...<Widget>[
-              Tooltip(
-                message: '返回设置',
-                child: IconButton(
+        compactHeader: ReadingPageHeader(
+          title: '站点插件',
+          subtitle:
+              '${controller.plugins.where((plugin) => plugin.enabled).length} 个站点插件已启用',
+          navigationIcon: widget.onBack == null
+              ? null
+              : MobileMiuixIconButton(
                   key: const ValueKey('mobile-plugins-back-button'),
-                  icon: const Icon(
-                    FluentIcons.back,
-                    semanticLabel: '返回设置',
-                  ),
+                  icon: FluentIcons.back,
+                  label: '返回设置',
                   onPressed: widget.onBack,
                 ),
-              ),
-              const SizedBox(width: 10),
-            ],
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(
-                    '站点插件',
-                    style: FluentTheme.of(context).typography.title?.copyWith(
-                          fontSize: 28,
-                          fontWeight: FontWeight.w800,
-                        ),
-                  ),
-                  Text(
-                    '${controller.plugins.where((plugin) => plugin.enabled).length} 个站点插件已启用',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: FluentTheme.of(context).typography.caption,
-                  ),
-                ],
-              ),
-            ),
-          ],
+          actions: const <Widget>[],
         ),
         child: Expanded(
           child: switch (controller.state) {

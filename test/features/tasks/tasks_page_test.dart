@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:qingjuan/app/app_scope.dart';
@@ -17,6 +18,7 @@ import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/sources/sources_controller.dart';
 import 'package:qingjuan/features/tasks/tasks_controller.dart';
 import 'package:qingjuan/features/tasks/tasks_page.dart';
+import 'package:qingjuan/shared/responsive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -67,6 +69,58 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('mobile task center opens incremental runtime logs',
+      (tester) async {
+    final harness = await _Harness.create(
+      size: const Size(390, 844),
+      platform: TargetPlatform.android,
+      client: MockClient((request) async {
+        if (request.url.path == '/api/v1/tasks/running/logs') {
+          expect(request.url.queryParameters['after'], '0');
+          return http.Response(
+            jsonEncode(<Map<String, Object?>>[
+              <String, Object?>{
+                'sequence': 7,
+                'taskId': 'running',
+                'level': 'info',
+                'message': '开始下载第七章',
+                'createdAt': '2026-08-23T08:30:00Z',
+              },
+              <String, Object?>{
+                'sequence': 8,
+                'taskId': 'running',
+                'level': 'warning',
+                'message': '网络波动，正在重试',
+                'createdAt': '2026-08-23T08:30:01Z',
+              },
+            ]),
+            200,
+            headers: <String, String>{'content-type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 404);
+      }),
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(harness.widget);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(miuix.MiuixTabRow), findsOneWidget);
+    final logButton = find.byKey(const ValueKey('task-logs-toggle-running'));
+    await tester.ensureVisible(logButton);
+    await tester.pumpAndSettle();
+    await tester.tap(logButton);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byKey(const ValueKey('task-logs-running')), findsOneWidget);
+    expect(find.text('开始下载第七章'), findsOneWidget);
+    expect(find.text('网络波动，正在重试'), findsOneWidget);
+    expect(find.textContaining('#8'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   test('task controller appends page results from the last sequence', () async {
     final requestedAfter = <String?>[];
     var logRequest = 0;
@@ -89,6 +143,13 @@ void main() {
                 'updatedAt': '2026-08-10T08:00:00Z',
               },
             ]),
+            200,
+            headers: <String, String>{'content-type': 'application/json'},
+          );
+        }
+        if (request.url.path == '/api/v1/tasks/translate-1/logs') {
+          return http.Response(
+            '[]',
             200,
             headers: <String, String>{'content-type': 'application/json'},
           );
@@ -144,9 +205,11 @@ class _Harness {
     Size size = const Size(1280, 800),
     TextScaler textScaler = TextScaler.noScaling,
     Brightness brightness = Brightness.light,
+    TargetPlatform platform = TargetPlatform.windows,
+    http.Client? client,
   }) async {
     final appState = AppState(await SharedPreferences.getInstance());
-    final api = ApiClient(() => appState.backendUrl);
+    final api = ApiClient(() => appState.backendUrl, client: client);
     final tasks = TasksController(api)
       ..state = LoadState.ready
       ..tasks = const <BookTask>[
@@ -157,7 +220,7 @@ class _Harness {
           status: 'running',
           totalCount: 10,
           completedCount: 4,
-          progress: 0.4,
+          progress: 40,
           message: '正在下载章节',
           attempts: 1,
           updatedAt: '2026-08-09T12:30:00',
@@ -169,7 +232,7 @@ class _Harness {
           status: 'failed',
           totalCount: 8,
           completedCount: 2,
-          progress: 0.25,
+          progress: 25,
           message: '翻译已停止',
           attempts: 2,
           updatedAt: '2026-08-09T11:10:00',
@@ -182,7 +245,7 @@ class _Harness {
           status: 'completed',
           totalCount: 5,
           completedCount: 5,
-          progress: 1,
+          progress: 100,
           message: '下载完成',
           attempts: 1,
           updatedAt: '2026-08-08T18:20:00',
@@ -222,7 +285,10 @@ class _Harness {
         theme: buildQingJuanTheme(brightness),
         home: MediaQuery(
           data: MediaQueryData(size: size, textScaler: textScaler),
-          child: scope,
+          child: UiPlatformScope(
+            platform: platform,
+            child: scope,
+          ),
         ),
       ),
     );

@@ -1,6 +1,7 @@
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:qingjuan/app/app_scope.dart';
 import 'package:qingjuan/app/app_state.dart';
 import 'package:qingjuan/app/app_theme.dart';
@@ -15,7 +16,6 @@ import 'package:qingjuan/features/settings/settings_controller.dart';
 import 'package:qingjuan/features/shell/app_shell.dart';
 import 'package:qingjuan/features/sources/sources_controller.dart';
 import 'package:qingjuan/features/tasks/tasks_controller.dart';
-import 'package:qingjuan/shared/app_surface.dart';
 import 'package:qingjuan/shared/responsive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -29,36 +29,21 @@ void main() {
     await tester.pumpWidget(harness.widget);
     await tester.pump(const Duration(milliseconds: 600));
 
-    expect(find.byKey(const ValueKey('mobile-app-bar')), findsNothing);
+    expect(find.byKey(const ValueKey('mobile-app-bar')), findsOneWidget);
     expect(
       find.byKey(const ValueKey('mobile-bottom-navigation')),
       findsOneWidget,
     );
     expect(find.text('我的'), findsOneWidget);
-    final navigation = tester.widget<SizedBox>(
-      find.byKey(const ValueKey('mobile-bottom-navigation')),
-    );
-    expect(navigation.height, 82);
-    final glassFinder =
-        find.byKey(const ValueKey('mobile-bottom-navigation-glass'));
-    final glass = tester.widget<AppGlassSurface>(glassFinder);
-    expect(glass.borderRadius, 22);
-    expect(glass.blurSigma, 16);
-    expect(
-      tester.getSize(glassFinder).width,
-      lessThan(tester
-          .getSize(find.byKey(
-            const ValueKey('mobile-bottom-navigation'),
-          ))
-          .width),
+    final navigation = tester.widget<miuix.MiuixNavigationBar>(
+      find.byType(miuix.MiuixNavigationBar),
     );
     expect(
-      find.descendant(
-        of: glassFinder,
-        matching: find.byType(BackdropFilter),
-      ),
-      findsOneWidget,
+      navigation.mode,
+      miuix.MiuixNavigationBarDisplayMode.iconAndText,
     );
+    expect(navigation.children, hasLength(5));
+    expect(find.byType(miuix.MiuixScaffold), findsWidgets);
     expect(find.byType(NavigationView), findsNothing);
     for (final section in <AppSection>[
       AppSection.library,
@@ -115,7 +100,7 @@ void main() {
       find.byKey(const ValueKey('mobile-navigation-tasks')),
     );
     await tester.pump(const Duration(milliseconds: 180));
-    expect(find.text('任务概览'), findsOneWidget);
+    expect(find.text('任务日志'), findsWidgets);
 
     await tester.tap(
       find.byKey(const ValueKey('mobile-navigation-settings')),
@@ -317,7 +302,7 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 600));
     await tester.tap(find.byKey(const ValueKey('settings-about-button')));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 600));
 
     expect(find.text('关于青卷'), findsOneWidget);
     expect(find.text('Windows 10 / 11 · Android 8.0+'), findsOneWidget);
@@ -328,14 +313,14 @@ void main() {
     expect(harness.appState.section, AppSection.settings);
 
     await tester.tap(find.byKey(const ValueKey('settings-about-button')));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 600));
 
     await tester.tap(
       find.byKey(
         const ValueKey('copy-https://github.com/Tavre/QingJuan'),
       ),
     );
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 600));
 
     expect(find.text('GitHub 地址已复制'), findsOneWidget);
     expect(clipboardCall?.method, 'Clipboard.setData');

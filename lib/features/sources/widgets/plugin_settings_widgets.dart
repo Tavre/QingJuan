@@ -1,4 +1,5 @@
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import '../../../core/models/site_plugin.dart';
 import '../../../core/models/source.dart';
@@ -444,6 +445,7 @@ class SitePluginTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
+    final mobile = usesMobileUi(context);
     final details =
         plugin.domains.isEmpty ? '适用于未匹配专用模块的网页' : plugin.domains.join(' · ');
     return AppSurface(
@@ -518,21 +520,33 @@ class SitePluginTile extends StatelessWidget {
             label: '${plugin.name}站点插件',
             toggled: plugin.enabled,
             child: SizedBox(
-              width: 42,
+              width: mobile ? 49 : 42,
               height: 28,
               child: saving
-                  ? const Center(
-                      child: SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: ProgressRing(strokeWidth: 2.4),
-                      ),
+                  ? Center(
+                      child: mobile
+                          ? const miuix.MiuixCircularProgressIndicator(size: 18)
+                          : const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: ProgressRing(strokeWidth: 2.4),
+                            ),
                     )
-                  : ToggleSwitch(
-                      key: ValueKey<String>('site-plugin-toggle-${plugin.id}'),
-                      checked: plugin.enabled,
-                      onChanged: onChanged,
-                    ),
+                  : mobile
+                      ? miuix.MiuixSwitch(
+                          key: ValueKey<String>(
+                            'site-plugin-toggle-${plugin.id}',
+                          ),
+                          value: plugin.enabled,
+                          onChanged: onChanged,
+                        )
+                      : ToggleSwitch(
+                          key: ValueKey<String>(
+                            'site-plugin-toggle-${plugin.id}',
+                          ),
+                          checked: plugin.enabled,
+                          onChanged: onChanged,
+                        ),
             ),
           ),
         ],
@@ -794,27 +808,38 @@ class _PluginToggle extends StatelessWidget {
   final String keyPrefix;
 
   @override
-  Widget build(BuildContext context) => Semantics(
-        label: '${plugin.name}站点插件',
-        toggled: plugin.enabled,
-        child: SizedBox(
-          width: 42,
-          height: 28,
-          child: saving
-              ? const Center(
-                  child: SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: ProgressRing(strokeWidth: 2.4),
+  Widget build(BuildContext context) {
+    final mobile = usesMobileUi(context);
+    return Semantics(
+      label: '${plugin.name}站点插件',
+      toggled: plugin.enabled,
+      child: SizedBox(
+        width: mobile ? 49 : 42,
+        height: 28,
+        child: saving
+            ? Center(
+                child: mobile
+                    ? const miuix.MiuixCircularProgressIndicator(size: 18)
+                    : const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: ProgressRing(strokeWidth: 2.4),
+                      ),
+              )
+            : mobile
+                ? miuix.MiuixSwitch(
+                    key: ValueKey<String>('$keyPrefix-${plugin.id}'),
+                    value: plugin.enabled,
+                    onChanged: onChanged,
+                  )
+                : ToggleSwitch(
+                    key: ValueKey<String>('$keyPrefix-${plugin.id}'),
+                    checked: plugin.enabled,
+                    onChanged: onChanged,
                   ),
-                )
-              : ToggleSwitch(
-                  key: ValueKey<String>('$keyPrefix-${plugin.id}'),
-                  checked: plugin.enabled,
-                  onChanged: onChanged,
-                ),
-        ),
-      );
+      ),
+    );
+  }
 }
 
 class _PluginMetadataSection extends StatelessWidget {
@@ -927,16 +952,28 @@ class SourceRuleTile extends StatelessWidget {
             label: '${source.name}外部书源',
             toggled: source.enabled,
             child: saving
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: ProgressRing(strokeWidth: 2.4),
-                  )
-                : ToggleSwitch(
-                    key: ValueKey<String>('source-rule-toggle-${source.id}'),
-                    checked: source.enabled,
-                    onChanged: onChanged,
-                  ),
+                ? mobile
+                    ? const miuix.MiuixCircularProgressIndicator(size: 20)
+                    : const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: ProgressRing(strokeWidth: 2.4),
+                      )
+                : mobile
+                    ? miuix.MiuixSwitch(
+                        key: ValueKey<String>(
+                          'source-rule-toggle-${source.id}',
+                        ),
+                        value: source.enabled,
+                        onChanged: onChanged,
+                      )
+                    : ToggleSwitch(
+                        key: ValueKey<String>(
+                          'source-rule-toggle-${source.id}',
+                        ),
+                        checked: source.enabled,
+                        onChanged: onChanged,
+                      ),
           ),
         ],
       ),

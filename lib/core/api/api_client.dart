@@ -719,7 +719,7 @@ class ApiClient {
       return SourceSearchResult.fromJson(<String, dynamic>{
         ...result,
         'sourceId': sourceId,
-        'sourceName': sourceName,
+        'sourceName': result['providerName'] as String? ?? sourceName,
         'sourceLanguage': sourceLanguage,
       });
     }).toList();

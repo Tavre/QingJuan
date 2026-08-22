@@ -247,6 +247,21 @@ except ImportError:
     )
 
 try:
+    from .site_plugins.biqvge_client import (
+        canonical_book_url_from_url as canonical_biqvge_book_url_from_url,
+    )
+    from .site_plugins.biqvge_client import get_book as get_biqvge_book
+    from .site_plugins.biqvge_client import get_chapter as get_biqvge_chapter
+    from .site_plugins.biqvge_client import search_books as search_biqvge_books
+except ImportError:
+    from app.site_plugins.biqvge_client import (
+        canonical_book_url_from_url as canonical_biqvge_book_url_from_url,
+    )
+    from app.site_plugins.biqvge_client import get_book as get_biqvge_book
+    from app.site_plugins.biqvge_client import get_chapter as get_biqvge_chapter
+    from app.site_plugins.biqvge_client import search_books as search_biqvge_books
+
+try:
     from .site_plugins.comicores_client import (
         canonical_comicores_book_url,
         comicores_authors,
@@ -659,6 +674,10 @@ def _is_quark_url(url: str) -> bool:
     return site_plugin_matches("quark", url)
 
 
+def _is_biqvge_url(url: str) -> bool:
+    return site_plugin_matches("biqvge", url)
+
+
 def _is_syosetu_url(url: str) -> bool:
     return site_plugin_matches("syosetu", url)
 
@@ -787,6 +806,9 @@ def _normalize_source_url(url: str) -> str:
     if _is_quark_url(url):
         book_id = quark_book_id_from_url(url)
         return canonical_quark_book_url(book_id) if book_id else url
+
+    if _is_biqvge_url(url):
+        return canonical_biqvge_book_url_from_url(url) or url
 
     if _is_linovelib_url(url):
         match = LINOVELIB_BOOK_PATH_PATTERN.match(parsed.path)
@@ -976,6 +998,16 @@ async def _search_quark_works(
         for item in values
         if str(item.get("sourceUrl") or "").strip()
     ]
+
+
+async def _search_biqvge_works(
+    source: BookSourceRecord,
+    keyword: str,
+    limit: int,
+) -> list[BuiltinSiteSearchResult]:
+    async with _build_http_client() as client:
+        items = await search_biqvge_books(client, keyword, limit)
+    return _builtin_results_from_items(items, limit, book_kind=source.bookKind)
 
 
 async def _search_kakuyomu_works(
@@ -1274,6 +1306,7 @@ def _builtin_results_from_items(
                 cover=str(item.get("cover") or "").strip() or None,
                 sourceUrl=source_url,
                 bookKind=book_kind,
+                providerName=str(item.get("site_name") or "").strip() or None,
             )
         )
         if len(results) >= limit:
@@ -1337,6 +1370,8 @@ async def search_builtin_site_books(
         return await _search_fanqie_works(source, normalized_keyword, limit)
     if plugin.search_handler == "quark":
         return await _search_quark_works(source, normalized_keyword, limit)
+    if plugin.search_handler == "biqvge":
+        return await _search_biqvge_works(source, normalized_keyword, limit)
     if plugin.search_handler == "kakuyomu":
         return await _search_kakuyomu_works(source, normalized_keyword, limit)
     if plugin.search_handler == "18comic":
@@ -10108,6 +10143,31 @@ async def _preview_quark(source_url: str, payload: AddBookPayload) -> PreviewRes
     )
 
 
+async def _preview_biqvge(source_url: str, payload: AddBookPayload) -> PreviewResponse:
+    async with _build_http_client() as client:
+        book = await get_biqvge_book(client, source_url)
+    chapters = [
+        ChapterPreview(
+            title=str(chapter.get("title") or "未命名章节"),
+            url=str(chapter["url"]),
+            accessRestricted=bool(chapter.get("access_restricted")),
+        )
+        for chapter in book.get("chapters") or []
+        if isinstance(chapter, dict) and str(chapter.get("url") or "").strip()
+    ]
+    if not chapters:
+        raise ValueError("笔趣阁作品目录为空")
+    return PreviewResponse(
+        title=str(book.get("title") or payload.title or "未命名作品").strip(),
+        author=str(book.get("author") or "").strip() or None,
+        synopsis=str(book.get("synopsis") or "").strip(),
+        cover=str(book.get("cover") or "").strip() or None,
+        chapterCount=len(chapters),
+        chapters=chapters,
+        bookKind="长小说",
+    )
+
+
 async def _preview_copymanga(source_url: str, payload: AddBookPayload) -> PreviewResponse:
     path_word = mangacopy_path_word_from_url(source_url)
     if not path_word:
@@ -10302,6 +10362,9 @@ async def preview_from_url(payload: AddBookPayload) -> PreviewResponse:
         return _apply_payload_metadata_to_preview(result, payload)
     if plugin.preview_handler == "quark":
         result = await _preview_quark(source_url, payload)
+        return _apply_payload_metadata_to_preview(result, payload)
+    if plugin.preview_handler == "biqvge":
+        result = await _preview_biqvge(source_url, payload)
         return _apply_payload_metadata_to_preview(result, payload)
     if plugin.preview_handler == "18comic":
         result = await _preview_18comic(source_url, payload)
@@ -11220,6 +11283,20 @@ async def _fetch_quark_chapter_data(
     )
 
 
+async def _fetch_biqvge_chapter_data(
+    client: httpx.AsyncClient,
+    chapter_url: str,
+) -> ChapterFetchResult:
+    chapter = await get_biqvge_chapter(client, chapter_url)
+    return ChapterFetchResult(
+        text=str(chapter.get("text") or ""),
+        image_urls=[],
+        content_source=f"biqvge-{chapter.get('site') or 'public'}-web",
+        authorization_method="anonymous-public",
+        access_restricted=False,
+    )
+
+
 async def _fetch_copymanga_chapter_data(
     client: httpx.AsyncClient,
     chapter_url: str,
@@ -11348,6 +11425,8 @@ async def _fetch_chapter_data(
             )
         if plugin.chapter_handler == "quark":
             return await _fetch_quark_chapter_data(client, chapter_url)
+        if plugin.chapter_handler == "biqvge":
+            return await _fetch_biqvge_chapter_data(client, chapter_url)
         if plugin.chapter_handler == "18comic":
             return await _fetch_18comic_chapter_data(client, chapter_url, chapter_title)
         if plugin.chapter_handler == "bika":
@@ -11407,7 +11486,12 @@ async def _fetch_chapter_data(
             text=soup.get_text("\n", strip=True)[:15000], image_urls=[], illustration=False
         )
     except Exception as exc:
-        if _is_manga_source_url(chapter_url) or _is_fanqie_url(chapter_url) or _is_quark_url(chapter_url):
+        if (
+            _is_manga_source_url(chapter_url)
+            or _is_fanqie_url(chapter_url)
+            or _is_quark_url(chapter_url)
+            or _is_biqvge_url(chapter_url)
+        ):
             raise
         return ChapterFetchResult(
             text=f"章节抓取失败：{exc}\n原始链接：{chapter_url}",

@@ -23,7 +23,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
 
-  testWidgets('search engine switches among sources, Quark, Fanqie and Qidian',
+  testWidgets(
+      'search engine switches among sources, Quark, Fanqie, Qidian and Biquge',
       (tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
@@ -81,18 +82,29 @@ void main() {
           final body = jsonDecode(request.body) as Map<String, dynamic>;
           final isFanqie = body['sourceId'] == 'source-builtin-fanqie';
           final isQidian = body['sourceId'] == 'source-builtin-qidian';
+          final isBiqvge = body['sourceId'] == 'source-builtin-biqvge';
           return _jsonResponse(<Map<String, Object?>>[
             <String, Object?>{
-              'title': isQidian ? '起点结果' : (isFanqie ? '番茄结果' : '夸克结果'),
-              'author': isQidian ? '作者丁' : (isFanqie ? '作者丙' : '作者乙'),
-              'synopsis':
-                  isQidian ? '来自起点移动站' : (isFanqie ? '来自番茄公开搜索' : '来自书旗网页内核'),
-              'sourceUrl': isQidian
-                  ? 'https://www.qidian.com/book/1209977/'
-                  : (isFanqie
-                      ? 'https://fanqienovel.com/page/7080092010052324352'
-                      : 'https://www.shuqi.com/book/46543.html'),
+              'title': isBiqvge
+                  ? '笔趣阁结果'
+                  : (isQidian ? '起点结果' : (isFanqie ? '番茄结果' : '夸克结果')),
+              'author': isBiqvge
+                  ? '作者戊'
+                  : (isQidian ? '作者丁' : (isFanqie ? '作者丙' : '作者乙')),
+              'synopsis': isBiqvge
+                  ? '来自笔趣阁公开搜索'
+                  : (isQidian
+                      ? '来自起点移动站'
+                      : (isFanqie ? '来自番茄公开搜索' : '来自书旗网页内核')),
+              'sourceUrl': isBiqvge
+                  ? 'https://www.b520.cc/2_2157/'
+                  : (isQidian
+                      ? 'https://www.qidian.com/book/1209977/'
+                      : (isFanqie
+                          ? 'https://fanqienovel.com/page/7080092010052324352'
+                          : 'https://www.shuqi.com/book/46543.html')),
               'bookKind': '长小说',
+              if (isBiqvge) 'providerName': '笔趣阁 5200',
             },
           ]);
         }
@@ -246,6 +258,39 @@ void main() {
     expect(qidianBody['sourceId'], 'source-builtin-qidian');
     expect(find.text('起点结果'), findsOneWidget);
     expect(find.text('起点中文网'), findsWidgets);
+
+    await tester.tap(find.byKey(const ValueKey('search-engine-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('笔趣阁').last);
+    await tester.pumpAndSettle();
+
+    expect(sources.results, isEmpty);
+    expect(find.text('起点结果'), findsNothing);
+    expect(find.text('结果来自笔趣阁'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('search-submit-button')));
+    await tester.pumpAndSettle();
+
+    final biqvgeBody = jsonDecode(requests.last.body) as Map<String, dynamic>;
+    expect(requests.last.url.path, '/api/v1/builtin-sites/search');
+    expect(biqvgeBody['sourceId'], 'source-builtin-biqvge');
+    expect(find.text('笔趣阁结果'), findsOneWidget);
+    expect(find.text('笔趣阁 5200'), findsWidgets);
+
+    await tester.tap(find.text('加入').last);
+    await tester.pumpAndSettle();
+
+    final biqvgeLinkJobRequest = requests.lastWhere(
+      (request) => request.url.path == '/api/v1/books/link-jobs',
+    );
+    final biqvgeLinkJobBody =
+        jsonDecode(biqvgeLinkJobRequest.body) as Map<String, dynamic>;
+    final biqvgeImportPayload =
+        biqvgeLinkJobBody['payload'] as Map<String, dynamic>;
+    expect(biqvgeImportPayload['sourceId'], 'source-builtin-biqvge');
+    expect(biqvgeImportPayload['downloadMode'], 'on_demand');
+    await tester.pump(const Duration(seconds: 7));
+    await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   });
 }

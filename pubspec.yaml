@@ -22,11 +22,12 @@ dependencies:
   shared_preferences: ^2.3.2
   url_launcher: ^6.3.1
   window_manager: 0.4.3
+  flutter_miuix: ^1.1.1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^4.0.0
+  flutter_lints: ^6.0.0
 
 flutter:
   # fluent_ui 4.9.x 内部仍引用部分 Material 图标字体。
